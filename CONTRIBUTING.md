@@ -6,7 +6,8 @@ Run:
 
 ```powershell
 dotnet build Kairix.QuickAVSync.sln -c Release
-dotnet test tests/Kairix.QuickAVSync.Tests -c Release
+dotnet test tests/Kairix.QuickAVSync.Core.Tests -c Release
+dotnet test tests/Kairix.QuickAVSync.Windows.Tests -c Release
 ```
 
 Keep capture callbacks bounded and non-blocking. Never write captured media to disk, add telemetry/network dependencies, or silently pair an unrelated microphone. Add deterministic tests for timing, lead/lag wording, buffer behavior, and analysis changes. Do not commit build output, logs, user settings, secrets, or test media containing private content.

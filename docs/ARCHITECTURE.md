@@ -1,50 +1,83 @@
 # Architecture
 
-The application is a single WPF process with no server, database, or recording subsystem. UI, capture callbacks, and expensive visual analysis have deliberately separate responsibilities.
+Kairix Quick A/V Sync now has three deliberate layers.
 
-## Data flow
+```text
+Windows Media Foundation + WASAPI ─┐
+future macOS AVFoundation ────├─> ICaptureBackend / common samples
+future Linux backend ───────┘                 │
+                                                   ▼
+                                      Kairix.QuickAVSync.Core
+                                  timing / buffers / clap analysis
+                                                   │
+                                                   ▼
+                                             sync result
+```
+
+## Projects
+
+### `Kairix.QuickAVSync.Core` (`net10.0`)
+
+Portable engine with no Windows Desktop dependency:
+
+- capture/session and detector contracts;
+- platform-neutral device, format, audio, video, status, and timestamp models;
+- rational frame rates and interlaced temporal cadence;
+- bounded rolling buffers and work-window selection;
+- adaptive PCM transient detector and waveform builder;
+- luminance-only `IVisualClapDetector` with the motion implementation;
+- clock-domain correlation, discontinuity detection, and quality propagation;
+- device ranking, conservative audio/video pairing, sync wording, and history;
+- deterministic synthetic backend and known-offset fixtures;
+- analysis-generation guard for stale-result rejection.
+
+Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts only analysis-size luma before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames.
+
+### `Kairix.QuickAVSync.Windows` (`net10.0-windows`)
+
+Windows infrastructure:
+
+- Media Foundation activation, native type selection, synchronous source-reader worker, sample/device timestamp extraction, and luma conversion;
+- Config Manager/SetupAPI Container ID lookup;
+- MMDevice endpoint/property enumeration;
+- WASAPI shared-mode PCM capture with endpoint QPC timestamps;
+- Windows memory/process status, bounded local logging, and settings persistence.
+
+### `Kairix.QuickAVSync` (`net10.0-windows`, WPF)
+
+Views, custom waveform/sync controls, commands, presentation state, WPF image conversion, and composition of the Core and Windows backends. WPF remains the right V1 choice; this pass deliberately did not introduce another UI framework.
+
+## Capture and timing flow
 
 ```text
 ICaptureSession
-  ├─ timestamped PCM → bounded audio buffer → TransientDetector
-  │                                      └─ Audio Zero / event snapshot
-  └─ timestamped luma/video → bounded video buffer ─┘
-                                                   ├─ immediate waveform/review
-                                                   └─ cancellable VisualClapDetector
-                                                            ↓
-Audio mark + auto/manual visual mark → SyncResult → result bar + session history
+  ├─ VideoFrame (small owned luma + timestamp/domain)
+  │      ├─ bounded rolling buffer
+  │      ├─ coalesced latest preview
+  │      └─ cancellable work-window visual analysis
+  └─ AudioChunk (float PCM + timestamp/domain)
+         ├─ bounded rolling buffer
+         └─ adaptive transient detector → Audio Zero
+
+Audio Zero + auto/manual visual mark → comparable-domain check → SyncResult
 ```
 
-Capture callbacks only append bounded data and schedule the newest preview. They do not wait for drawing, file I/O, or vision work. Starting a newer event cancels the previous visual analysis.
+Windows video prefers `MFSampleExtension_DeviceTimestamp`, which Microsoft defines as the QPC-epoch MFTIME domain in 100 ns units. WASAPI capture's QPC position is also delivered in 100 ns units. Those observations are comparable. `IMFSample::GetSampleTime` is retained as a stream-relative fallback but is not silently compared with endpoint QPC. See [capture backends](CAPTURE_BACKENDS.md).
 
-## Main boundaries
+The signed calculation remains `visual - audio`: positive is audio leads, negative is audio lags. Core returns `TIMING DOMAINS NOT CORRELATED` instead of a number when domains differ.
 
-- `Models/Domain.cs`: rational rates, scan/field metadata, timestamp quality, capture samples, markers, candidates, results, and persisted configuration.
-- `Services/RollingBuffer.cs`: thread-safe fixed-capacity storage and timestamp range snapshots.
-- `Services/CaptureServices.cs`: `ICaptureSession`, Media Foundation enumeration, device/audio pairing policy, format preference, timing normalization, and the deterministic synthetic provider.
-- `Services/AnalysisServices.cs`: adaptive audio transient detection, work-window selection, sparse luma motion analysis, and session history.
-- `Services/InfrastructureServices.cs`: allow-listed JSON settings, actual Windows/process memory, and bounded metadata-only logging.
-- `ViewModels/MainViewModel.cs`: orchestration and UI state; it never owns an unbounded media queue.
-- `Controls/`: lightweight retained WPF rendering for waveform markers and the lead/lag bar.
+## Concurrency and ownership
 
-## Timing rules
+- Capture workers never wait for WPF rendering or visual analysis.
+- The rolling buffers have fixed capacities and replace the oldest owned samples.
+- Preview dispatch stores only the newest pending frozen image.
+- Work-window/waveform construction and visual analysis run on background tasks.
+- Each event receives an increasing generation. Cancellation plus the generation check prevents a completed stale detector from changing current UI state.
+- Reconnect unsubscribes callbacks before disposing the prior session.
 
-All internal media timestamps are signed 100 ns units. `TimingQuality` distinguishes device/QPC, normalized stream/sample, and arrival fallback domains. Arrival time must never be presented as device-precision timing. `MediaTimingService` normalizes observations without consulting the WPF/UI clock.
+## Future platforms
 
-`SyncResult` is always `visual timestamp - audio timestamp`:
-
-- positive: sound happened first, so **audio leads video**;
-- negative: visible contact happened first, so **audio lags video**;
-- zero: in sync.
-
-Frame rates use numerator/denominator. For interlaced material, `TemporalImageDuration` is half of frame duration and field order is explicit rather than inferred.
-
-## Hardware implementation seam
-
-`SyntheticCaptureSession` proves the downstream pipeline independently of hardware. The physical implementation should use an asynchronous Media Foundation source reader for video and WASAPI for decoded PCM, associating functions through PnP Container ID. It should publish only immutable `VideoFrame`/`AudioChunk` objects with the strongest available timestamp quality. Preview conversion should drop stale work; event snapshots should retain only bounded analysis luma and decoded PCM.
-
-The fallback pairing policy refuses the Windows default microphone and requires a unique, meaningful name match when no Container ID is available.
-
-## Persistence and privacy
-
-Only `AppSettings` is serialized. Session results and all media-bearing types have no persistence path. Logging records metadata/lifecycle events and rotates at 1 MB. There are no network calls.
+- **Windows (current):** WPF UI, Media Foundation video, MMDevice/WASAPI audio.
+- **macOS (future):** likely AVFoundation backend implementing the same Core contracts. No current support claim.
+- **Linux (future):** likely a combination of PipeWire, V4L2, ALSA, or another appropriate stack after research. No current support claim.
+- **Future UI:** Avalonia or another cross-platform UI could consume Core later. WPF is not being replaced for Windows V1.

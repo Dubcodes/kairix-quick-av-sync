@@ -11,4 +11,9 @@
     <RootNamespace>Kairix.QuickAVSync</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Kairix.QuickAVSync.Core\Kairix.QuickAVSync.Core.csproj" />
+    <ProjectReference Include="..\Kairix.QuickAVSync.Windows\Kairix.QuickAVSync.Windows.csproj" />
+  </ItemGroup>
+
 </Project>

@@ -6,8 +6,11 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Kairix.QuickAVSync.Capture;
 using Kairix.QuickAVSync.Models;
 using Kairix.QuickAVSync.Services;
+using Kairix.QuickAVSync.Windows.Capture;
+using Kairix.QuickAVSync.Windows.Infrastructure;
 
 namespace Kairix.QuickAVSync.ViewModels;
 
@@ -15,10 +18,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 {
     private readonly SettingsService _settingsService = new();
     private readonly AppLogger _log = new();
-    private readonly CaptureDeviceService _devicesService;
+    private readonly IReadOnlyList<ICaptureBackend> _backends;
+    private readonly CaptureDeviceRanker _deviceRanker = new();
     private readonly MemoryStatusService _memoryService = new();
     private readonly TransientDetector _transientDetector = new();
     private readonly VisualClapDetector _visualDetector = new();
+    private readonly WaveformBuilder _waveformBuilder = new();
+    private readonly AnalysisGeneration _analysisGeneration = new();
     private readonly SessionHistoryService _history = new();
     private RollingBuffer<VideoFrame> _video = new(300, f => f.Timestamp.Ticks100ns);
     private RollingBuffer<AudioChunk> _audio = new(300, a => a.Timestamp.Ticks100ns);
@@ -26,7 +32,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private CancellationTokenSource? _analysisCts;
     private readonly DispatcherTimer _memoryTimer;
     private AppSettings _settings;
-    private CaptureDevice? _selectedDevice;
+    private CaptureDeviceDescriptor? _selectedDevice;
     private ImageSource? _videoImage, _autoThumbnail;
     private string _status = "STARTING", _formatText = "No negotiated format", _timingText = "TIMING NOT AVAILABLE", _memoryText = "Reading memory…";
     private bool _isReview, _isHold;
@@ -37,9 +43,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private MediaTimestamp? _manualVisual;
     private IReadOnlyList<float> _waveform = [];
     private double _systemFraction, _appFraction, _availableFraction;
+    private ImageSource? _pendingPreview;
+    private int _previewScheduled;
 
     public event PropertyChangedEventHandler? PropertyChanged;
-    public ObservableCollection<CaptureDevice> Devices { get; } = [];
+    public ObservableCollection<CaptureDeviceDescriptor> Devices { get; } = [];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -53,8 +61,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public MainViewModel()
     {
-        _settings = _settingsService.Load(); _devicesService = new(_log);
-        RefreshCommand = new RelayCommand(_ => RefreshDevices());
+        _settings = _settingsService.Load(); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
+        RefreshCommand = new AsyncRelayCommand(RefreshDevicesAsync);
         ReconnectCommand = new AsyncRelayCommand(ReconnectAsync);
         ManualClapCommand = new RelayCommand(_ => BeginManualClap());
         ResumeLiveCommand = new RelayCommand(_ => ResumeLive());
@@ -66,7 +74,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current.Dispatcher);
     }
 
-    public CaptureDevice? SelectedDevice { get => _selectedDevice; set { if (Set(ref _selectedDevice, value) && value is not null) { _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName; SaveSettings(); } } }
+    public CaptureDeviceDescriptor? SelectedDevice { get => _selectedDevice; set { if (Set(ref _selectedDevice, value) && value is not null) { _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName; SaveSettings(); } } }
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; Changed(); SaveSettings(); } } }
     public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; Changed(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
@@ -89,66 +97,92 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public double PlayheadMs => _audioMark is null || _reviewFrames.Count == 0 ? 0 : (_reviewFrames[_playheadIndex].Timestamp.Ticks100ns - _audioMark.Value.Ticks100ns) / 10_000d;
     public SyncResult? CurrentResult { get { var mark = _manualVisual ?? _autoCandidate?.Timestamp; return mark is null || _audioMark is null ? null : SyncResult.Calculate(_audioMark.Value, mark.Value); } }
     public string ResultText => CurrentResult?.Wording ?? "WAITING FOR CLAP";
-    public double SyncValue => CurrentResult?.SignedMilliseconds ?? 0;
+    public double SyncValue => CurrentResult is { TimingComparable: true } result ? result.SignedMilliseconds : 0;
     public string ConfidenceText => _autoCandidate is null ? "No visual candidate" : $"{_autoCandidate.Confidence:P0} confidence · {AutoVisualMs:+0;-0;0} ms";
     public string ReviewPosition => !_isReview || _reviewFrames.Count == 0 ? "LIVE" : $"{_playheadIndex + 1} / {_reviewFrames.Count} · {PlayheadMs:+0.0;-0.0;0} ms";
     public bool IsHold { get => _isHold; set { if (Set(ref _isHold, value)) Status = value ? "HOLD — CAPTURE CONTINUES" : (_isReview ? "REVIEW" : "READY TO CLAP"); } }
     public string LogPath => _log.Path;
 
-    public async Task InitializeAsync() { RefreshDevices(); UpdateMemory(); _memoryTimer.Start(); await ReconnectAsync(); }
-    private void RefreshDevices()
+    public async Task InitializeAsync() { await RefreshDevicesAsync(); UpdateMemory(); _memoryTimer.Start(); await ReconnectAsync(); }
+    private async Task RefreshDevicesAsync()
     {
-        var selected = SelectedDevice?.Id; var real = _devicesService.Enumerate(); Devices.Clear();
-        Devices.Add(new("synthetic://development", "Synthetic A/V test source", "synthetic", true, -1));
-        foreach (var device in real) Devices.Add(device);
-        SelectedDevice = Devices.FirstOrDefault(d => d.Id == selected) ?? _devicesService.SelectBest(real, _settings) ?? Devices[0];
-        Status = real.Count == 0 ? "NO HARDWARE CAPTURE DEVICE — SYNTHETIC MODE" : $"{real.Count} CAPTURE DEVICE(S) FOUND";
+        var selected = SelectedDevice?.Id; var found = new List<CaptureDeviceDescriptor>();
+        foreach (var backend in _backends)
+        {
+            try { found.AddRange(await backend.EnumerateDevicesAsync(CancellationToken.None)); }
+            catch (Exception ex) { _log.Write("device.enumeration", $"backend={backend.Id} failed: {ex.Message}"); }
+        }
+        var ranked = _deviceRanker.Rank(found, _settings.LastDeviceId, _settings.LastDeviceName); Devices.Clear(); foreach (var device in ranked) { Devices.Add(device); _log.Write("device.ranking", $"rank={Devices.Count} name='{device.FriendlyName}' kind={device.Kind} available={device.IsAvailable} container='{device.ContainerId ?? "unavailable"}'"); }
+        SelectedDevice = Devices.FirstOrDefault(d => d.Id == selected) ?? _deviceRanker.SelectBest(found, _settings.LastDeviceId, _settings.LastDeviceName) ?? Devices.FirstOrDefault();
+        _log.Write("device.selection", $"selected='{SelectedDevice?.FriendlyName ?? "none"}' id='{SelectedDevice?.Id ?? "none"}'");
+        var hardwareCount = found.Count(d => d.Kind != CaptureDeviceKind.Synthetic); Status = hardwareCount == 0 ? "NO HARDWARE CAPTURE DEVICE — SYNTHETIC MODE" : $"{hardwareCount} CAPTURE DEVICE(S) FOUND";
     }
 
     public async Task ReconnectAsync()
     {
         Status = "RECONNECTING"; await StopCaptureAsync(); _video.Clear(); _audio.Clear();
         if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
-        if (!SelectedDevice.Id.StartsWith("synthetic://", StringComparison.OrdinalIgnoreCase))
+        var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
+        try
         {
-            Status = "DEVICE ENUMERATED — CAPTURE BACKEND PROVISIONAL";
-            TimingText = "TIMING UNAVAILABLE"; _log.Write($"Selected hardware device: {SelectedDevice.FriendlyName}; source-reader capture is not active in this build"); return;
+            _capture = await backend.OpenAsync(SelectedDevice, new(), CancellationToken.None); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
+            await _capture.StartAsync(CancellationToken.None); FormatText = _capture.CurrentFormat.Display; TimingText = DescribeTiming(_capture.TimingQuality); Status = SelectedDevice.Kind == CaptureDeviceKind.Synthetic ? "READY TO CLAP" : "CONNECTING"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
         }
-        _capture = new SyntheticCaptureSession(); _capture.VideoFrameReady += OnVideoFrame; _capture.AudioReady += OnAudio;
-        await _capture.StartAsync(CancellationToken.None); FormatText = _capture.Format.Display; TimingText = "STREAM TIMESTAMPS · SYNTHETIC"; Status = "READY TO CLAP"; _log.Write("Synthetic capture opened");
+        catch (Exception ex) { Status = "CAPTURE OPEN FAILED"; TimingText = "TIMING UNAVAILABLE"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex.Message}"); await StopCaptureAsync(); }
     }
 
-    private void OnVideoFrame(VideoFrame frame)
+    private void OnVideoFrame(object? sender, VideoFrame frame)
     {
         _video.Add(frame);
-        if (!_isReview) Application.Current.Dispatcher.BeginInvoke(() => VideoImage = ToBitmap(frame), DispatcherPriority.Render);
+        if (!_isReview) ScheduleLatestPreview(ToBitmap(frame));
     }
 
-    private void OnAudio(AudioChunk chunk)
+    private void ScheduleLatestPreview(ImageSource image)
+    {
+        Interlocked.Exchange(ref _pendingPreview, image);
+        if (Interlocked.Exchange(ref _previewScheduled, 1) != 0) return;
+        Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            var latest = Interlocked.Exchange(ref _pendingPreview, null); if (latest is not null && !_isReview) VideoImage = latest;
+            Interlocked.Exchange(ref _previewScheduled, 0);
+            var newer = Interlocked.Exchange(ref _pendingPreview, null); if (newer is not null) ScheduleLatestPreview(newer);
+            if (_capture is not null) TimingText = DescribeTiming(_capture.TimingQuality);
+        }, DispatcherPriority.Render);
+    }
+
+    private void OnAudio(object? sender, AudioChunk chunk)
     {
         _audio.Add(chunk); if (!AutoDetect || IsHold) return;
         foreach (var transient in _transientDetector.Process(chunk))
         {
             _log.Write($"Transient detected at {transient.Timestamp.Ticks100ns}; peak {transient.Peak:0.000}");
-            Application.Current.Dispatcher.BeginInvoke(() => StartEvent(transient.Timestamp, true, AutoSpike));
+            Application.Current.Dispatcher.BeginInvoke(() => StartEvent(transient.Timestamp, AutoSpike));
         }
     }
 
-    private async void StartEvent(MediaTimestamp audioMark, bool detectedAutomatically, bool audioFinalized)
+    private void OnCaptureStatus(object? sender, CaptureStatusChangedEventArgs e)
     {
+        _log.Write("capture.status", $"{e.Status}: {e.Message}");
+        Application.Current.Dispatcher.BeginInvoke(() => { Status = e.Status switch { CaptureStatus.Running => e.Message.ToUpperInvariant(), CaptureStatus.DeviceLost => "CAPTURE DEVICE LOST", CaptureStatus.Failed => "CAPTURE FAILED", CaptureStatus.Stopping => "STOPPING", _ => Status }; if (_capture is not null) TimingText = DescribeTiming(_capture.TimingQuality); });
+    }
+
+    private async void StartEvent(MediaTimestamp audioMark, bool audioFinalized)
+    {
+        var generation = _analysisGeneration.Next();
         if (_audioMark is not null && CurrentResult is not null) AddHistory();
         _audioMark = audioMark; _manualVisual = null; _autoCandidate = null; AutoThumbnail = null; _isReview = true; Status = audioFinalized ? "REVIEW · ANALYSING" : "REVIEW · SELECT AUDIO MARK";
-        BuildEventSnapshot(); NotifyMarkers();
+        await BuildEventSnapshotAsync(generation); if (!_analysisGeneration.IsCurrent(generation)) return; NotifyMarkers();
         _analysisCts?.Cancel(); _analysisCts = new();
         try
         {
             await Task.Delay(TimeSpan.FromMilliseconds(WorkWindowMilliseconds + 40), _analysisCts.Token);
-            BuildEventSnapshot();
+            await BuildEventSnapshotAsync(generation); if (!_analysisGeneration.IsCurrent(generation)) return;
             if (AutoVisual && audioFinalized)
             {
                 var candidate = await _visualDetector.DetectAsync(_reviewFrames, audioMark, _analysisCts.Token);
-                if (candidate is not null) { _autoCandidate = candidate; AutoThumbnail = ToBitmap(candidate.Frame); _playheadIndex = Math.Max(0, _reviewFrames.IndexOf(candidate.Frame)); _log.Write($"Visual candidate {candidate.Timestamp.Ticks100ns}; confidence {candidate.Confidence:0.00}"); }
+                if (candidate is not null && _analysisGeneration.IsCurrent(generation)) { _autoCandidate = candidate; AutoThumbnail = ToBitmap(candidate.Frame); _playheadIndex = Math.Max(0, _reviewFrames.IndexOf(candidate.Frame)); _log.Write($"Visual candidate {candidate.Timestamp.Ticks100ns}; confidence {candidate.Confidence:0.00}"); }
             }
+            if (!_analysisGeneration.IsCurrent(generation)) return;
             Status = audioFinalized ? "REVIEW" : "REVIEW · SELECT AUDIO MARK"; ShowPlayhead(); NotifyMarkers();
         }
         catch (OperationCanceledException) { }
@@ -157,30 +191,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void BeginManualClap()
     {
         var latest = _audio.Snapshot().LastOrDefault(); if (latest is null) return;
-        StartEvent(new(latest.Timestamp.Ticks100ns + latest.Duration.Ticks / 2, latest.Timestamp.Quality), false, false);
+        StartEvent(new(latest.Timestamp.Ticks100ns + latest.Duration.Ticks / 2, latest.Timestamp.Quality, latest.Timestamp.ClockDomain), false);
     }
     public void SelectAudioPoint(double relativeMs)
     {
-        if (_audioMark is null) return; _audioMark = new(_audioMark.Value.Ticks100ns + (long)(relativeMs * 10_000), _audioMark.Value.Quality); _manualVisual = null; _autoCandidate = null; BuildEventSnapshot(); NotifyMarkers(); StartEvent(_audioMark.Value, false, true);
+        if (_audioMark is null) return; _audioMark = new(_audioMark.Value.Ticks100ns + (long)(relativeMs * 10_000), _audioMark.Value.Quality, _audioMark.Value.ClockDomain, _audioMark.Value.RawValue); _manualVisual = null; _autoCandidate = null; NotifyMarkers(); StartEvent(_audioMark.Value, true);
         _log.Write($"Manual audio correction {relativeMs:+0.0;-0.0;0} ms");
     }
-    private void BuildEventSnapshot()
+    private async Task BuildEventSnapshotAsync(long generation)
     {
-        if (_audioMark is null) return; var half = TimeSpan.FromMilliseconds(WorkWindowMilliseconds);
-        _reviewFrames = WorkWindowSelector.Around(_video.Snapshot(), f => f.Timestamp, _audioMark.Value, half);
-        _playheadIndex = _reviewFrames.Count == 0 ? 0 : FindNearest(_reviewFrames, _audioMark.Value);
-        var chunks = WorkWindowSelector.Around(_audio.Snapshot(), a => a.Timestamp, _audioMark.Value, half + TimeSpan.FromMilliseconds(25));
-        Waveform = BuildWaveform(chunks, _audioMark.Value, half, 900); ShowPlayhead();
-    }
-    private static float[] BuildWaveform(IReadOnlyList<AudioChunk> chunks, MediaTimestamp center, TimeSpan half, int points)
-    {
-        var output = new float[points]; var counts = new int[points]; var start = center.Ticks100ns - half.Ticks; var span = half.Ticks * 2d;
-        foreach (var chunk in chunks) for (var i = 0; i < chunk.Samples.Length / chunk.Channels; i++)
+        if (_audioMark is null) return; var mark = _audioMark.Value; var half = TimeSpan.FromMilliseconds(WorkWindowMilliseconds); var videoSnapshot = _video.Snapshot(); var audioSnapshot = _audio.Snapshot();
+        var built = await Task.Run(() =>
         {
-            var tick = chunk.Timestamp.Ticks100ns + (long)(i / (double)chunk.SampleRate * TimeSpan.TicksPerSecond); var bin = (int)((tick - start) / span * points); if (bin < 0 || bin >= points) continue;
-            float peak = 0; for (var c = 0; c < chunk.Channels; c++) peak = Math.Max(peak, Math.Abs(chunk.Samples[i * chunk.Channels + c])); output[bin] = Math.Max(output[bin], peak); counts[bin]++;
-        }
-        return output;
+            var frames = WorkWindowSelector.Around(videoSnapshot, f => f.Timestamp, mark, half); var chunks = WorkWindowSelector.Around(audioSnapshot, a => a.Timestamp, mark, half + TimeSpan.FromMilliseconds(25));
+            return (Frames: frames, Waveform: _waveformBuilder.Build(chunks, mark, half, 900));
+        });
+        if (!_analysisGeneration.IsCurrent(generation) || _audioMark != mark) return; _reviewFrames = built.Frames; _playheadIndex = _reviewFrames.Count == 0 ? 0 : FindNearest(_reviewFrames, mark); Waveform = built.Waveform; ShowPlayhead();
     }
     private static int FindNearest(IReadOnlyList<VideoFrame> frames, MediaTimestamp mark) => Enumerable.Range(0, frames.Count).MinBy(i => Math.Abs(frames[i].Timestamp.Ticks100ns - mark.Ticks100ns));
     private void Step(int amount) { if (_reviewFrames.Count == 0) return; _playheadIndex = Math.Clamp(_playheadIndex + amount, 0, _reviewFrames.Count - 1); ShowPlayhead(); NotifyMarkers(); }
@@ -189,8 +215,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void MarkVisual() { if (_reviewFrames.Count == 0) return; _manualVisual = _reviewFrames[_playheadIndex].Timestamp; _log.Write($"Manual visual mark {_manualVisual.Value.Ticks100ns}"); NotifyMarkers(); }
     private void JumpToAuto() { if (_autoCandidate is null || _reviewFrames.Count == 0) return; _playheadIndex = FindNearest(_reviewFrames, _autoCandidate.Timestamp); ShowPlayhead(); NotifyMarkers(); }
     private void ShowPlayhead() { if (_reviewFrames.Count > 0) VideoImage = ToBitmap(_reviewFrames[Math.Clamp(_playheadIndex, 0, _reviewFrames.Count - 1)]); Changed(nameof(ReviewPosition)); Changed(nameof(PlayheadMs)); }
-    private void ResumeLive() { _analysisCts?.Cancel(); if (_audioMark is not null && CurrentResult is not null) AddHistory(); _isReview = false; _audioMark = null; _manualVisual = null; _autoCandidate = null; Waveform = []; AutoThumbnail = null; Status = "READY TO CLAP"; NotifyMarkers(); }
-    private void AddHistory() { if (CurrentResult is null) return; _history.Add(new(DateTime.Now, CurrentResult, _autoCandidate?.Confidence)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item); }
+    private void ResumeLive() { _analysisGeneration.Next(); _analysisCts?.Cancel(); if (_audioMark is not null && CurrentResult is not null) AddHistory(); _isReview = false; _audioMark = null; _manualVisual = null; _autoCandidate = null; Waveform = []; AutoThumbnail = null; Status = "READY TO CLAP"; NotifyMarkers(); }
+    private void AddHistory() { if (CurrentResult is not { TimingComparable: true } result) return; _history.Add(new(DateTime.Now, result, _autoCandidate?.Confidence)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item); }
     private void NotifyMarkers() { Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(ResultText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(ReviewPosition)); }
     private static BitmapSource ToBitmap(VideoFrame frame) { var bitmap = BitmapSource.Create(frame.Width, frame.Height, 96, 96, PixelFormats.Gray8, null, frame.Luma, frame.Width); bitmap.Freeze(); return bitmap; }
     private void ResizeBuffers() { _video.Resize(Math.Max(50, (int)(RollingBufferSeconds * 60))); _audio.Resize(Math.Max(50, (int)(RollingBufferSeconds * 60))); }
@@ -198,7 +224,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private static double Gb(ulong bytes) => bytes / 1024d / 1024 / 1024;
     private void SaveSettings() { try { _settingsService.Save(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
     private static void OpenCoffee() { if (!string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppConstants.BuyMeACoffeeUrl) { UseShellExecute = true }); }
-    private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoFrameReady -= OnVideoFrame; _capture.AudioReady -= OnAudio; await _capture.DisposeAsync(); _capture = null; }
+    private static string DescribeTiming(TimingQuality quality) => quality switch { TimingQuality.DeviceHardware => "DEVICE/QPC TIMESTAMPS", TimingQuality.PlatformCaptureClock => "PLATFORM CAPTURE CLOCK", TimingQuality.ClockCorrelated => "CLOCKS CORRELATED", TimingQuality.StreamTimestamp => "STREAM TIMESTAMPS", TimingQuality.ArrivalFallback => "TIMING DEGRADED · ARRIVAL", _ => "TIMING DOMAINS UNRELATED" };
+    private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoSampleReceived -= OnVideoFrame; _capture.AudioSampleReceived -= OnAudio; _capture.StatusChanged -= OnCaptureStatus; await _capture.DisposeAsync(); _capture = null; }
     public async ValueTask DisposeAsync() { _memoryTimer.Stop(); _analysisCts?.Cancel(); SaveSettings(); await StopCaptureAsync(); }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Changed(name); return true; }
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
