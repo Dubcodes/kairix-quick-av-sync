@@ -206,7 +206,17 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     {
         if (_cts is null) return; StatusChanged?.Invoke(this, new(CaptureStatus.Stopping, "Stopping Windows capture")); _cts.Cancel();
         if (_audioWorker is not null) { _audioWorker.AudioSampleReceived -= ForwardAudio; _audioWorker.StatusChanged -= ForwardStatus; await _audioWorker.DisposeAsync(); _audioWorker = null; }
-        try { _reader?.Flush(MediaFoundationNative.SourceReaderFirstVideoStream); } catch { }
+        var reader = _reader;
+        if (reader is not null)
+        {
+            try
+            {
+                await Task.Run(() => reader.Flush(MediaFoundationNative.SourceReaderFirstVideoStream), CancellationToken.None)
+                    .WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException) { _log.Write("capture.shutdown", "Source-reader flush did not exit within two seconds"); }
+            catch { }
+        }
         try { if (_readTask is not null) await _readTask.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false); } catch (OperationCanceledException) { } catch (TimeoutException) { _log.Write("capture.shutdown", "Read loop did not exit within three seconds"); }
         _readTask = null; _cts.Dispose(); _cts = null; StatusChanged?.Invoke(this, new(CaptureStatus.Stopped, "Media Foundation capture stopped"));
     }

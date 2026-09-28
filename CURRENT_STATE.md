@@ -1,6 +1,6 @@
 # Current state
 
-Updated: 2026-09-27
+Updated: 2026-09-29
 
 ## Verified
 
@@ -9,7 +9,7 @@ Updated: 2026-09-27
 - 44 portable Core tests pass. They cover the original buffer/timing/detection/history behavior plus device ranking, physical pairing policy, clock correlation/discontinuities, unrelated-domain rejection, supersession, waveform building, and full synthetic audio-leads/audio-lags measurements.
 - 3 Windows tests pass, including real MMDevice audio endpoint enumeration and real Media Foundation video device enumeration on this computer. These enumeration tests validate interop stability and unique identities, not capture-card behavior.
 - The synthetic backend implements the same `ICaptureBackend`/`ICaptureSession` contracts as Windows, generates a known +60 ms video offset, and drives the existing live/review UI.
-- The WPF application survived a 10-second process smoke test after the refactor.
+- The published no-window startup failure was traced to the RAM `ProgressBar`'s default two-way binding against read-only `SystemFraction`. It is explicitly one-way now. WPF startup also explicitly creates, assigns, shows, and activates `MainWindow` before device/capture initialization. Both published variants pass `scripts/smoke-test-windows.ps1`, which verifies a live process, non-zero main-window handle, visible top-level window, title, and clean close.
 - Existing product behavior remains: bounded rolling buffers, automatic transient/visual analysis, current-event waveform, independent automatic/effective/playhead markers, fixed auto-candidate thumbnail, manual overrides, Hold, keyboard controls, RAM status, settings, three-result session history, reconnect, refresh, and privacy boundaries.
 - Preview dispatch is latest-frame coalesced. Waveform/work-window construction and visual analysis run off the WPF dispatcher. Analysis generations reject stale results after event supersession.
 
@@ -45,7 +45,7 @@ No physical capture card was available and no claim is made that video opening, 
 - WASAPI uses the endpoint's shared-mode mix format, which might apply Windows audio processing. The timing remains endpoint QPC-based, but format/processing behavior needs capture-card testing.
 - The Media Foundation implementation intentionally keeps only downscaled luma in the rolling buffer. A future presentation path may retain a separate bounded native preview surface without changing Core.
 - Visual detection remains a lightweight global sparse-luma motion heuristic. It is fast and overridable but is not robust to every background or hand pose.
-- Native screenshot-based UI inspection was unavailable in this automated session; compile and process smoke tests passed.
+- The smoke script verifies a top-level window through Windows process/window APIs; it does not inspect the rendered visual content.
 
 ## Next hardware test checklist
 
