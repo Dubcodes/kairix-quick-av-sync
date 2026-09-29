@@ -120,15 +120,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public async Task ReconnectAsync()
     {
-        Status = "RECONNECTING"; await StopCaptureAsync(); _video.Clear(); _audio.Clear();
+        Status = "RECONNECTING"; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _audio.Clear();
         if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
         var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
         try
         {
             _capture = await backend.OpenAsync(SelectedDevice, new(), CancellationToken.None); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
-            await _capture.StartAsync(CancellationToken.None); FormatText = _capture.CurrentFormat.Display; TimingText = DescribeTiming(_capture.TimingQuality); Status = SelectedDevice.Kind == CaptureDeviceKind.Synthetic ? "READY TO CLAP" : "CONNECTING"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
+            await _capture.StartAsync(CancellationToken.None); FormatText = _capture.CurrentFormat.Display; TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
         }
-        catch (Exception ex) { Status = "CAPTURE OPEN FAILED"; TimingText = "TIMING UNAVAILABLE"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex.Message}"); await StopCaptureAsync(); }
+        catch (Exception ex) { Status = "CAPTURE OPEN FAILED"; TimingText = "TIMING UNAVAILABLE"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); }
+    }
+
+    private void ClearCurrentMediaState()
+    {
+        _analysisGeneration.Next(); _analysisCts?.Cancel(); _isReview = false; _audioMark = null; _manualVisual = null; _autoCandidate = null; _reviewFrames = []; _playheadIndex = 0;
+        Interlocked.Exchange(ref _pendingPreview, null); VideoImage = null; AutoThumbnail = null; Waveform = []; FormatText = "Format not negotiated"; TimingText = "TIMING NOT AVAILABLE"; NotifyMarkers();
     }
 
     private void OnVideoFrame(object? sender, VideoFrame frame)
@@ -163,7 +169,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void OnCaptureStatus(object? sender, CaptureStatusChangedEventArgs e)
     {
         _log.Write("capture.status", $"{e.Status}: {e.Message}");
-        Application.Current.Dispatcher.BeginInvoke(() => { Status = e.Status switch { CaptureStatus.Running => e.Message.ToUpperInvariant(), CaptureStatus.DeviceLost => "CAPTURE DEVICE LOST", CaptureStatus.Failed => "CAPTURE FAILED", CaptureStatus.Stopping => "STOPPING", _ => Status }; if (_capture is not null) TimingText = DescribeTiming(_capture.TimingQuality); });
+        Application.Current.Dispatcher.BeginInvoke(() => { Status = e.Status switch { CaptureStatus.Starting => e.Message.ToUpperInvariant(), CaptureStatus.Running => e.Message.ToUpperInvariant(), CaptureStatus.DeviceLost => "CAPTURE DEVICE LOST", CaptureStatus.Failed => "CAPTURE FAILED", CaptureStatus.Stopping => "STOPPING", _ => Status }; if (_capture is not null) TimingText = DescribeTiming(_capture.TimingQuality); });
     }
 
     private async void StartEvent(MediaTimestamp audioMark, bool audioFinalized)

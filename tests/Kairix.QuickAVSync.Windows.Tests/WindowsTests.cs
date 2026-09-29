@@ -27,3 +27,42 @@ public sealed class WindowsEnumerationTests
         Assert.Equal(devices.Count, devices.Select(x => x.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
     }
 }
+
+public sealed class NativeFormatRankingTests
+{
+    [Fact]
+    public void RanksBroadcast1080pAndNativeLumaFormatsDeterministically()
+    {
+        var candidates = new[]
+        {
+            Candidate(0, 1280, 720, 60, VideoPixelFormat.Nv12),
+            Candidate(1, 1920, 1080, 25, VideoPixelFormat.Bgra32),
+            Candidate(2, 1920, 1080, 50, VideoPixelFormat.Yuy2),
+            Candidate(3, 1920, 1080, 50, VideoPixelFormat.Nv12)
+        };
+
+        Assert.Equal([3, 2, 1, 0], WindowsNativeFormatRanker.Rank(candidates).Select(candidate => candidate.NativeIndex));
+    }
+
+    [Fact]
+    public void FallsBackUntilADeviceAcceptsACandidate()
+    {
+        var attempts = new List<int>();
+        var selected = WindowsNativeFormatRanker.TryInRankedOrder(
+            new[] { Candidate(0, 1920, 1080, 50, VideoPixelFormat.Yuy2), Candidate(1, 1920, 1080, 25, VideoPixelFormat.Yuy2), Candidate(2, 1280, 720, 50, VideoPixelFormat.Nv12) },
+            candidate => { attempts.Add(candidate.NativeIndex); return candidate.NativeIndex == 1; });
+
+        Assert.Equal([0, 1], attempts);
+        Assert.Equal(1, selected?.NativeIndex);
+    }
+
+    [Fact]
+    public void UnknownPixelSubtypeIsRankedAfterSupportedEquivalent()
+    {
+        var ranked = WindowsNativeFormatRanker.Rank(new[] { Candidate(0, 1920, 1080, 50, VideoPixelFormat.Unknown), Candidate(1, 1920, 1080, 50, VideoPixelFormat.Uyvy) });
+        Assert.Equal([1, 0], ranked.Select(candidate => candidate.NativeIndex));
+    }
+
+    private static WindowsNativeFormatCandidate Candidate(int index, int width, int height, int rate, VideoPixelFormat pixel) =>
+        new(index, new(width, height, Rational.From(rate), ScanMode.Progressive, FieldOrder.Unknown, PixelFormat: pixel), pixel);
+}

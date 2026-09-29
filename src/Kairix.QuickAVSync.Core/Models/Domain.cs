@@ -12,7 +12,7 @@ public enum TimingQuality
 
 public enum ScanMode { Progressive, Interlaced }
 public enum FieldOrder { Unknown, TopFirst, BottomFirst }
-public enum VideoPixelFormat { Luma8, Nv12, Yuy2, Bgra32, Unknown }
+public enum VideoPixelFormat { Luma8, Nv12, Yuy2, Uyvy, Bgra32, Bgr24, Unknown }
 public enum AudioSampleFormat { Float32, SignedPcm16, Unknown }
 public enum CaptureDeviceKind { Synthetic, ExternalCapture, IntegratedCamera, Unknown }
 public enum CaptureStatus { Created, Starting, Running, Stopping, Stopped, DeviceLost, Failed }

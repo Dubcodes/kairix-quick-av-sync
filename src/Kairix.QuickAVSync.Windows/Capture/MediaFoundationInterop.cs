@@ -17,7 +17,9 @@ internal static class MfGuids
     public static readonly Guid DeviceTimestamp = new("8F3E35E7-2DCD-4887-8622-2A58BAA652B0");
     public static readonly Guid Nv12 = new("3231564E-0000-0010-8000-00AA00389B71");
     public static readonly Guid Yuy2 = new("32595559-0000-0010-8000-00AA00389B71");
+    public static readonly Guid Uyvy = new("59565955-0000-0010-8000-00AA00389B71");
     public static readonly Guid Rgb32 = new("00000016-0000-0010-8000-00AA00389B71");
+    public static readonly Guid Rgb24 = new("00000014-0000-0010-8000-00AA00389B71");
 }
 
 internal static class MediaFoundationNative
@@ -33,7 +35,7 @@ internal static class MediaFoundationNative
     [DllImport("mfplat.dll")] internal static extern int MFShutdown();
     [DllImport("mfplat.dll")] private static extern int MFCreateAttributes(out IntPtr attributes, int initialSize);
     [DllImport("mf.dll")] internal static extern int MFEnumDeviceSources(IMFAttributes attributes, out IntPtr devices, out int count);
-    [DllImport("mfreadwrite.dll")] internal static extern int MFCreateSourceReaderFromMediaSource([MarshalAs(UnmanagedType.IUnknown)] object source, IMFAttributes? attributes, out IMFSourceReader reader);
+    [DllImport("mfreadwrite.dll")] internal static extern int MFCreateSourceReaderFromMediaSource(IntPtr source, IMFAttributes? attributes, out IMFSourceReader reader);
     internal static ComPtr<IMFAttributes> CreateAttributes(int count) { MFCreateAttributes(out var ptr, count).ThrowIfFailed(); return ComPtr<IMFAttributes>.FromOwned(ptr); }
 }
 
@@ -61,10 +63,10 @@ internal interface IMFActivate : IMFAttributes
 {
     new int GetItem(ref Guid key, IntPtr value); new int GetItemType(ref Guid key, out int type); new int CompareItem(ref Guid key, IntPtr value, out int result); new int Compare(IMFAttributes theirs, int matchType, out int result);
     new int GetUINT32(ref Guid key, out int value); new int GetUINT64(ref Guid key, out long value); new int GetDouble(ref Guid key, out double value); new int GetGUID(ref Guid key, out Guid value); new int GetStringLength(ref Guid key, out int length); new int GetString(ref Guid key, System.Text.StringBuilder value, int size, out int length); new int GetAllocatedString(ref Guid key, out IntPtr value, out int length); new int GetBlobSize(ref Guid key, out int size); new int GetBlob(ref Guid key, IntPtr buffer, int size, out int blobSize); new int GetAllocatedBlob(ref Guid key, out IntPtr buffer, out int size); new int GetUnknown(ref Guid key, ref Guid iid, out object value); new int SetItem(ref Guid key, IntPtr value); new int DeleteItem(ref Guid key); new int DeleteAllItems(); new int SetUINT32(ref Guid key, int value); new int SetUINT64(ref Guid key, long value); new int SetDouble(ref Guid key, double value); new int SetGUID(ref Guid key, ref Guid value); new int SetString(ref Guid key, string value); new int SetBlob(ref Guid key, IntPtr buffer, int size); new int SetUnknown(ref Guid key, object value); new int LockStore(); new int UnlockStore(); new int GetCount(out int count); new int GetItemByIndex(int index, out Guid key, IntPtr value); new int CopyAllItems(IMFAttributes destination);
-    [PreserveSig] int ActivateObject(ref Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object value); [PreserveSig] int ShutdownObject(); [PreserveSig] int DetachObject();
+    [PreserveSig] int ActivateObject(ref Guid iid, out IntPtr value); [PreserveSig] int ShutdownObject(); [PreserveSig] int DetachObject();
 }
 
-[ComImport, Guid("45BC8A7B-AC88-46D8-9A1C-125B799B2A38"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+[ComImport, Guid("44AE0FA8-EA31-4109-8D2E-4CAE4997C555"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 internal interface IMFMediaType : IMFAttributes
 {
     new int GetItem(ref Guid key, IntPtr value); new int GetItemType(ref Guid key, out int type); new int CompareItem(ref Guid key, IntPtr value, out int result); new int Compare(IMFAttributes theirs, int matchType, out int result); new int GetUINT32(ref Guid key, out int value); new int GetUINT64(ref Guid key, out long value); new int GetDouble(ref Guid key, out double value); new int GetGUID(ref Guid key, out Guid value); new int GetStringLength(ref Guid key, out int length); new int GetString(ref Guid key, System.Text.StringBuilder value, int size, out int length); new int GetAllocatedString(ref Guid key, out IntPtr value, out int length); new int GetBlobSize(ref Guid key, out int size); new int GetBlob(ref Guid key, IntPtr buffer, int size, out int blobSize); new int GetAllocatedBlob(ref Guid key, out IntPtr buffer, out int size); new int GetUnknown(ref Guid key, ref Guid iid, out object value); new int SetItem(ref Guid key, IntPtr value); new int DeleteItem(ref Guid key); new int DeleteAllItems(); new int SetUINT32(ref Guid key, int value); new int SetUINT64(ref Guid key, long value); new int SetDouble(ref Guid key, double value); new int SetGUID(ref Guid key, ref Guid value); new int SetString(ref Guid key, string value); new int SetBlob(ref Guid key, IntPtr buffer, int size); new int SetUnknown(ref Guid key, object value); new int LockStore(); new int UnlockStore(); new int GetCount(out int count); new int GetItemByIndex(int index, out Guid key, IntPtr value); new int CopyAllItems(IMFAttributes destination);

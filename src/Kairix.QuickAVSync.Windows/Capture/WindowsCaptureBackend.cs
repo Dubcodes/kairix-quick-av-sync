@@ -115,7 +115,8 @@ internal static class WindowsDeviceProperties
 public sealed class MediaFoundationCaptureSession : ICaptureSession
 {
     private readonly CaptureDeviceDescriptor _device; private readonly CaptureOpenOptions _options; private readonly DevicePairing _pairing; private readonly IDiagnosticSink _log;
-    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private SourceFormat _sourceFormat;
+    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _emptySampleCount; private int _audioState; private SourceFormat _sourceFormat;
+    private TaskCompletionSource _firstVideoSample = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public CaptureFormat CurrentFormat { get; private set; }
     public TimingQuality TimingQuality { get; private set; } = TimingQuality.StreamTimestamp;
     public event EventHandler<VideoFrame>? VideoSampleReceived;
@@ -127,41 +128,65 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
 
     internal static MediaFoundationCaptureSession Open(CaptureDeviceDescriptor device, CaptureOpenOptions options, DevicePairing pairing, IDiagnosticSink log, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested(); MediaFoundationNative.MFStartup(0x00020070, 1).ThrowIfFailed(); IMFSourceReader? reader = null;
+        cancellationToken.ThrowIfCancellationRequested(); IMFSourceReader? reader = null; IntPtr source = IntPtr.Zero;
+        log.Write("capture.open", $"Opening device name='{device.FriendlyName}' link='{device.Id}' container='{device.ContainerId ?? "unavailable"}'");
+        var startupHr = MediaFoundationNative.MFStartup(0x00020070, 1); log.Write("capture.open", $"MFStartup {DescribeHr(startupHr)}"); startupHr.ThrowIfFailed();
         try
         {
+            log.Write("capture.open", "Locating IMFActivate for selected symbolic link");
             var activate = FindActivation(device.Id); if (activate is null) throw new InvalidOperationException("The selected capture device is no longer available.");
             try
             {
-                var iid = MfGuids.MediaSource; activate.ActivateObject(ref iid, out var source).ThrowIfFailed();
-                try { MediaFoundationNative.MFCreateSourceReaderFromMediaSource(source, null, out reader).ThrowIfFailed(); }
-                finally { Marshal.ReleaseComObject(source); }
+                var iid = MfGuids.MediaSource; var activateHr = activate.ActivateObject(ref iid, out source); log.Write("capture.open", $"IMFActivate::ActivateObject(IMFMediaSource) {DescribeHr(activateHr)}"); activateHr.ThrowIfFailed();
+                var readerHr = MediaFoundationNative.MFCreateSourceReaderFromMediaSource(source, null, out reader); log.Write("capture.open", $"MFCreateSourceReaderFromMediaSource {DescribeHr(readerHr)}"); readerHr.ThrowIfFailed();
             }
-            finally { Marshal.ReleaseComObject(activate); }
-            var selection = SelectFormat(reader); reader.SetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, IntPtr.Zero, selection.MediaType).ThrowIfFailed();
+            finally { if (source != IntPtr.Zero) { Marshal.Release(source); source = IntPtr.Zero; } Marshal.ReleaseComObject(activate); }
+            log.Write("capture.open", "Enumerating native video media types");
+            var selection = SelectAndSetFormat(reader, log);
             Marshal.ReleaseComObject(selection.MediaType); reader.SetStreamSelection(MediaFoundationNative.SourceReaderFirstVideoStream, 1).ThrowIfFailed();
             log.Write("capture.format", $"device='{device.FriendlyName}' format={selection.Format.Display} pixel={selection.Source.PixelFormat} stride={selection.Source.Stride} fields={selection.Format.FieldOrder}");
             var format = pairing.Endpoint is null ? selection.Format with { AudioSampleRate = 0 } : selection.Format;
             var session = new MediaFoundationCaptureSession(device, options, pairing, log, reader, format, selection.Source) { _mfStarted = true }; reader = null; return session;
         }
-        catch { if (reader is not null) Marshal.ReleaseComObject(reader); MediaFoundationNative.MFShutdown(); throw; }
+        catch (Exception ex) { log.Write("capture.open.failure", ex.ToString()); if (source != IntPtr.Zero) Marshal.Release(source); if (reader is not null) Marshal.ReleaseComObject(reader); MediaFoundationNative.MFShutdown(); throw; }
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (_readTask is not null) return Task.CompletedTask; _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken); StatusChanged?.Invoke(this, new(CaptureStatus.Starting, "Opening Media Foundation video stream"));
+        if (_readTask is not null) { await _firstVideoSample.Task.WaitAsync(cancellationToken).ConfigureAwait(false); return; }
+        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken); StatusChanged?.Invoke(this, new(CaptureStatus.Starting, "Waiting for first video frame"));
         _readTask = Task.Run(() => ReadLoop(_cts.Token), _cts.Token);
         if (_options.IncludeAudio && _pairing.Endpoint is not null) { _audioWorker = new(_pairing.Endpoint, _log); _audioWorker.AudioSampleReceived += ForwardAudio; _audioWorker.StatusChanged += ForwardStatus; _ = _audioWorker.StartAsync(_cts.Token); }
-        return Task.CompletedTask;
+        try
+        {
+            await _firstVideoSample.Task.WaitAsync(TimeSpan.FromSeconds(8), cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            var message = $"No video frame with pixel data arrived within 8 seconds ({Volatile.Read(ref _emptySampleCount)} timestamp-only samples received).";
+            _log.Write("capture.first-sample", message); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, message)); throw new TimeoutException(message);
+        }
     }
 
     private void ForwardAudio(object? sender, AudioChunk chunk) => AudioSampleReceived?.Invoke(this, chunk);
-    private void ForwardStatus(object? sender, CaptureStatusChangedEventArgs status) => StatusChanged?.Invoke(this, status);
+    private void ForwardStatus(object? sender, CaptureStatusChangedEventArgs status)
+    {
+        if (status.Status == CaptureStatus.Running)
+        {
+            Volatile.Write(ref _audioState, 1);
+            if (_firstVideoSample.Task.IsCompletedSuccessfully) StatusChanged?.Invoke(this, new(CaptureStatus.Running, $"Video live — embedded audio: {_pairing.Endpoint?.FriendlyName}"));
+            return;
+        }
+        if (status.Status == CaptureStatus.Failed)
+        {
+            Volatile.Write(ref _audioState, -1); _log.Write("capture.audio", $"Video capture remains independent of audio failure: {status.Message}");
+            if (_firstVideoSample.Task.IsCompletedSuccessfully) StatusChanged?.Invoke(this, new(CaptureStatus.Running, "Video live — embedded audio unavailable"));
+        }
+    }
 
     private void ReadLoop(CancellationToken cancellationToken)
     {
         MediaFoundationNative.CoInitializeEx(IntPtr.Zero, 0);
-        StatusChanged?.Invoke(this, new(CaptureStatus.Running, _pairing.Endpoint is null ? "Video running; paired audio not found" : $"Video running; paired audio: {_pairing.Endpoint.FriendlyName}"));
         try
         {
             while (!cancellationToken.IsCancellationRequested && _reader is not null)
@@ -177,11 +202,44 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                         ? new MediaTimestamp(qpc, TimingQuality.DeviceHardware, "windows-qpc-100ns", qpc)
                         : new MediaTimestamp(sampleTime != 0 ? sampleTime : readerTimestamp, TimingQuality.StreamTimestamp, $"mf-stream:{_device.Id}", sampleTime);
                     if (timestamp.Quality != TimingQuality) { TimingQuality = timestamp.Quality; _log.Write("capture.timing", $"source={timestamp.Quality} domain='{timestamp.ClockDomain}' raw={timestamp.RawValue}"); }
-                    sample.ConvertToContiguousBuffer(out var buffer).ThrowIfFailed();
+                    var bufferCountHr = sample.GetBufferCount(out var bufferCount);
+                    if (_temporalIndex == 0 && Volatile.Read(ref _emptySampleCount) == 0) _log.Write("capture.sample", $"first sample timestamp={timestamp.Ticks100ns} quality={timestamp.Quality} raw={timestamp.RawValue?.ToString() ?? "unavailable"}; GetBufferCount {DescribeHr(bufferCountHr)} count={bufferCount}");
+                    bufferCountHr.ThrowIfFailed();
+                    if (bufferCount == 0)
+                    {
+                        var emptyCount = Interlocked.Increment(ref _emptySampleCount);
+                        if (emptyCount == 1 || emptyCount % 250 == 0) _log.Write("capture.sample", $"Media Foundation delivered timestamp-only samples without video data; count={emptyCount}");
+                        continue;
+                    }
+                    var contiguousHr = sample.ConvertToContiguousBuffer(out var buffer);
+                    if (contiguousHr < 0 && bufferCount == 1)
+                    {
+                        _log.Write("capture.sample", $"ConvertToContiguousBuffer {DescribeHr(contiguousHr)}; falling back to the sample's sole native buffer");
+                        sample.GetBufferByIndex(0, out buffer).ThrowIfFailed();
+                    }
+                    else
+                    {
+                        contiguousHr.ThrowIfFailed();
+                    }
                     try
                     {
+                        if (_temporalIndex == 0)
+                        {
+                            buffer.GetCurrentLength(out var currentLength).ThrowIfFailed();
+                            buffer.GetMaxLength(out var maximumLength).ThrowIfFailed();
+                            _log.Write("capture.sample", $"first buffer currentLength={currentLength} maximumLength={maximumLength} expectedMinimum={Math.Abs(_sourceFormat.Stride) * _sourceFormat.Height}");
+                        }
                         var luma = ExtractAnalysisLuma(buffer, _sourceFormat, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight);
-                        VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, luma, Interlocked.Increment(ref _temporalIndex), Stride: _options.PreferredAnalysisWidth));
+                        var sampleNumber = Interlocked.Increment(ref _temporalIndex);
+                        VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, luma, sampleNumber, Stride: _options.PreferredAnalysisWidth));
+                        if (sampleNumber == 1)
+                        {
+                            _log.Write("capture.first-sample", $"Video payload received timestamp={timestamp.Ticks100ns} raw={timestamp.RawValue?.ToString() ?? "unavailable"} deviceTimestamp={(deviceTime is null ? "unavailable" : "available")} format='{CurrentFormat.Display}'");
+                            _firstVideoSample.TrySetResult();
+                            var message = _pairing.Endpoint is null ? "Video live — embedded audio not found" : Volatile.Read(ref _audioState) < 0 ? "Video live — embedded audio unavailable" : $"Video live — embedded audio: {_pairing.Endpoint.FriendlyName}";
+                            StatusChanged?.Invoke(this, new(CaptureStatus.Running, message));
+                        }
+                        else if (sampleNumber % 250 == 0) _log.Write("capture.samples", $"delivered={sampleNumber} latestTimestamp={timestamp.Ticks100ns}");
                     }
                     finally { Marshal.ReleaseComObject(buffer); }
                 }
@@ -190,7 +248,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            _log.Write("capture.failure", $"device='{_device.FriendlyName}' error='{ex.Message}'"); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, ex.Message, ex));
+            _firstVideoSample.TrySetException(ex); _log.Write("capture.failure", $"device='{_device.FriendlyName}' exception={ex}"); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, ex.Message, ex));
         }
         finally { MediaFoundationNative.CoUninitialize(); }
     }
@@ -242,29 +300,51 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         finally { Marshal.FreeCoTaskMem(array); }
     }
 
-    private static (IMFMediaType MediaType, CaptureFormat Format, SourceFormat Source) SelectFormat(IMFSourceReader reader)
+    private static (IMFMediaType MediaType, CaptureFormat Format, SourceFormat Source) SelectAndSetFormat(IMFSourceReader reader, IDiagnosticSink log)
     {
-        var candidates = new List<(IMFMediaType Type, CaptureFormat Format, SourceFormat Source)>();
+        var candidates = new List<(int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)>();
         for (var i = 0; ; i++)
         {
             var hr = reader.GetNativeMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, i, out var type); if (hr == MediaFoundationNative.NoMoreTypes) break; hr.ThrowIfFailed();
-            try { var parsed = ParseFormat(type); candidates.Add((type, parsed.Format, parsed.Source)); }
-            catch { Marshal.ReleaseComObject(type); }
+            try { var parsed = ParseFormat(type); candidates.Add((i, type, parsed.Format, parsed.Source)); log.Write("capture.native-format", $"index={i} supported=true {Describe(parsed.Format, parsed.Source)}"); }
+            catch (Exception ex) { log.Write("capture.native-format", $"index={i} supported=false subtype='{type.TryGetGuid(MfGuids.Subtype)?.ToString() ?? "unavailable"}' reason='{ex.Message}'"); Marshal.ReleaseComObject(type); }
         }
         if (candidates.Count == 0) throw new InvalidOperationException("Capture device reported no usable video media types.");
-        var chosenFormat = CaptureFormatSelector.Select(candidates.Select(c => c.Format))!; var chosen = candidates.First(c => c.Format == chosenFormat);
-        foreach (var item in candidates) if (!ReferenceEquals(item.Type, chosen.Type)) Marshal.ReleaseComObject(item.Type);
-        return chosen;
+        (int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)? chosen = null;
+        try
+        {
+            var ranked = WindowsNativeFormatRanker.Rank(candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat)));
+            foreach (var rankedCandidate in ranked)
+            {
+                var candidate = candidates.First(item => item.Index == rankedCandidate.NativeIndex);
+                var setTypeHr = reader.SetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, IntPtr.Zero, candidate.Type);
+                log.Write("capture.negotiation", $"attempt index={candidate.Index} candidate='{Describe(candidate.Format, candidate.Source)}' {DescribeHr(setTypeHr)}");
+                if (setTypeHr >= 0) { chosen = candidate; break; }
+            }
+            if (chosen is null) throw new InvalidOperationException($"Media Foundation rejected all {candidates.Count} supported native video formats.");
+            log.Write("capture.open", $"Selected native media type index={chosen.Value.Index} candidate='{Describe(chosen.Value.Format, chosen.Value.Source)}'");
+            return (chosen.Value.Type, chosen.Value.Format, chosen.Value.Source);
+        }
+        finally
+        {
+            foreach (var item in candidates)
+            {
+                if (chosen is null || !ReferenceEquals(item.Type, chosen.Value.Type)) Marshal.ReleaseComObject(item.Type);
+            }
+        }
     }
+
+    private static string Describe(CaptureFormat format, SourceFormat source) => $"{format.Width}x{format.Height} rate={format.FrameRate} subtype={source.PixelFormat} scan={format.ScanMode} field={format.FieldOrder} stride={source.Stride}";
+    private static string DescribeHr(int hr) => $"HRESULT=0x{hr:X8} ({(hr >= 0 ? "S_OK" : Marshal.GetExceptionForHR(hr)?.Message ?? "unknown")})";
 
     private static (CaptureFormat Format, SourceFormat Source) ParseFormat(IMFMediaType type)
     {
         var size = type.TryGetUInt64(MfGuids.FrameSize) ?? throw new InvalidOperationException("Media type has no frame size."); var rate = type.TryGetUInt64(MfGuids.FrameRate) ?? (30L << 32 | 1);
         var width = (int)((ulong)size >> 32); var height = (int)(size & uint.MaxValue); var numerator = (int)((ulong)rate >> 32); var denominator = (int)(rate & uint.MaxValue);
-        var subtype = type.TryGetGuid(MfGuids.Subtype) ?? Guid.Empty; var pixel = subtype == MfGuids.Nv12 ? VideoPixelFormat.Nv12 : subtype == MfGuids.Yuy2 ? VideoPixelFormat.Yuy2 : subtype == MfGuids.Rgb32 ? VideoPixelFormat.Bgra32 : VideoPixelFormat.Unknown;
+        var subtype = type.TryGetGuid(MfGuids.Subtype) ?? Guid.Empty; var pixel = subtype == MfGuids.Nv12 ? VideoPixelFormat.Nv12 : subtype == MfGuids.Yuy2 ? VideoPixelFormat.Yuy2 : subtype == MfGuids.Uyvy ? VideoPixelFormat.Uyvy : subtype == MfGuids.Rgb32 ? VideoPixelFormat.Bgra32 : subtype == MfGuids.Rgb24 ? VideoPixelFormat.Bgr24 : VideoPixelFormat.Unknown;
         if (pixel == VideoPixelFormat.Unknown) throw new NotSupportedException($"Unsupported native pixel subtype {subtype}");
         var interlace = type.TryGetUInt32(MfGuids.InterlaceMode) ?? 2; var scan = interlace == 2 ? ScanMode.Progressive : ScanMode.Interlaced; var order = interlace == 3 || interlace == 5 ? FieldOrder.TopFirst : interlace == 4 || interlace == 6 ? FieldOrder.BottomFirst : FieldOrder.Unknown;
-        var defaultStride = type.TryGetUInt32(MfGuids.DefaultStride); var stride = defaultStride is { } s ? s : pixel switch { VideoPixelFormat.Yuy2 => width * 2, VideoPixelFormat.Bgra32 => width * 4, _ => width };
+        var defaultStride = type.TryGetUInt32(MfGuids.DefaultStride); var stride = defaultStride is { } s ? s : pixel switch { VideoPixelFormat.Yuy2 or VideoPixelFormat.Uyvy => width * 2, VideoPixelFormat.Bgra32 => width * 4, VideoPixelFormat.Bgr24 => width * 3, _ => width };
         return (new(width, height, Rational.From(numerator, Math.Max(1, denominator)), scan, order, PixelFormat: pixel), new(width, height, stride, pixel));
     }
 
@@ -276,12 +356,13 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
             var output = new byte[targetWidth * targetHeight]; var pointer = (byte*)data;
             for (var y = 0; y < targetHeight; y++)
             {
-                var sy = Math.Min(source.Height - 1, y * source.Height / targetHeight); var row = pointer + sy * source.Stride;
+                var sy = Math.Min(source.Height - 1, y * source.Height / targetHeight); var sourceRow = source.Stride < 0 ? source.Height - 1 - sy : sy; var row = pointer + sourceRow * Math.Abs(source.Stride);
                 for (var x = 0; x < targetWidth; x++)
                 {
-                    var sx = Math.Min(source.Width - 1, x * source.Width / targetWidth); var offset = source.PixelFormat switch { VideoPixelFormat.Nv12 => sx, VideoPixelFormat.Yuy2 => sx * 2, VideoPixelFormat.Bgra32 => sx * 4, _ => sx };
-                    if (sy * source.Stride + offset >= length) continue;
-                    output[y * targetWidth + x] = source.PixelFormat == VideoPixelFormat.Bgra32
+                    var sx = Math.Min(source.Width - 1, x * source.Width / targetWidth); var offset = source.PixelFormat switch { VideoPixelFormat.Nv12 => sx, VideoPixelFormat.Yuy2 => sx * 2, VideoPixelFormat.Uyvy => sx * 2 + 1, VideoPixelFormat.Bgra32 => sx * 4, VideoPixelFormat.Bgr24 => sx * 3, _ => sx };
+                    var bytesNeeded = source.PixelFormat switch { VideoPixelFormat.Bgra32 => 4, VideoPixelFormat.Bgr24 => 3, _ => 1 };
+                    if (sy * Math.Abs(source.Stride) + offset + bytesNeeded > length) continue;
+                    output[y * targetWidth + x] = source.PixelFormat is VideoPixelFormat.Bgra32 or VideoPixelFormat.Bgr24
                         ? (byte)Math.Clamp((row[offset + 2] * 54 + row[offset + 1] * 183 + row[offset] * 19) >> 8, 0, 255)
                         : row[offset];
                 }
