@@ -10,9 +10,9 @@ dotnet test tests/Kairix.QuickAVSync.Core.Tests -c Release
 dotnet test tests/Kairix.QuickAVSync.Windows.Tests -c Release
 ```
 
-The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/interlaced timing, transient detection, work windows, waveform placement, history, visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and known positive/negative synthetic offsets. An architecture test rejects Windows Desktop assembly references.
+The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/interlaced timing, transient detection, work windows, waveform placement, history, robust visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. An architecture test rejects Windows Desktop assembly references.
 
-Windows tests cover settings allow-list persistence and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
+Windows tests cover settings allow-list/per-device-format persistence, Auto/manual native-format ranking and fallback, and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
 
 On this mapped workspace drive, `dotnet` project graph operations can intermittently fail without diagnostics under parallel MSBuild. Use `-m:1` for a deterministic local full-solution build; GitHub Actions uses a normal local runner filesystem.
 

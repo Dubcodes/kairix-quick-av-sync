@@ -117,7 +117,13 @@ public sealed record DevicePairing(AudioEndpointDescriptor? Endpoint, PairingCon
     public bool IsCertain => Confidence is PairingConfidence.ExactContainer or PairingConfidence.HardwareParent;
 }
 
-public sealed record CaptureOpenOptions(int PreferredAnalysisWidth = 320, int PreferredAnalysisHeight = 180, bool IncludeAudio = true);
+public sealed record CaptureFormatOption(string Id, string Display, CaptureFormat? Format = null)
+{
+    public static CaptureFormatOption Auto { get; } = new("", "Auto — best native format");
+    public override string ToString() => Display;
+}
+
+public sealed record CaptureOpenOptions(int PreferredAnalysisWidth = 320, int PreferredAnalysisHeight = 180, bool IncludeAudio = true, string? PreferredNativeFormatId = null);
 public sealed record CaptureStatusChangedEventArgs(CaptureStatus Status, string Message, Exception? Error = null);
 
 public sealed record SyncResult(double SignedMilliseconds, string Wording, bool TimingComparable = true)
@@ -145,4 +151,5 @@ public sealed class AppSettings
     public bool AutoVisual { get; set; } = true;
     public double RollingBufferSeconds { get; set; } = 5;
     public double WorkWindowMilliseconds { get; set; } = 250;
+    public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
 }

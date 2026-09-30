@@ -77,17 +77,28 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
             for (var p = 0; p < length; p += 4) sum += Math.Abs(a[p] - b[p]);
             differences[i] = sum / Math.Ceiling(length / 4d) / 255d;
         }
+        var measured = differences.Skip(1).ToArray(); var baseline = Median(measured);
+        var deviations = measured.Select(value => Math.Abs(value - baseline)).ToArray(); var spread = Math.Max(.0015, Median(deviations) * 1.4826);
         var bestIndex = -1; var bestScore = 0d;
         for (var i = 1; i < frames.Count - 1; i++)
         {
             var proximity = Math.Exp(-Math.Abs(frames[i].Timestamp.Ticks100ns - expected.Ticks100ns) / (double)TimeSpan.FromMilliseconds(160).Ticks);
-            var change = differences[i] + Math.Abs(differences[i] - differences[i + 1]) * .7; var score = change * (.45 + .55 * proximity);
+            // A clap contact is a brief local change, not continuous background motion.
+            var localFloor = (differences[i - 1] + differences[i + 1]) / 2d;
+            var transientness = Math.Max(0, differences[i] - Math.Max(baseline, localFloor * .55));
+            var score = transientness / spread * (.7 + .3 * proximity);
             if (score > bestScore) { bestScore = score; bestIndex = i; }
         }
-        if (bestIndex < 0 || bestScore < .012) return null;
-        var confidence = Math.Clamp((bestScore - .01) / .16, .05, .94); var chosen = frames[bestIndex];
+        if (bestIndex < 0 || bestScore < 2.5) return null;
+        var confidence = Math.Clamp((bestScore - 2) / 12, .08, .96); var chosen = frames[bestIndex];
         return new VisualCandidate(chosen.Timestamp, chosen.TemporalIndex, confidence, bestScore, chosen);
     }, cancellationToken);
+
+    private static double Median(IReadOnlyList<double> values)
+    {
+        if (values.Count == 0) return 0; var ordered = values.OrderBy(value => value).ToArray(); var middle = ordered.Length / 2;
+        return ordered.Length % 2 == 0 ? (ordered[middle - 1] + ordered[middle]) / 2 : ordered[middle];
+    }
 }
 
 // Compatibility name retained for existing callers.

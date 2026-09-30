@@ -5,7 +5,7 @@ using Kairix.QuickAVSync.Services;
 
 namespace Kairix.QuickAVSync.Windows.Capture;
 
-public sealed class WindowsCaptureBackend(IDiagnosticSink? diagnostics = null) : ICaptureBackend
+public sealed class WindowsCaptureBackend(IDiagnosticSink? diagnostics = null) : ICaptureBackend, ICaptureFormatProvider
 {
     public const string BackendName = "windows-media-foundation";
     private readonly IDiagnosticSink _log = diagnostics ?? NullDiagnosticSink.Instance;
@@ -58,6 +58,17 @@ public sealed class WindowsCaptureBackend(IDiagnosticSink? diagnostics = null) :
         try { endpoints = _audioEndpoints.Enumerate(); } catch (Exception ex) { _log.Write("device.audio", $"Enumeration during open failed: {ex.Message}"); endpoints = []; }
         var pairing = _pairing.Pair(device, endpoints); _log.Write("device.pairing", $"video='{device.FriendlyName}' audio='{pairing.Endpoint?.FriendlyName ?? "none"}' confidence={pairing.Confidence} reason='{pairing.Reason}'");
         return MediaFoundationCaptureSession.Open(device, options, pairing, _log, cancellationToken);
+        }
+        finally { MediaFoundationNative.CoUninitialize(); }
+    }, cancellationToken);
+
+    public Task<IReadOnlyList<CaptureFormatOption>> EnumerateFormatsAsync(CaptureDeviceDescriptor device, CancellationToken cancellationToken) => Task.Run<IReadOnlyList<CaptureFormatOption>>(() =>
+    {
+        MediaFoundationNative.CoInitializeEx(IntPtr.Zero, 0);
+        try
+        {
+            if (device.BackendId != BackendName) throw new ArgumentException("Descriptor does not belong to the Windows Media Foundation backend.", nameof(device));
+            return MediaFoundationCaptureSession.EnumerateNativeFormatOptions(device, _log, cancellationToken);
         }
         finally { MediaFoundationNative.CoUninitialize(); }
     }, cancellationToken);
@@ -145,13 +156,52 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
             }
             finally { if (source != IntPtr.Zero) { Marshal.Release(source); source = IntPtr.Zero; } Marshal.ReleaseComObject(activate); }
             log.Write("capture.open", "Enumerating native video media types");
-            var selection = SelectAndSetFormat(reader, log);
+            var selection = SelectAndSetFormat(reader, options, log);
             Marshal.ReleaseComObject(selection.MediaType); reader.SetStreamSelection(MediaFoundationNative.SourceReaderFirstVideoStream, 1).ThrowIfFailed();
             log.Write("capture.format", $"device='{device.FriendlyName}' format={selection.Format.Display} pixel={selection.Source.PixelFormat} stride={selection.Source.Stride} fields={selection.Format.FieldOrder}");
             var format = pairing.Endpoint is null ? selection.Format with { AudioSampleRate = 0 } : selection.Format;
             var session = new MediaFoundationCaptureSession(device, options, pairing, log, reader, format, selection.Source) { _mfStarted = true }; reader = null; return session;
         }
         catch (Exception ex) { log.Write("capture.open.failure", ex.ToString()); if (source != IntPtr.Zero) Marshal.Release(source); if (reader is not null) Marshal.ReleaseComObject(reader); MediaFoundationNative.MFShutdown(); throw; }
+    }
+
+    internal static IReadOnlyList<CaptureFormatOption> EnumerateNativeFormatOptions(CaptureDeviceDescriptor device, IDiagnosticSink log, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested(); IMFSourceReader? reader = null; IntPtr source = IntPtr.Zero;
+        MediaFoundationNative.MFStartup(0x00020070, 1).ThrowIfFailed();
+        try
+        {
+            var activate = FindActivation(device.Id) ?? throw new InvalidOperationException("The selected capture device is no longer available.");
+            try
+            {
+                var iid = MfGuids.MediaSource; activate.ActivateObject(ref iid, out source).ThrowIfFailed();
+                MediaFoundationNative.MFCreateSourceReaderFromMediaSource(source, null, out reader).ThrowIfFailed();
+            }
+            finally { if (source != IntPtr.Zero) { Marshal.Release(source); source = IntPtr.Zero; } Marshal.ReleaseComObject(activate); }
+
+            var unique = new Dictionary<string, CaptureFormatOption>(StringComparer.Ordinal);
+            for (var index = 0; ; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested(); var hr = reader.GetNativeMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, index, out var type);
+                if (hr == MediaFoundationNative.NoMoreTypes) break; hr.ThrowIfFailed();
+                try
+                {
+                    var parsed = ParseFormat(type); var candidate = new WindowsNativeFormatCandidate(index, parsed.Format, parsed.Source.PixelFormat);
+                    unique.TryAdd(WindowsNativeFormatRanker.ModeId(candidate), new(WindowsNativeFormatRanker.ModeId(candidate), $"{parsed.Format.Display} · {parsed.Source.PixelFormat}", parsed.Format));
+                }
+                catch (Exception ex) { log.Write("capture.format-list", $"Skipped native format index={index}: {ex.Message}"); }
+                finally { Marshal.ReleaseComObject(type); }
+            }
+            var ordered = unique.Values.OrderByDescending(option => option.Format!.ScanMode == ScanMode.Progressive).ThenByDescending(option => option.Format!.Width <= 1920 && option.Format.Height <= 1080).ThenByDescending(option => option.Format!.Width * option.Format.Height).ThenByDescending(option => option.Format!.FrameRate.Value).ThenBy(option => option.Display, StringComparer.Ordinal).ToArray();
+            log.Write("capture.format-list", $"device='{device.FriendlyName}' exposed {ordered.Length} selectable native modes");
+            return ordered;
+        }
+        finally
+        {
+            if (source != IntPtr.Zero) Marshal.Release(source);
+            if (reader is not null) Marshal.ReleaseComObject(reader);
+            MediaFoundationNative.MFShutdown();
+        }
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -311,7 +361,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         finally { Marshal.FreeCoTaskMem(array); }
     }
 
-    private static (IMFMediaType MediaType, CaptureFormat Format, SourceFormat Source) SelectAndSetFormat(IMFSourceReader reader, IDiagnosticSink log)
+    private static (IMFMediaType MediaType, CaptureFormat Format, SourceFormat Source) SelectAndSetFormat(IMFSourceReader reader, CaptureOpenOptions options, IDiagnosticSink log)
     {
         (CaptureFormat Format, SourceFormat Source)? current = null;
         var currentHr = reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var currentType);
@@ -335,12 +385,13 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         (int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)? chosen = null;
         try
         {
-            var ranked = WindowsNativeFormatRanker.Rank(candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))));
+            var ranked = WindowsNativeFormatRanker.Rank(candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))), options.PreferredNativeFormatId);
             foreach (var rankedCandidate in ranked)
             {
                 var candidate = candidates.First(item => item.Index == rankedCandidate.NativeIndex);
                 var setTypeHr = reader.SetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, IntPtr.Zero, candidate.Type);
-                log.Write("capture.negotiation", $"attempt index={candidate.Index} candidate='{Describe(candidate.Format, candidate.Source)}' {DescribeHr(setTypeHr)}");
+                var requested = !string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) && string.Equals(WindowsNativeFormatRanker.ModeId(rankedCandidate), options.PreferredNativeFormatId, StringComparison.Ordinal);
+                log.Write("capture.negotiation", $"attempt index={candidate.Index} requested={requested} candidate='{Describe(candidate.Format, candidate.Source)}' {DescribeHr(setTypeHr)}");
                 if (setTypeHr >= 0) { chosen = candidate; break; }
             }
             if (chosen is null) throw new InvalidOperationException($"Media Foundation rejected all {candidates.Count} supported native video formats.");

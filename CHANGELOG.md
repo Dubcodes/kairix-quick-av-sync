@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added a per-device capture-format selector with `Auto` plus deduplicated native modes. Selecting a mode persists only its stable native mode key, immediately clears stale media/results, and reconnects; unavailable saved modes fall back safely to Auto.
+- Auto native-format policy now prefers supported progressive modes by sensible native resolution and native rational frame rate, using the driver default only as a final tie-breaker. This prevents a C920-style 640×480 default from winning over a working 1080p30 native mode. Manual mode attempts first and then falls back through Auto-ranked candidates if the driver refuses it.
+- Strengthened automatic visual-clap scoring with robust motion baseline/deviation normalization and short-event scoring. Expanded deterministic end-to-end synthetic tests across signed 5–120 ms offsets, 25/50/29.97 fps cadences, incompatible clock domains, and continuous background motion.
 - Corrected the `IMFSample` COM vtable declaration (`SetSampleFlags` was missing and getter/setter order was wrong), restoring real video-buffer delivery. Added Windows SDK IID/vtable regression tests for the active Media Foundation interfaces.
 - Changed native-mode selection from broadcast-biased 1080p50 ranking to current/default-mode-first, source-driven ranking while retaining rational frame rates and candidate fallback.
 - Media Foundation is now accepted only after three consecutive payload-bearing frames within a three-second validation window. Readiness separately requires comparable timing and live paired audio; bounded logs show the strategy decision and suppress enormous capability dumps.

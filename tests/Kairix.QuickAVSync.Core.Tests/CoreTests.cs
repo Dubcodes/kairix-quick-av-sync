@@ -49,6 +49,7 @@ public sealed class VisualDetectorTests
 {
     [Fact] public async Task NoMotionHasNoCandidate() { var f = Frames(false); Assert.Null(await new MotionVisualClapDetector().DetectAsync(f, f[5].Timestamp, default)); }
     [Fact] public async Task ContactSequenceSelectsNearExpected() { var f = Frames(true); var c = await new MotionVisualClapDetector().DetectAsync(f, f[5].Timestamp, default); Assert.NotNull(c); Assert.InRange(c!.TemporalIndex, 3, 7); }
+    [Fact] public async Task ContinuousBackgroundMotionDoesNotBecomeAClap() { var frames = Enumerable.Range(0, 12).Select(i => new VideoFrame(new(i * 100_000, TimingQuality.StreamTimestamp), 32, 18, Enumerable.Repeat((byte)(20 + i * 4), 32 * 18).ToArray(), i)).ToArray(); Assert.Null(await new MotionVisualClapDetector().DetectAsync(frames, frames[6].Timestamp, default)); }
     private static VideoFrame[] Frames(bool contact) => Enumerable.Range(0, 11).Select(i => { var pixels = new byte[64 * 36]; if (contact && i is >= 4 and <= 6) Array.Fill(pixels, (byte)(i == 5 ? 240 : 100), 800, 500); return new VideoFrame(new(i * 100_000, TimingQuality.StreamTimestamp), 64, 36, pixels, i); }).ToArray();
 }
 
@@ -84,11 +85,29 @@ public sealed class ClockCorrelationTests
 
 public sealed class SyntheticPipelineTests
 {
-    [Theory] [InlineData(60)] [InlineData(-60)] public async Task KnownOffsetProducesCorrectLeadLag(double offsetMs)
+    [Theory]
+    [InlineData(5)] [InlineData(10)] [InlineData(20)] [InlineData(60)] [InlineData(120)]
+    [InlineData(-5)] [InlineData(-10)] [InlineData(-20)] [InlineData(-60)] [InlineData(-120)]
+    public async Task KnownOffsetProducesCorrectLeadLag(double offsetMs)
     {
         var fixture = SyntheticFixture.Create(TimeSpan.FromMilliseconds(offsetMs)); var detector = new TransientDetector(); var transient = fixture.Audio.SelectMany(detector.Process).Single();
         var frames = WorkWindowSelector.Around(fixture.Video, f => f.Timestamp, transient.Timestamp, TimeSpan.FromMilliseconds(250)); var visual = await new MotionVisualClapDetector().DetectAsync(frames, transient.Timestamp, default);
-        Assert.NotNull(visual); var result = SyncResult.Calculate(transient.Timestamp, visual!.Timestamp); Assert.True(result.TimingComparable); Assert.Equal(Math.Sign(offsetMs), Math.Sign(result.SignedMilliseconds)); Assert.InRange(Math.Abs(result.SignedMilliseconds - offsetMs), 0, 25);
+        Assert.NotNull(visual); var result = SyncResult.Calculate(transient.Timestamp, visual!.Timestamp); Assert.True(result.TimingComparable); Assert.Equal(Math.Sign(offsetMs), Math.Sign(result.SignedMilliseconds)); Assert.InRange(Math.Abs(result.SignedMilliseconds - offsetMs), 0, 5);
+    }
+
+    [Theory] [InlineData(25, 1)] [InlineData(50, 1)] [InlineData(30000, 1001)] public async Task MeasurementStaysWithinOneNativeFrameAtDifferentCadences(int numerator, int denominator)
+    {
+        var rate = Rational.From(numerator, denominator); var fixture = SyntheticFixture.Create(TimeSpan.FromMilliseconds(80), rate); var transient = fixture.Audio.SelectMany(new TransientDetector().Process).Single();
+        var frames = WorkWindowSelector.Around(fixture.Video, frame => frame.Timestamp, transient.Timestamp, TimeSpan.FromMilliseconds(250)); var visual = await new MotionVisualClapDetector().DetectAsync(frames, transient.Timestamp, default);
+        Assert.NotNull(visual); var result = SyncResult.Calculate(transient.Timestamp, visual!.Timestamp);
+        Assert.InRange(Math.Abs(result.SignedMilliseconds - 80), 0, rate.FrameDuration.TotalMilliseconds + 1);
+    }
+
+    [Fact] public async Task MismatchedSyntheticClockDomainsRefuseMeasurement()
+    {
+        var fixture = SyntheticFixture.Create(TimeSpan.FromMilliseconds(60)); var transient = fixture.Audio.SelectMany(new TransientDetector().Process).Single();
+        var unrelatedFrames = fixture.Video.Select(frame => frame with { Timestamp = frame.Timestamp with { ClockDomain = "other-clock" } }).ToArray(); var visual = await new MotionVisualClapDetector().DetectAsync(unrelatedFrames, transient.Timestamp, default);
+        Assert.NotNull(visual); Assert.False(SyncResult.Calculate(transient.Timestamp, visual!.Timestamp).TimingComparable);
     }
 }
 

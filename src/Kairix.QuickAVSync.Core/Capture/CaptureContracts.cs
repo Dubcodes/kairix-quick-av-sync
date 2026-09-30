@@ -9,6 +9,13 @@ public interface ICaptureBackend
     Task<ICaptureSession> OpenAsync(CaptureDeviceDescriptor device, CaptureOpenOptions options, CancellationToken cancellationToken);
 }
 
+// Backends that can expose selectable source-native modes implement this separately
+// so the portable capture session contract remains small.
+public interface ICaptureFormatProvider
+{
+    Task<IReadOnlyList<CaptureFormatOption>> EnumerateFormatsAsync(CaptureDeviceDescriptor device, CancellationToken cancellationToken);
+}
+
 public interface ICaptureSession : IAsyncDisposable
 {
     CaptureFormat CurrentFormat { get; }

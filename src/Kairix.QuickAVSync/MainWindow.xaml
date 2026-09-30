@@ -22,6 +22,7 @@
       <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel>
         <TextBlock Text="KAIRIX" FontSize="11" FontWeight="Bold" Foreground="#5BD1BF"/><TextBlock Text="Quick A/V Sync" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,10"/>
         <TextBlock Text="VIDEO DEVICE" Style="{StaticResource Label}"/><ComboBox ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice}" Margin="0,0,0,8"/>
+        <TextBlock Text="CAPTURE FORMAT" Style="{StaticResource Label}"/><ComboBox ItemsSource="{Binding CaptureFormats}" SelectedItem="{Binding SelectedCaptureFormat}" Margin="0,0,0,8" ToolTip="Auto chooses the best supported native format. Selecting a mode reconnects immediately."/>
         <WrapPanel><Button Content="Refresh Devices" Command="{Binding RefreshCommand}"/><Button Content="Reconnect" Command="{Binding ReconnectCommand}"/></WrapPanel>
         <TextBlock Text="DETECTION" Style="{StaticResource Label}"/>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>

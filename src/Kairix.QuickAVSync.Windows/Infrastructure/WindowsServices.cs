@@ -14,7 +14,7 @@ public sealed class SettingsService(string? path = null)
     public void Save(AppSettings value)
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        var clean = new AppSettings { LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName, AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual, RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30), WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000) };
+        var clean = new AppSettings { LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName, AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual, RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30), WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000), NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal) };
         File.WriteAllText(Path, JsonSerializer.Serialize(clean, Options));
     }
 }

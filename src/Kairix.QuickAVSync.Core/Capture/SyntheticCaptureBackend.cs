@@ -80,17 +80,25 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICapt
 
 public static class SyntheticFixture
 {
-    public static (IReadOnlyList<AudioChunk> Audio, IReadOnlyList<VideoFrame> Video, MediaTimestamp ExpectedAudio, MediaTimestamp ExpectedVideo) Create(TimeSpan audioToVideoOffset)
+    public static (IReadOnlyList<AudioChunk> Audio, IReadOnlyList<VideoFrame> Video, MediaTimestamp ExpectedAudio, MediaTimestamp ExpectedVideo) Create(TimeSpan audioToVideoOffset, Rational? videoFrameRate = null)
     {
-        const int rate = 48000; var random = new Random(7); var audio = new List<AudioChunk>(); var video = new List<VideoFrame>(); var audioAt = TimeSpan.FromSeconds(1); var visualAt = audioAt + audioToVideoOffset;
+        const int rate = 48000, width = 96, height = 54; var random = new Random(7); var audio = new List<AudioChunk>(); var video = new List<VideoFrame>(); var audioAt = TimeSpan.FromSeconds(1); var visualAt = audioAt + audioToVideoOffset;
         for (var i = 0; i < 100; i++)
         {
-            var now = TimeSpan.FromMilliseconds(i * 20); var pixels = new byte[320 * 180]; Array.Fill(pixels, (byte)30);
-            if (Math.Abs((now - visualAt).TotalMilliseconds) < 1) Array.Fill(pixels, (byte)230, 20_000, 4_000);
-            video.Add(new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), 320, 180, pixels, i, Stride: 320));
             var samples = new float[960]; for (var s = 0; s < samples.Length; s++) samples[s] = (float)(random.NextDouble() - .5) * .002f;
             if (i == 50) for (var s = 0; s < 40; s++) samples[s] = .9f * (float)Math.Exp(-s / 10d);
-            audio.Add(new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), samples, rate, 1));
+            audio.Add(new(MediaTimestamp.FromTimeSpan(TimeSpan.FromMilliseconds(i * 20), TimingQuality.StreamTimestamp, "synthetic-common"), samples, rate, 1));
+        }
+        var cadence = (videoFrameRate ?? Rational.From(200)).FrameDuration;
+        // Keep the synthetic contact visible past the analysis window so the
+        // deterministic fixture has one unambiguous visual onset.
+        var contactDuration = TimeSpan.FromSeconds(1);
+        for (var frame = 0; ; frame++)
+        {
+            var now = TimeSpan.FromTicks(cadence.Ticks * frame); if (now > TimeSpan.FromSeconds(2)) break;
+            var pixels = new byte[width * height]; Array.Fill(pixels, (byte)30);
+            if (now >= visualAt && now < visualAt + contactDuration) Array.Fill(pixels, (byte)230, 1_000, 1_500);
+            video.Add(new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, pixels, frame, Stride: width));
         }
         return (audio, video, MediaTimestamp.FromTimeSpan(audioAt, TimingQuality.StreamTimestamp, "synthetic-common"), MediaTimestamp.FromTimeSpan(visualAt, TimingQuality.StreamTimestamp, "synthetic-common"));
     }

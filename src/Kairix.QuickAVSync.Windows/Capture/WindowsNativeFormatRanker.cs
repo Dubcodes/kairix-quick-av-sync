@@ -7,14 +7,26 @@ public sealed record WindowsNativeFormatCandidate(int NativeIndex, CaptureFormat
 public static class WindowsNativeFormatRanker
 {
     public static IReadOnlyList<WindowsNativeFormatCandidate> Rank(IEnumerable<WindowsNativeFormatCandidate> candidates) => candidates
-        .OrderByDescending(candidate => candidate.IsCurrent)
-        .ThenBy(candidate => ConversionCost(candidate.PixelFormat))
+        .OrderBy(candidate => ConversionCost(candidate.PixelFormat))
         .ThenByDescending(candidate => candidate.Format.ScanMode == ScanMode.Progressive)
         .ThenByDescending(candidate => IsSensibleSize(candidate.Format))
         .ThenByDescending(candidate => candidate.Format.Width * candidate.Format.Height)
         .ThenByDescending(candidate => candidate.Format.FrameRate.Value)
+        .ThenByDescending(candidate => candidate.IsCurrent)
         .ThenBy(candidate => candidate.NativeIndex)
         .ToArray();
+
+    public static IReadOnlyList<WindowsNativeFormatCandidate> Rank(IEnumerable<WindowsNativeFormatCandidate> candidates, string? preferredModeId)
+    {
+        var list = candidates.ToArray();
+        if (string.IsNullOrWhiteSpace(preferredModeId)) return Rank(list);
+        var autoRanked = Rank(list);
+        var positions = autoRanked.Select((candidate, index) => (candidate.NativeIndex, index)).ToDictionary(x => x.NativeIndex, x => x.index);
+        return list.OrderByDescending(candidate => string.Equals(ModeId(candidate), preferredModeId, StringComparison.Ordinal)).ThenBy(candidate => positions[candidate.NativeIndex]).ToArray();
+    }
+
+    public static string ModeId(WindowsNativeFormatCandidate candidate) => ModeId(candidate.Format, candidate.PixelFormat);
+    public static string ModeId(CaptureFormat format, VideoPixelFormat pixelFormat) => $"{format.Width}x{format.Height}|{format.FrameRate.Numerator}/{format.FrameRate.Denominator}|{(format.ScanMode == ScanMode.Progressive ? "p" : "i")}|{pixelFormat}";
 
     public static WindowsNativeFormatCandidate? TryInRankedOrder(
         IEnumerable<WindowsNativeFormatCandidate> candidates,

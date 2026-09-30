@@ -22,7 +22,7 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 
 ## Workflow
 
-1. Select a video source and choose **Reconnect**.
+1. Select a video source, then choose **Auto — best native format** or one of its native modes. A manual format choice reconnects immediately and is remembered for that device.
 2. With all three automatic modes enabled, clap in front of the camera.
 3. Review the waveform, automatic candidate thumbnail, confidence, and plain-language result.
 4. Use Left/Right to inspect temporal images and Enter to replace the automatic visual mark.
@@ -75,11 +75,11 @@ Self-contained is the simplest public download but includes the runtime. Framewo
 - `Kairix.QuickAVSync.Core` targets plain `net10.0` and contains no WPF, Win32, Media Foundation, or WASAPI references. The WPF application composes that portable domain/analysis layer with `Kairix.QuickAVSync.Windows`.
 - Timing models preserve 100 ns media time, clock domains, raw values, and device/QPC, stream timestamp, and arrival-fallback quality separately. Results are refused when clocks are not demonstrably comparable.
 - Frame rates are rational; interlaced formats model two temporal fields and field order.
-- Visual analysis is deterministic, downscaled-luma motion analysis constrained to the audio-centered work window. It is intentionally conservative and always overridable.
+- Visual analysis is deterministic, robust-baseline downscaled-luma motion analysis constrained to the audio-centered work window. It is intentionally conservative and always overridable.
 - The Windows backend uses Media Foundation source readers for video and shared-mode WASAPI for audio. Pairing prefers exact device Container IDs, then hardware parents, and uses a unique-name fallback only when unambiguous; it never silently substitutes the default microphone.
 - Native video is reduced directly from locked NV12, YUY2, or RGB32 buffers to bounded 320×180 luma frames. Audio is normalized from float32 or PCM16 to owned float samples.
 - Physical hardware behavior remains driver-dependent and is not yet certified. Deinterlacing/field extraction, broader native formats, reconnect after hot-unplug, and capture-card validation remain V1 work.
-- The coffee control remains disabled until the repository owner sets `AppConstants.BuyMeACoffeeUrl`.
+- The unobtrusive coffee control opens `https://buymeacoffee.com/dubcodes` only after an explicit click.
 
 See [architecture](docs/ARCHITECTURE.md), [capture backends](docs/CAPTURE_BACKENDS.md), [testing](docs/TESTING.md), and [contribution guidelines](CONTRIBUTING.md).
 

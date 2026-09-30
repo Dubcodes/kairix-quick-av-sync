@@ -10,7 +10,7 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, RollingBufferSeconds = 12 }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(12, loaded.RollingBufferSeconds); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 }
@@ -65,16 +65,32 @@ public sealed class NativeFormatRankingTests
     }
 
     [Fact]
-    public void CurrentNativeModeWinsWithoutForcingFiftyFramesPerSecond()
+    public void AutoPrefersSensibleNativeQualityOverLowResolutionCurrentDefault()
     {
         var ranked = WindowsNativeFormatRanker.Rank(new[]
         {
-            Candidate(0, 1920, 1080, 50, VideoPixelFormat.Yuy2),
-            Candidate(1, 1920, 1080, 25, VideoPixelFormat.Yuy2) with { IsCurrent = true }
+            Candidate(0, 640, 480, 30, VideoPixelFormat.Yuy2) with { IsCurrent = true },
+            Candidate(1, 1920, 1080, 30, VideoPixelFormat.Nv12)
         });
 
         Assert.Equal(1, ranked[0].NativeIndex);
-        Assert.Equal(Rational.From(25), ranked[0].Format.FrameRate);
+        Assert.Equal(Rational.From(30), ranked[0].Format.FrameRate);
+    }
+
+    [Fact]
+    public void ManualModeLeadsThenFallsBackToAutoRanking()
+    {
+        var modes = new[] { Candidate(0, 1920, 1080, 30, VideoPixelFormat.Nv12), Candidate(1, 1280, 720, 60, VideoPixelFormat.Yuy2) };
+        var selectedId = WindowsNativeFormatRanker.ModeId(modes[1]);
+        var ranked = WindowsNativeFormatRanker.Rank(modes, selectedId);
+        Assert.Equal([1, 0], ranked.Select(candidate => candidate.NativeIndex));
+    }
+
+    [Fact]
+    public void StableModeIdKeepsTheNativeRationalRate()
+    {
+        var candidate = new WindowsNativeFormatCandidate(12, new(1920, 1080, Rational.From(30_000, 1_001), ScanMode.Progressive, FieldOrder.Unknown, PixelFormat: VideoPixelFormat.Nv12), VideoPixelFormat.Nv12);
+        Assert.Contains("30000/1001", WindowsNativeFormatRanker.ModeId(candidate));
     }
 
     [Fact]

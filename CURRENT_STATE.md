@@ -6,8 +6,8 @@ Updated: 2026-09-30
 
 - `Kairix.QuickAVSync.Core` targets plain `net10.0`, builds independently, has no Windows Desktop reference, P/Invoke, COM, WPF, or Windows-native types, and is guarded by an assembly-reference test plus a source leakage audit.
 - The Windows WPF application and all three production projects build in Release with zero compiler warnings.
-- 44 portable Core tests pass. They cover the original buffer/timing/detection/history behavior plus device ranking, physical pairing policy, clock correlation/discontinuities, unrelated-domain rejection, supersession, waveform building, and full synthetic audio-leads/audio-lags measurements.
-- 16 Windows tests pass, including Windows SDK COM IID/vtable/HRESULT-preservation regression checks, source-driven native-format ranking/fallback, readiness-state coverage, real MMDevice audio endpoint enumeration, and real Media Foundation video device enumeration on this computer.
+- 57 portable Core tests pass. They cover the original buffer/timing/detection/history behavior plus device ranking, physical pairing policy, clock correlation/discontinuities, unrelated-domain rejection, supersession, waveform building, robust visual-motion rejection, and full synthetic audio-to-measurement paths for signed 5–120 ms offsets.
+- 18 Windows tests pass, including Windows SDK COM IID/vtable/HRESULT-preservation regression checks, Auto/manual native-format ranking and fallback, per-device format settings persistence, readiness-state coverage, real MMDevice audio endpoint enumeration, and real Media Foundation video device enumeration on this computer.
 - The synthetic backend implements the same `ICaptureBackend`/`ICaptureSession` contracts as Windows, generates a known +60 ms video offset, and drives the existing live/review UI.
 - The published no-window startup failure was traced to the RAM `ProgressBar`'s default two-way binding against read-only `SystemFraction`. It is explicitly one-way now. WPF startup also explicitly creates, assigns, shows, and activates `MainWindow` before device/capture initialization. Both published variants pass `scripts/smoke-test-windows.ps1`, which verifies a live process, non-zero main-window handle, visible top-level window, title, and clean close.
 - Existing product behavior remains: bounded rolling buffers, automatic transient/visual analysis, current-event waveform, independent automatic/effective/playhead markers, fixed auto-candidate thumbnail, manual overrides, Hold, keyboard controls, RAM status, settings, three-result session history, reconnect, refresh, and privacy boundaries.
@@ -25,7 +25,8 @@ Updated: 2026-09-30
 ## Physical Logitech C920 observations
 
 - The independently different UVC webcam paired to `Microphone (HD Pro Webcam C920)` by exact Container ID.
-- Its Source Reader current/default mode was retained: native index 0, 640×480 at 30/1 progressive YUY2. It delivered real payload buffers and 19 analysis frames during the 1.74-second probe, while 48 kHz stereo audio continued arriving.
+- Before the format-selector pass, its Source Reader current/default mode was native index 0, 640×480 at 30/1 progressive YUY2. The device had also previously delivered payload at a native 1920×1080 30/1 NV12 mode. Auto now ranks that quality class ahead of the low-resolution current default; the policy is covered by deterministic native-mode tests.
+- The 2026-09-30 post-change probe still enumerated the C920 and exact-Container audio endpoint, but Windows denied `IMFActivate::ActivateObject` with `E_ACCESSDENIED` before a new live selection could be made. The implementation therefore does not claim a new physical 1080p result until camera access is available again.
 - Video supplied device/QPC timestamps in the same domain as WASAPI audio and passed the three-consecutive-frame acceptance rule. Observed timestamps averaged 66.668 ms during this run despite the declared 30 fps mode, which may reflect camera exposure/cadence behavior and is reported rather than hidden.
 
 ## Implemented
@@ -35,7 +36,8 @@ Updated: 2026-09-30
 - Active/disabled/unplugged Windows capture audio endpoints are enumerated through MMDevice, including endpoint ID, friendly name, default-microphone state, active state, and Container ID.
 - Pairing is exact Container ID first, then hardware parent when available, then a cautious unique name match. The Windows default microphone is excluded from fallback pairing.
 - Selected video devices are activated through Media Foundation and opened through `MFCreateSourceReaderFromMediaSource`/`IMFSourceReader` on a background worker.
-- Native format negotiation prefers the Source Reader's current/default native mode when discoverable, then ranks directly supported uncompressed modes without broadcast-rate bias. It attempts candidates until one is accepted and preserves rational rate, interlace mode, and field order metadata. Direct extraction supports NV12, YUY2, UYVY, RGB32, and RGB24.
+- The capture-format selector presents Auto plus deduplicated directly supported native modes for the selected Windows device. It persists a mode key per device, reconnects immediately after a manual change, and clears stale media/results before reopening. An unavailable saved/manual candidate degrades safely to Auto.
+- Auto native negotiation ranks supported progressive modes by sensible native resolution, then native rational frame rate and pixel support; the Source Reader default is only a final tie-breaker. It attempts candidates until one is accepted and preserves rational rate, interlace mode, and field order metadata. Direct extraction supports NV12, YUY2, UYVY, RGB32, and RGB24.
 - Video samples use `IMFSample::GetSampleTime`; `MFSampleExtension_DeviceTimestamp` is preferred when supplied. The latter is represented in the shared Windows QPC/MFTIME 100 ns domain.
 - Native video buffers are sampled directly while locked into a bounded 320×180 luma image; full 1080 frame arrays are not retained in Core.
 - The matched endpoint is opened through shared-mode WASAPI. Float32 and 16-bit PCM mix formats are normalized to floats and delivered with `IAudioCaptureClient::GetBuffer` QPC timestamps. Discontinuity and timestamp-error flags are logged.
@@ -60,7 +62,7 @@ Updated: 2026-09-30
 - Container ID may be absent from either the video interface or endpoint property store. Name fallback deliberately prefers no audio over an unrelated microphone.
 - WASAPI uses the endpoint's shared-mode mix format, which might apply Windows audio processing. The timing remains endpoint QPC-based, but format/processing behavior needs capture-card testing.
 - The Media Foundation implementation intentionally keeps only downscaled luma in the rolling buffer. A future presentation path may retain a separate bounded native preview surface without changing Core.
-- Visual detection remains a lightweight global sparse-luma motion heuristic. It is fast and overridable but is not robust to every background or hand pose.
+- Visual detection uses a robust sparse-luma motion baseline and short-event scoring around the audio mark. It is deterministic, fast, and overridable, but is not robust to every background or hand pose.
 - The smoke script verifies a top-level window through Windows process/window APIs; it does not inspect the rendered visual content.
 
 ## Next hardware test checklist
