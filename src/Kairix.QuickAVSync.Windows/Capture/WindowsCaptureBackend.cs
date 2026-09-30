@@ -114,8 +114,10 @@ internal static class WindowsDeviceProperties
 
 public sealed class MediaFoundationCaptureSession : ICaptureSession
 {
+    private const int ValidationFrameCount = 3;
+    private static readonly TimeSpan ValidationTimeout = TimeSpan.FromSeconds(3);
     private readonly CaptureDeviceDescriptor _device; private readonly CaptureOpenOptions _options; private readonly DevicePairing _pairing; private readonly IDiagnosticSink _log;
-    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _emptySampleCount; private int _audioState; private SourceFormat _sourceFormat;
+    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _validationStreak; private int _emptySampleCount; private int _audioState; private SourceFormat _sourceFormat;
     private TaskCompletionSource _firstVideoSample = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public CaptureFormat CurrentFormat { get; private set; }
     public TimingQuality TimingQuality { get; private set; } = TimingQuality.StreamTimestamp;
@@ -129,6 +131,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     internal static MediaFoundationCaptureSession Open(CaptureDeviceDescriptor device, CaptureOpenOptions options, DevicePairing pairing, IDiagnosticSink log, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested(); IMFSourceReader? reader = null; IntPtr source = IntPtr.Zero;
+        log.Write("capture.coordinator", $"Trying Media Foundation for '{device.FriendlyName}'");
         log.Write("capture.open", $"Opening device name='{device.FriendlyName}' link='{device.Id}' container='{device.ContainerId ?? "unavailable"}'");
         var startupHr = MediaFoundationNative.MFStartup(0x00020070, 1); log.Write("capture.open", $"MFStartup {DescribeHr(startupHr)}"); startupHr.ThrowIfFailed();
         try
@@ -159,12 +162,12 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         if (_options.IncludeAudio && _pairing.Endpoint is not null) { _audioWorker = new(_pairing.Endpoint, _log); _audioWorker.AudioSampleReceived += ForwardAudio; _audioWorker.StatusChanged += ForwardStatus; _ = _audioWorker.StartAsync(_cts.Token); }
         try
         {
-            await _firstVideoSample.Task.WaitAsync(TimeSpan.FromSeconds(8), cancellationToken).ConfigureAwait(false);
+            await _firstVideoSample.Task.WaitAsync(ValidationTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            var message = $"No video frame with pixel data arrived within 8 seconds ({Volatile.Read(ref _emptySampleCount)} timestamp-only samples received).";
-            _log.Write("capture.first-sample", message); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, message)); throw new TimeoutException(message);
+            var message = $"Fewer than {ValidationFrameCount} video frames with pixel data arrived within {ValidationTimeout.TotalSeconds:0} seconds ({Volatile.Read(ref _temporalIndex)} payload, {Volatile.Read(ref _emptySampleCount)} timestamp-only).";
+            _log.Write("capture.first-sample", message); _log.Write("capture.coordinator", $"Media Foundation rejected for '{_device.FriendlyName}': {message}"); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, message)); throw new TimeoutException(message);
         }
     }
 
@@ -174,15 +177,17 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         if (status.Status == CaptureStatus.Running)
         {
             Volatile.Write(ref _audioState, 1);
-            if (_firstVideoSample.Task.IsCompletedSuccessfully) StatusChanged?.Invoke(this, new(CaptureStatus.Running, $"Video live — embedded audio: {_pairing.Endpoint?.FriendlyName}"));
+            if (_firstVideoSample.Task.IsCompletedSuccessfully) StatusChanged?.Invoke(this, new(CaptureStatus.Running, LiveStatus()));
             return;
         }
         if (status.Status == CaptureStatus.Failed)
         {
             Volatile.Write(ref _audioState, -1); _log.Write("capture.audio", $"Video capture remains independent of audio failure: {status.Message}");
-            if (_firstVideoSample.Task.IsCompletedSuccessfully) StatusChanged?.Invoke(this, new(CaptureStatus.Running, "Video live — embedded audio unavailable"));
+            if (_firstVideoSample.Task.IsCompletedSuccessfully) StatusChanged?.Invoke(this, new(CaptureStatus.Running, LiveStatus()));
         }
     }
+
+    private string LiveStatus() => WindowsCaptureReadiness.Describe(_firstVideoSample.Task.IsCompletedSuccessfully, _pairing.Endpoint is not null, Volatile.Read(ref _audioState) > 0, Volatile.Read(ref _audioState) < 0, TimingQuality);
 
     private void ReadLoop(CancellationToken cancellationToken)
     {
@@ -207,6 +212,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                     bufferCountHr.ThrowIfFailed();
                     if (bufferCount == 0)
                     {
+                        Volatile.Write(ref _validationStreak, 0);
                         var emptyCount = Interlocked.Increment(ref _emptySampleCount);
                         if (emptyCount == 1 || emptyCount % 250 == 0) _log.Write("capture.sample", $"Media Foundation delivered timestamp-only samples without video data; count={emptyCount}");
                         continue;
@@ -231,13 +237,18 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                         }
                         var luma = ExtractAnalysisLuma(buffer, _sourceFormat, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight);
                         var sampleNumber = Interlocked.Increment(ref _temporalIndex);
+                        var validationStreak = Interlocked.Increment(ref _validationStreak);
                         VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, luma, sampleNumber, Stride: _options.PreferredAnalysisWidth));
                         if (sampleNumber == 1)
                         {
                             _log.Write("capture.first-sample", $"Video payload received timestamp={timestamp.Ticks100ns} raw={timestamp.RawValue?.ToString() ?? "unavailable"} deviceTimestamp={(deviceTime is null ? "unavailable" : "available")} format='{CurrentFormat.Display}'");
+                        }
+                        if (validationStreak == ValidationFrameCount && !_firstVideoSample.Task.IsCompleted)
+                        {
                             _firstVideoSample.TrySetResult();
-                            var message = _pairing.Endpoint is null ? "Video live — embedded audio not found" : Volatile.Read(ref _audioState) < 0 ? "Video live — embedded audio unavailable" : $"Video live — embedded audio: {_pairing.Endpoint.FriendlyName}";
-                            StatusChanged?.Invoke(this, new(CaptureStatus.Running, message));
+                            _log.Write("capture.validation", $"Media Foundation accepted after {ValidationFrameCount} consecutive payload-bearing frames");
+                            _log.Write("capture.coordinator", $"Media Foundation accepted for '{_device.FriendlyName}'");
+                            StatusChanged?.Invoke(this, new(CaptureStatus.Running, LiveStatus()));
                         }
                         else if (sampleNumber % 250 == 0) _log.Write("capture.samples", $"delivered={sampleNumber} latestTimestamp={timestamp.Ticks100ns}");
                     }
@@ -302,18 +313,29 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
 
     private static (IMFMediaType MediaType, CaptureFormat Format, SourceFormat Source) SelectAndSetFormat(IMFSourceReader reader, IDiagnosticSink log)
     {
-        var candidates = new List<(int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)>();
+        (CaptureFormat Format, SourceFormat Source)? current = null;
+        var currentHr = reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var currentType);
+        if (currentHr >= 0)
+        {
+            try { current = ParseFormat(currentType); log.Write("capture.current-format", $"Source Reader default/current native type: {Describe(current.Value.Format, current.Value.Source)}"); }
+            catch (Exception ex) { log.Write("capture.current-format", $"Default/current type is not directly supported: {ex.Message}"); }
+            finally { Marshal.ReleaseComObject(currentType); }
+        }
+        else log.Write("capture.current-format", $"GetCurrentMediaType {DescribeHr(currentHr)}; ranking native capabilities without a current-mode hint");
+        var candidates = new List<(int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)>(); var suppressedFormats = 0; var nativeTypeCount = 0;
         for (var i = 0; ; i++)
         {
             var hr = reader.GetNativeMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, i, out var type); if (hr == MediaFoundationNative.NoMoreTypes) break; hr.ThrowIfFailed();
-            try { var parsed = ParseFormat(type); candidates.Add((i, type, parsed.Format, parsed.Source)); log.Write("capture.native-format", $"index={i} supported=true {Describe(parsed.Format, parsed.Source)}"); }
-            catch (Exception ex) { log.Write("capture.native-format", $"index={i} supported=false subtype='{type.TryGetGuid(MfGuids.Subtype)?.ToString() ?? "unavailable"}' reason='{ex.Message}'"); Marshal.ReleaseComObject(type); }
+            nativeTypeCount++;
+            try { var parsed = ParseFormat(type); candidates.Add((i, type, parsed.Format, parsed.Source)); if (i < 40) log.Write("capture.native-format", $"index={i} supported=true {Describe(parsed.Format, parsed.Source)}"); else suppressedFormats++; }
+            catch (Exception ex) { if (i < 40) log.Write("capture.native-format", $"index={i} supported=false subtype='{type.TryGetGuid(MfGuids.Subtype)?.ToString() ?? "unavailable"}' reason='{ex.Message}'"); else suppressedFormats++; Marshal.ReleaseComObject(type); }
         }
+        if (suppressedFormats > 0) log.Write("capture.native-format", $"suppressed={suppressedFormats} additional native media-type entries; total={nativeTypeCount} supported={candidates.Count}");
         if (candidates.Count == 0) throw new InvalidOperationException("Capture device reported no usable video media types.");
         (int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)? chosen = null;
         try
         {
-            var ranked = WindowsNativeFormatRanker.Rank(candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat)));
+            var ranked = WindowsNativeFormatRanker.Rank(candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))));
             foreach (var rankedCandidate in ranked)
             {
                 var candidate = candidates.First(item => item.Index == rankedCandidate.NativeIndex);
@@ -335,6 +357,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     }
 
     private static string Describe(CaptureFormat format, SourceFormat source) => $"{format.Width}x{format.Height} rate={format.FrameRate} subtype={source.PixelFormat} scan={format.ScanMode} field={format.FieldOrder} stride={source.Stride}";
+    private static bool SameVideoMode(CaptureFormat left, SourceFormat leftSource, CaptureFormat right, SourceFormat rightSource) => left.Width == right.Width && left.Height == right.Height && left.FrameRate == right.FrameRate && left.ScanMode == right.ScanMode && leftSource.PixelFormat == rightSource.PixelFormat;
     private static string DescribeHr(int hr) => $"HRESULT=0x{hr:X8} ({(hr >= 0 ? "S_OK" : Marshal.GetExceptionForHR(hr)?.Message ?? "unknown")})";
 
     private static (CaptureFormat Format, SourceFormat Source) ParseFormat(IMFMediaType type)
