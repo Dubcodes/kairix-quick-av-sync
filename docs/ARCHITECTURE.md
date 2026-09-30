@@ -31,7 +31,7 @@ Portable engine with no Windows Desktop dependency:
 - deterministic synthetic backend and known-offset fixtures;
 - analysis-generation guard for stale-result rejection.
 
-Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts only analysis-size luma before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames.
+Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts analysis-size luma plus a separate 160×90 BGRA presentation image before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames. Luma alone is consumed by automatic visual analysis.
 
 ### `Kairix.QuickAVSync.Windows` (`net10.0-windows`)
 
@@ -51,7 +51,7 @@ Views, custom waveform/sync controls, commands, presentation state, WPF image co
 
 ```text
 ICaptureSession
-  ├─ VideoFrame (small owned luma + timestamp/domain)
+  ├─ VideoFrame (small owned luma + bounded BGRA presentation + timestamp/domain)
   │      ├─ bounded rolling buffer
   │      ├─ coalesced latest preview
   │      └─ cancellable work-window visual analysis

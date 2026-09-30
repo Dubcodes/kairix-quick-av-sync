@@ -40,12 +40,12 @@ public sealed record CaptureFormat(
     Rational FrameRate,
     ScanMode ScanMode,
     FieldOrder FieldOrder,
-    int AudioSampleRate = 48000,
+    int AudioSampleRate = 0,
     VideoPixelFormat PixelFormat = VideoPixelFormat.Luma8)
 {
     public TimeSpan TemporalImageDuration => ScanMode == ScanMode.Interlaced
         ? TimeSpan.FromTicks(FrameRate.FrameDuration.Ticks / 2) : FrameRate.FrameDuration;
-    public string Display => $"{Width}×{Height} · {FrameRate.Value:0.##}{(ScanMode == ScanMode.Interlaced ? "i" : "p")}{(AudioSampleRate > 0 ? $" · {AudioSampleRate / 1000} kHz" : " · video only")}";
+    public string Display => $"{Width}×{Height} · {FrameRate.Value:0.##}{(ScanMode == ScanMode.Interlaced ? "i" : "p")}{(AudioSampleRate > 0 ? $" · audio {AudioSampleRate / 1000} kHz" : "")}";
 }
 
 public readonly record struct MediaTimestamp(
@@ -62,7 +62,7 @@ public readonly record struct MediaTimestamp(
 }
 
 // Arrays are safely owned by the sample and must not be mutated after publication.
-// Native backends should downscale/extract luma before crossing this boundary.
+// Luma drives analysis; the optional bounded BGRA presentation buffer is UI-only.
 public sealed record VideoFrame(
     MediaTimestamp Timestamp,
     int Width,
@@ -72,9 +72,15 @@ public sealed record VideoFrame(
     bool IsField = false,
     bool TopField = false,
     int Stride = 0,
-    VideoPixelFormat PixelFormat = VideoPixelFormat.Luma8)
+    VideoPixelFormat PixelFormat = VideoPixelFormat.Luma8,
+    byte[]? PresentationBgra = null,
+    int PresentationWidth = 0,
+    int PresentationHeight = 0,
+    int PresentationStride = 0)
 {
     public int EffectiveStride => Stride > 0 ? Stride : Width;
+    public bool HasPresentation => PresentationBgra is { Length: > 0 } && PresentationWidth > 0 && PresentationHeight > 0;
+    public int EffectivePresentationStride => PresentationStride > 0 ? PresentationStride : PresentationWidth * 4;
 }
 
 public sealed record AudioChunk(
@@ -123,7 +129,7 @@ public sealed record CaptureFormatOption(string Id, string Display, CaptureForma
     public override string ToString() => Display;
 }
 
-public sealed record CaptureOpenOptions(int PreferredAnalysisWidth = 320, int PreferredAnalysisHeight = 180, bool IncludeAudio = true, string? PreferredNativeFormatId = null);
+public sealed record CaptureOpenOptions(int PreferredAnalysisWidth = 320, int PreferredAnalysisHeight = 180, bool IncludeAudio = true, string? PreferredNativeFormatId = null, int PreferredPresentationWidth = 160, int PreferredPresentationHeight = 90);
 public sealed record CaptureStatusChangedEventArgs(CaptureStatus Status, string Message, Exception? Error = null);
 
 public sealed record SyncResult(double SignedMilliseconds, string Wording, bool TimingComparable = true)

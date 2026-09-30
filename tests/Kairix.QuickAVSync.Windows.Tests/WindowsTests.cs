@@ -113,6 +113,12 @@ public sealed class CaptureReadinessTests
     [Fact] public void AudioFailureDoesNotMarkVideoFailed() => Assert.Equal("Video live — embedded audio unavailable", WindowsCaptureReadiness.Describe(true, true, false, true, TimingQuality.DeviceHardware));
 }
 
+public sealed class ColourConversionTests
+{
+    [Fact] public void NeutralYuvProducesNeutralBgr() { WindowsColorConversion.YuvToBgr(128, 128, 128, out var blue, out var green, out var red); Assert.InRange(blue, 128, 132); Assert.InRange(green, 128, 132); Assert.InRange(red, 128, 132); }
+    [Fact] public void RedYuvDoesNotSwapRedAndBlue() { WindowsColorConversion.YuvToBgr(81, 90, 240, out var blue, out var green, out var red); Assert.InRange(red, 240, 255); Assert.InRange(green, 0, 20); Assert.InRange(blue, 0, 20); }
+}
+
 public sealed class MediaFoundationInteropContractTests
 {
     [Fact]

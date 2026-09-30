@@ -24,6 +24,8 @@ public sealed class TimingModelTests
 {
     [Theory] [InlineData(25, 1, 40)] [InlineData(50, 1, 20)] [InlineData(30000, 1001, 33.3667)] [InlineData(60000, 1001, 16.6833)] public void RationalFrameRates(int n, int d, double expectedMs) => Assert.Equal(expectedMs, Rational.From(n, d).FrameDuration.TotalMilliseconds, .001);
     [Fact] public void InterlacedHasHalfFrameCadence() { var f = new CaptureFormat(1920, 1080, Rational.From(25), ScanMode.Interlaced, FieldOrder.TopFirst); Assert.Equal(20, f.TemporalImageDuration.TotalMilliseconds); }
+    [Fact] public void FiftyProgressiveFramesHaveTwentyMillisecondTemporalResolution() => Assert.Equal(20, new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown).TemporalImageDuration.TotalMilliseconds);
+    [Fact] public void VideoFormatDoesNotClaimAudioBeforeItIsMeasured() => Assert.DoesNotContain("audio", new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown).Display, StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class TransientDetectorTests
@@ -43,6 +45,8 @@ public sealed class WorkWindowWaveformAndHistoryTests
     [Fact] public void SelectsSymmetricWindow() { var frames = Enumerable.Range(-5, 11).Select(i => new VideoFrame(new(i * 100_000, TimingQuality.StreamTimestamp), 1, 1, [0], i)).ToArray(); var selected = WorkWindowSelector.Around(frames, f => f.Timestamp, new(0, TimingQuality.StreamTimestamp), TimeSpan.FromMilliseconds(20)); Assert.Equal([-2, -1, 0, 1, 2], selected.Select(f => f.TemporalIndex)); }
     [Fact] public void WaveformPlacesImpulseNearCenter() { var samples = new float[480]; samples[240] = 1; var center = new MediaTimestamp(50_000, TimingQuality.StreamTimestamp); var chunk = new AudioChunk(new(0, TimingQuality.StreamTimestamp), samples, 48000, 1); var wave = new WaveformBuilder().Build([chunk], center, TimeSpan.FromMilliseconds(5), 100); Assert.InRange(Array.IndexOf(wave.ToArray(), wave.Max()), 49, 51); }
     [Fact] public void HistoryKeepsOnlyLatest() { var h = new SessionHistoryService(3); for (var i = 0; i < 5; i++) h.Add(new(DateTime.MinValue.AddSeconds(i), new(i, i.ToString()), null)); Assert.Equal([4d, 3d, 2d], h.Items.Select(x => x.Result.SignedMilliseconds)); }
+    [Fact] public void TimelineMapsClickToNearestRealFrameWithoutChangingMarks() { var frames = Enumerable.Range(-2, 5).Select(i => new VideoFrame(new(i * 200_000, TimingQuality.StreamTimestamp), 1, 1, [0], i)).ToArray(); Assert.Equal(3, ReviewTimeline.NearestFrameIndex(frames, new(0, TimingQuality.StreamTimestamp), 21)); }
+    [Fact] public void HoldGateRequiresAutoDetectAndNoHold() { Assert.True(ReviewTimeline.AcceptsAutomaticEvents(true, false)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, true)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(false, false)); }
 }
 
 public sealed class VisualDetectorTests
@@ -50,6 +54,9 @@ public sealed class VisualDetectorTests
     [Fact] public async Task NoMotionHasNoCandidate() { var f = Frames(false); Assert.Null(await new MotionVisualClapDetector().DetectAsync(f, f[5].Timestamp, default)); }
     [Fact] public async Task ContactSequenceSelectsNearExpected() { var f = Frames(true); var c = await new MotionVisualClapDetector().DetectAsync(f, f[5].Timestamp, default); Assert.NotNull(c); Assert.InRange(c!.TemporalIndex, 3, 7); }
     [Fact] public async Task ContinuousBackgroundMotionDoesNotBecomeAClap() { var frames = Enumerable.Range(0, 12).Select(i => new VideoFrame(new(i * 100_000, TimingQuality.StreamTimestamp), 32, 18, Enumerable.Repeat((byte)(20 + i * 4), 32 * 18).ToArray(), i)).ToArray(); Assert.Null(await new MotionVisualClapDetector().DetectAsync(frames, frames[6].Timestamp, default)); }
+    [Fact] public async Task BriefGlobalBrightnessFlashIsRejected() { var frames = Enumerable.Range(0, 11).Select(i => new VideoFrame(new(i * 100_000, TimingQuality.StreamTimestamp), 64, 36, Enumerable.Repeat((byte)(i == 5 ? 220 : 30), 64 * 36).ToArray(), i)).ToArray(); Assert.Null(await new MotionVisualClapDetector().DetectAsync(frames, frames[5].Timestamp, default)); }
+    [Fact] public async Task SmallLocalizedContactStillFindsCandidate() { var frames = Enumerable.Range(0, 11).Select(i => { var pixels = Enumerable.Repeat((byte)35, 80 * 48).ToArray(); if (i == 5) Array.Fill(pixels, (byte)235, 1_720, 180); return new VideoFrame(new(i * 100_000, TimingQuality.StreamTimestamp), 80, 48, pixels, i); }).ToArray(); var candidate = await new MotionVisualClapDetector().DetectAsync(frames, frames[5].Timestamp, default); Assert.NotNull(candidate); Assert.Equal(5, candidate!.TemporalIndex); }
+    [Fact] public void SyntheticFramesCarryBoundedColourPresentation() { var frame = SyntheticCaptureSession.CreateFrame(TimeSpan.Zero, 1, 0); Assert.True(frame.HasPresentation); Assert.Equal(160 * 90 * 4, frame.PresentationBgra!.Length); Assert.Equal(320 * 180, frame.Luma.Length); }
     private static VideoFrame[] Frames(bool contact) => Enumerable.Range(0, 11).Select(i => { var pixels = new byte[64 * 36]; if (contact && i is >= 4 and <= 6) Array.Fill(pixels, (byte)(i == 5 ? 240 : 100), 800, 500); return new VideoFrame(new(i * 100_000, TimingQuality.StreamTimestamp), 64, 36, pixels, i); }).ToArray();
 }
 

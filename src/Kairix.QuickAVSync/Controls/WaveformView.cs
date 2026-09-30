@@ -18,8 +18,48 @@ public sealed class WaveformView : FrameworkElement
     public double? AutoVisualMs { get => (double?)GetValue(AutoVisualMsProperty); set => SetValue(AutoVisualMsProperty, value); }
     public double? VisualMarkerMs { get => (double?)GetValue(VisualMarkerMsProperty); set => SetValue(VisualMarkerMsProperty, value); }
     public double PlayheadMs { get => (double)GetValue(PlayheadMsProperty); set => SetValue(PlayheadMsProperty, value); }
-    public event EventHandler<double>? AudioPointSelected;
-    public WaveformView() { Cursor = Cursors.Cross; MouseLeftButtonDown += (_, e) => AudioPointSelected?.Invoke(this, XToMs(e.GetPosition(this).X)); }
+    public event EventHandler<double>? PlayheadSelected;
+    public event EventHandler<double>? AudioPointCommitted;
+    public event EventHandler<int>? FrameStepRequested;
+    private bool _scrubbing, _draggingAudio;
+    private double _pendingAudioMs;
+
+    public WaveformView()
+    {
+        Cursor = Cursors.Cross;
+        MouseLeftButtonDown += OnMouseLeftButtonDown;
+        MouseMove += OnMouseMove;
+        MouseLeftButtonUp += OnMouseLeftButtonUp;
+        MouseWheel += OnMouseWheel;
+    }
+
+    private void OnMouseLeftButtonDown(object? sender, MouseButtonEventArgs e)
+    {
+        var position = e.GetPosition(this); _draggingAudio = Math.Abs(position.X - MsToX(AudioMarkerMs)) <= 10;
+        _scrubbing = !_draggingAudio; _pendingAudioMs = XToMs(position.X); CaptureMouse();
+        if (_scrubbing) PlayheadSelected?.Invoke(this, _pendingAudioMs); else InvalidateVisual();
+        e.Handled = true;
+    }
+
+    private void OnMouseMove(object? sender, MouseEventArgs e)
+    {
+        if (!IsMouseCaptured) return; var milliseconds = XToMs(e.GetPosition(this).X);
+        if (_scrubbing) PlayheadSelected?.Invoke(this, milliseconds);
+        else if (_draggingAudio) { _pendingAudioMs = milliseconds; InvalidateVisual(); }
+    }
+
+    private void OnMouseLeftButtonUp(object? sender, MouseButtonEventArgs e)
+    {
+        if (!IsMouseCaptured) return; var milliseconds = XToMs(e.GetPosition(this).X); ReleaseMouseCapture();
+        if (_draggingAudio) { _draggingAudio = false; AudioPointCommitted?.Invoke(this, milliseconds); InvalidateVisual(); }
+        else if (_scrubbing) PlayheadSelected?.Invoke(this, milliseconds);
+        _scrubbing = false; e.Handled = true;
+    }
+
+    private void OnMouseWheel(object? sender, MouseWheelEventArgs e)
+    {
+        FrameStepRequested?.Invoke(this, e.Delta > 0 ? -1 : 1); e.Handled = true;
+    }
     private double MsToX(double ms) => ActualWidth * (.5 + ms / (HalfWindowMs * 2));
     private double XToMs(double x) => (x / Math.Max(1, ActualWidth) - .5) * HalfWindowMs * 2;
     protected override void OnRender(DrawingContext dc)
@@ -37,7 +77,7 @@ public sealed class WaveformView : FrameworkElement
             var pen = new Pen(new SolidColorBrush(Color.FromRgb(91, 209, 191)), 1.2); var mid = (ActualHeight - 18 + 22) / 2;
             for (var i = 1; i < Samples.Count; i++) dc.DrawLine(pen, new((i - 1d) / (Samples.Count - 1) * ActualWidth, mid - Samples[i - 1] * (mid - 26)), new(i / (double)(Samples.Count - 1) * ActualWidth, mid - Samples[i] * (mid - 26)));
         }
-        Marker(dc, AudioMarkerMs, Color.FromRgb(250, 204, 74), 2.5, "AUDIO");
+        Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, Color.FromRgb(250, 204, 74), 2.5, "AUDIO");
         if (AutoVisualMs is { } auto) Marker(dc, auto, Color.FromRgb(105, 164, 255), 1.5, "AUTO");
         if (VisualMarkerMs is { } visual) Marker(dc, visual, Color.FromRgb(255, 111, 107), 2.5, "VISUAL");
         Marker(dc, PlayheadMs, Colors.White, 1, "PLAYHEAD");

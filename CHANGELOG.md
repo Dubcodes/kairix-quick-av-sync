@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Changed review timeline interaction: click/drag now scrub only between captured temporal images, wheel/keyboard share the same playhead, and Audio Zero changes only by yellow-marker drag release or the `A` shortcut. Hold is now a non-persistent latch instead of a press-and-hold action.
+- Added bounded colour presentation alongside luma analysis: 160×90 BGRA preview/review/thumbnail buffers are derived from supported native formats while the detector remains luma-only. Added spatial block evidence to visual-clap scoring and rejection for uniform brightness flashes.
+- Clarified that displayed format is the negotiated capture mode, not inferred input-signal cadence. Added metadata-only hardware-probe support for an explicit native mode request.
 - Prepared the public Windows prerelease path: `main`-only Windows CI, tag-driven self-contained x64 packaging/release automation, and a completed MIT copyright holder.
 - Added a per-device capture-format selector with `Auto` plus deduplicated native modes. Selecting a mode persists only its stable native mode key, immediately clears stale media/results, and reconnects; unavailable saved modes fall back safely to Auto.
 - Auto native-format policy now prefers supported progressive modes by sensible native resolution and native rational frame rate, using the driver default only as a final tie-breaker. This prevents a C920-style 640×480 default from winning over a working 1080p30 native mode. Manual mode attempts first and then falls back through Auto-ranked candidates if the driver refuses it.

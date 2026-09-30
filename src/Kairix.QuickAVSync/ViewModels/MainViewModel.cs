@@ -117,7 +117,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public double SyncValue => CurrentResult is { TimingComparable: true } result ? result.SignedMilliseconds : 0;
     public string ConfidenceText => _autoCandidate is null ? "No visual candidate" : $"{_autoCandidate.Confidence:P0} confidence · {AutoVisualMs:+0;-0;0} ms";
     public string ReviewPosition => !_isReview || _reviewFrames.Count == 0 ? "LIVE" : $"{_playheadIndex + 1} / {_reviewFrames.Count} · {PlayheadMs:+0.0;-0.0;0} ms";
-    public bool IsHold { get => _isHold; set { if (Set(ref _isHold, value)) Status = value ? "HOLD — CAPTURE CONTINUES" : (_isReview ? "REVIEW" : "READY TO CLAP"); } }
+    // Hold is session-only and must never overwrite the capture readiness state.
+    public bool IsHold { get => _isHold; set => Set(ref _isHold, value); }
     public string LogPath => _log.Path;
 
     public async Task InitializeAsync() { await RefreshDevicesAsync(); if (SelectedDevice is not null) await RefreshCaptureFormatsAsync(SelectedDevice); UpdateMemory(); _memoryTimer.Start(); await ReconnectAsync(); }
@@ -165,7 +166,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         try
         {
             _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: SelectedCaptureFormat?.Id), CancellationToken.None); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
-            await _capture.StartAsync(CancellationToken.None); FormatText = _capture.CurrentFormat.Display; TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
+            await _capture.StartAsync(CancellationToken.None); FormatText = $"Capture mode: {_capture.CurrentFormat.Display}"; TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
         }
         catch (Exception ex) { Status = "CAPTURE OPEN FAILED"; TimingText = "TIMING UNAVAILABLE"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); }
         }
@@ -193,13 +194,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var latest = Interlocked.Exchange(ref _pendingPreview, null); if (latest is not null && !_isReview) VideoImage = latest;
             Interlocked.Exchange(ref _previewScheduled, 0);
             var newer = Interlocked.Exchange(ref _pendingPreview, null); if (newer is not null) ScheduleLatestPreview(newer);
-            if (_capture is not null) TimingText = DescribeTiming(_capture.TimingQuality);
+            if (_capture is not null)
+            {
+                TimingText = DescribeTiming(_capture.TimingQuality);
+                var format = $"Capture mode: {_capture.CurrentFormat.Display}";
+                if (FormatText != format) FormatText = format;
+            }
         }, DispatcherPriority.Render);
     }
 
     private void OnAudio(object? sender, AudioChunk chunk)
     {
-        _audio.Add(chunk); if (!AutoDetect || IsHold) return;
+        _audio.Add(chunk); if (!ReviewTimeline.AcceptsAutomaticEvents(AutoDetect, IsHold)) return;
         foreach (var transient in _transientDetector.Process(chunk))
         {
             _log.Write($"Transient detected at {transient.Timestamp.Ticks100ns}; peak {transient.Peak:0.000}");
@@ -245,6 +251,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (_audioMark is null) return; _audioMark = new(_audioMark.Value.Ticks100ns + (long)(relativeMs * 10_000), _audioMark.Value.Quality, _audioMark.Value.ClockDomain, _audioMark.Value.RawValue); _manualVisual = null; _autoCandidate = null; NotifyMarkers(); StartEvent(_audioMark.Value, true);
         _log.Write($"Manual audio correction {relativeMs:+0.0;-0.0;0} ms");
     }
+    public void MovePlayheadTo(double relativeMs)
+    {
+        if (_audioMark is null || _reviewFrames.Count == 0) return;
+        _playheadIndex = ReviewTimeline.NearestFrameIndex(_reviewFrames, _audioMark.Value, relativeMs); ShowPlayhead(); NotifyMarkers();
+    }
     private async Task BuildEventSnapshotAsync(long generation)
     {
         if (_audioMark is null) return; var mark = _audioMark.Value; var half = TimeSpan.FromMilliseconds(WorkWindowMilliseconds); var videoSnapshot = _video.Snapshot(); var audioSnapshot = _audio.Snapshot();
@@ -255,8 +266,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         });
         if (!_analysisGeneration.IsCurrent(generation) || _audioMark != mark) return; _reviewFrames = built.Frames; _playheadIndex = _reviewFrames.Count == 0 ? 0 : FindNearest(_reviewFrames, mark); Waveform = built.Waveform; ShowPlayhead();
     }
-    private static int FindNearest(IReadOnlyList<VideoFrame> frames, MediaTimestamp mark) => Enumerable.Range(0, frames.Count).MinBy(i => Math.Abs(frames[i].Timestamp.Ticks100ns - mark.Ticks100ns));
+    private static int FindNearest(IReadOnlyList<VideoFrame> frames, MediaTimestamp mark) => ReviewTimeline.NearestFrameIndex(frames, mark, 0);
     private void Step(int amount) { if (_reviewFrames.Count == 0) return; _playheadIndex = Math.Clamp(_playheadIndex + amount, 0, _reviewFrames.Count - 1); ShowPlayhead(); NotifyMarkers(); }
+    public void StepTimeline(int amount) => Step(amount);
     public void StepCoarse(int direction) => Step(direction * 5);
     public void MarkAudioAtPlayhead() { if (_audioMark is not null && _reviewFrames.Count > 0) SelectAudioPoint(PlayheadMs); }
     private void MarkVisual() { if (_reviewFrames.Count == 0) return; _manualVisual = _reviewFrames[_playheadIndex].Timestamp; _log.Write($"Manual visual mark {_manualVisual.Value.Ticks100ns}"); NotifyMarkers(); }
@@ -265,7 +277,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void ResumeLive() { _analysisGeneration.Next(); _analysisCts?.Cancel(); if (_audioMark is not null && CurrentResult is not null) AddHistory(); _isReview = false; _audioMark = null; _manualVisual = null; _autoCandidate = null; Waveform = []; AutoThumbnail = null; Status = "READY TO CLAP"; NotifyMarkers(); }
     private void AddHistory() { if (CurrentResult is not { TimingComparable: true } result) return; _history.Add(new(DateTime.Now, result, _autoCandidate?.Confidence)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item); }
     private void NotifyMarkers() { Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(ResultText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(ReviewPosition)); }
-    private static BitmapSource ToBitmap(VideoFrame frame) { var bitmap = BitmapSource.Create(frame.Width, frame.Height, 96, 96, PixelFormats.Gray8, null, frame.Luma, frame.Width); bitmap.Freeze(); return bitmap; }
+    private static BitmapSource ToBitmap(VideoFrame frame)
+    {
+        var bitmap = frame.HasPresentation
+            ? BitmapSource.Create(frame.PresentationWidth, frame.PresentationHeight, 96, 96, PixelFormats.Bgra32, null, frame.PresentationBgra!, frame.EffectivePresentationStride)
+            : BitmapSource.Create(frame.Width, frame.Height, 96, 96, PixelFormats.Gray8, null, frame.Luma, frame.Width);
+        bitmap.Freeze(); return bitmap;
+    }
     private void ResizeBuffers() { _video.Resize(Math.Max(50, (int)(RollingBufferSeconds * 60))); _audio.Resize(Math.Max(50, (int)(RollingBufferSeconds * 60))); }
     private void UpdateMemory() { var m = _memoryService.Get(); if (m.TotalBytes == 0) return; SystemFraction = m.SystemUsedBytes / (double)m.TotalBytes; AppFraction = m.ProcessBytes / (double)m.TotalBytes; AvailableFraction = m.AvailableBytes / (double)m.TotalBytes; MemoryText = $"System: {Gb(m.SystemUsedBytes):0.0} GB   Kairix: {Gb((ulong)m.ProcessBytes):0.00} GB   Available: {Gb(m.AvailableBytes):0.0} GB"; }
     private static double Gb(ulong bytes) => bytes / 1024d / 1024 / 1024;

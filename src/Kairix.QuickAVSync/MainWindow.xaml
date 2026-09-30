@@ -30,12 +30,12 @@
           <StackPanel Grid.Column="1"><TextBlock Text="AUTO SPIKE" FontSize="9" Foreground="#8FA2B5"/><ToggleButton Content="OFF" IsChecked="{Binding AutoSpike}"/></StackPanel>
           <StackPanel Grid.Column="2"><TextBlock Text="AUTO VISUAL" FontSize="9" Foreground="#8FA2B5"/><ToggleButton Content="OFF" IsChecked="{Binding AutoVisual}"/></StackPanel>
         </Grid>
-        <Button Content="HOLD AUTO DETECT (H)" PreviewMouseLeftButtonDown="Hold_Down" PreviewMouseLeftButtonUp="Hold_Up" Background="#6B4B19" Margin="0,3,0,9"/>
+        <StackPanel><TextBlock Text="HOLD AUTO DETECT (H)" FontSize="9" Foreground="#8FA2B5"/><ToggleButton Content="OFF" IsChecked="{Binding IsHold}" Background="#6B4B19" ToolTip="Toggle automatic-event hold. Capture and buffering continue."/></StackPanel>
         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="ROLLING BUFFER (s)" Style="{StaticResource Label}"/><TextBox Text="{Binding RollingBufferSeconds, UpdateSourceTrigger=LostFocus}"/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="WORK WINDOW (±ms)" Style="{StaticResource Label}"/><TextBox Text="{Binding WorkWindowMilliseconds, UpdateSourceTrigger=LostFocus}"/></StackPanel></Grid>
         <TextBlock Text="RAM" Style="{StaticResource Label}"/><ProgressBar Value="{Binding SystemFraction, Mode=OneWay}" Maximum="1" Height="13" Background="#15202B" Foreground="#536579"/><TextBlock Text="{Binding MemoryText}" FontSize="10" Foreground="#AAB8C7" Margin="0,4,0,8"/>
         <TextBlock Text="AUTO VISUAL" Style="{StaticResource Label}"/><Button Command="{Binding JumpAutoCommand}" Padding="0" BorderThickness="0" ToolTip="Jump to the automatic visual candidate"><Grid Height="92" Background="#0B1118"><TextBlock Text="NO CANDIDATE" Foreground="#68798B" HorizontalAlignment="Center" VerticalAlignment="Center"/><Image Source="{Binding AutoThumbnail}" Stretch="Uniform"/></Grid></Button>
         <TextBlock Text="{Binding ConfidenceText}" FontSize="11" HorizontalAlignment="Center" Margin="0,2,0,9"/><Button Content="MANUAL CLAP  ·  SPACE" Command="{Binding ManualClapCommand}" Background="#126B61" FontWeight="SemiBold"/>
-        <TextBlock Text="←/→ step   Enter visual   A audio   R live   F5 reconnect" Foreground="#788B9E" FontSize="10" Margin="0,3,0,6"/><Button Content="☕  Buy me a coffee" Command="{Binding CoffeeCommand}" Opacity="0.48" FontSize="11" ToolTip="Buy me a coffee"/>
+        <TextBlock Text="H toggle · ←/→ step · Enter visual · A audio · R live · F5 reconnect" Foreground="#788B9E" FontSize="10" Margin="0,3,0,6"/><Button Content="☕  Buy me a coffee" Command="{Binding CoffeeCommand}" Opacity="0.48" FontSize="11" ToolTip="Buy me a coffee"/>
       </StackPanel></ScrollViewer>
     </Border>
     <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,10,10" Padding="0">
@@ -48,7 +48,7 @@
       <TextBlock Text="Session only · no media or results are saved" Foreground="#667A8E" FontSize="10" Margin="0,8,0,0"/>
     </StackPanel></Border>
     <Border Grid.Row="1" Grid.ColumnSpan="3" Style="{StaticResource Card}" Padding="14"><Grid><Grid.RowDefinitions><RowDefinition Height="145"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-      <controls:WaveformView x:Name="Waveform" Samples="{Binding Waveform}" HalfWindowMs="{Binding HalfWindow}" AudioMarkerMs="{Binding AudioMarkerMs}" AutoVisualMs="{Binding AutoVisualMs}" VisualMarkerMs="{Binding VisualMarkerMs}" PlayheadMs="{Binding PlayheadMs}" AudioPointSelected="Waveform_AudioPointSelected"/>
+      <controls:WaveformView x:Name="Waveform" Samples="{Binding Waveform}" HalfWindowMs="{Binding HalfWindow}" AudioMarkerMs="{Binding AudioMarkerMs}" AutoVisualMs="{Binding AutoVisualMs}" VisualMarkerMs="{Binding VisualMarkerMs}" PlayheadMs="{Binding PlayheadMs}" PlayheadSelected="Waveform_PlayheadSelected" AudioPointCommitted="Waveform_AudioPointCommitted" FrameStepRequested="Waveform_FrameStepRequested"/>
       <Grid Grid.Row="1" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="350"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><controls:SyncBar Grid.Column="0" Grid.ColumnSpan="3" Value="{Binding SyncValue}" Height="50" Margin="10,0"/><Border Grid.Column="1" Background="#EA121C27" CornerRadius="5" Padding="8,3" VerticalAlignment="Center"><TextBlock Text="{Binding ResultText}" HorizontalAlignment="Center" FontWeight="Bold" FontSize="15"/></Border></Grid>
     </Grid></Border>
   </Grid>

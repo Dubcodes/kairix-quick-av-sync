@@ -51,16 +51,25 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICapt
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         finally { StatusChanged?.Invoke(this, new(CaptureStatus.Stopped, "Synthetic source stopped")); }
     }
-    internal static VideoFrame CreateFrame(TimeSpan now, double visualClapSeconds, int frame)
+    public static VideoFrame CreateFrame(TimeSpan now, double visualClapSeconds, int frame)
     {
-        const int width = 320, height = 180; var luma = new byte[width * height]; var distance = Math.Abs(now.TotalSeconds - visualClapSeconds);
+        const int width = 320, height = 180, presentationWidth = 160, presentationHeight = 90; var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var distance = Math.Abs(now.TotalSeconds - visualClapSeconds);
         for (var y = 0; y < height; y++) for (var x = 0; x < width; x++)
         {
             var background = 22 + x * 22 / width + y * 12 / height;
             var hands = distance < .18 && Math.Abs(x - width / 2) < (int)(12 + distance * 350) && Math.Abs(y - height / 2) < 34;
             luma[y * width + x] = (byte)(hands ? 205 : background);
         }
-        return new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, luma, frame, Stride: width);
+        for (var y = 0; y < presentationHeight; y++) for (var x = 0; x < presentationWidth; x++)
+        {
+            var hands = distance < .18 && Math.Abs(x - presentationWidth / 2) < (int)(6 + distance * 175) && Math.Abs(y - presentationHeight / 2) < 17;
+            var offset = (y * presentationWidth + x) * 4;
+            bgra[offset] = hands ? (byte)114 : (byte)(68 + x * 20 / presentationWidth);
+            bgra[offset + 1] = hands ? (byte)164 : (byte)(44 + y * 20 / presentationHeight);
+            bgra[offset + 2] = hands ? (byte)224 : (byte)(24 + x * 26 / presentationWidth);
+            bgra[offset + 3] = 255;
+        }
+        return new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, luma, frame, Stride: width, PresentationBgra: bgra, PresentationWidth: presentationWidth, PresentationHeight: presentationHeight, PresentationStride: presentationWidth * 4);
     }
     internal static AudioChunk CreateAudio(TimeSpan now, double audioClapSeconds, Random random)
     {

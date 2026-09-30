@@ -10,9 +10,9 @@ dotnet test tests/Kairix.QuickAVSync.Core.Tests -c Release
 dotnet test tests/Kairix.QuickAVSync.Windows.Tests -c Release
 ```
 
-The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/interlaced timing, transient detection, work windows, waveform placement, history, robust visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. An architecture test rejects Windows Desktop assembly references.
+The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/interlaced timing, transient detection, work windows, timeline-to-nearest-frame mapping, Hold gating, waveform placement, history, bounded synthetic colour presentation, robust spatial visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. An architecture test rejects Windows Desktop assembly references.
 
-Windows tests cover settings allow-list/per-device-format persistence, Auto/manual native-format ranking and fallback, and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
+Windows tests cover settings allow-list/per-device-format persistence, Auto/manual native-format ranking and fallback, deterministic YUV-to-BGR colour conversion, and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
 
 On this mapped workspace drive, `dotnet` project graph operations can intermittently fail without diagnostics under parallel MSBuild. Use `-m:1` for a deterministic local full-solution build; GitHub Actions uses a normal local runner filesystem.
 
@@ -24,7 +24,8 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 4. Confirm the automatic thumbnail remains fixed while Left/Right changes the main viewer.
 5. Press Enter and verify only the effective visual mark/result changes.
 6. Click the waveform or press A and verify Audio Zero/result changes.
-7. Hold H across the next event and confirm no new test appears while preview continues.
+7. Press H once across the next event and confirm no new test appears while preview continues; press H again to resume automatic events.
+8. Click/drag the timeline and confirm only the review playhead changes. Drag the yellow AUDIO marker or press A to deliberately recenter Audio Zero and reanalyse once.
 8. Press R, Space, and F5 to verify resume, manual capture, and reconnect.
 9. Close/reopen and verify preferences persist while history/media do not.
 

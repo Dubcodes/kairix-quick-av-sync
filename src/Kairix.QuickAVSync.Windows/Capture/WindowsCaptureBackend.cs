@@ -221,7 +221,11 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         }
     }
 
-    private void ForwardAudio(object? sender, AudioChunk chunk) => AudioSampleReceived?.Invoke(this, chunk);
+    private void ForwardAudio(object? sender, AudioChunk chunk)
+    {
+        if (CurrentFormat.AudioSampleRate != chunk.SampleRate) CurrentFormat = CurrentFormat with { AudioSampleRate = chunk.SampleRate };
+        AudioSampleReceived?.Invoke(this, chunk);
+    }
     private void ForwardStatus(object? sender, CaptureStatusChangedEventArgs status)
     {
         if (status.Status == CaptureStatus.Running)
@@ -285,10 +289,10 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                             buffer.GetMaxLength(out var maximumLength).ThrowIfFailed();
                             _log.Write("capture.sample", $"first buffer currentLength={currentLength} maximumLength={maximumLength} expectedMinimum={Math.Abs(_sourceFormat.Stride) * _sourceFormat.Height}");
                         }
-                        var luma = ExtractAnalysisLuma(buffer, _sourceFormat, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight);
+                        var presentation = ExtractPresentationFrame(buffer, _sourceFormat, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, _options.PreferredPresentationWidth, _options.PreferredPresentationHeight);
                         var sampleNumber = Interlocked.Increment(ref _temporalIndex);
                         var validationStreak = Interlocked.Increment(ref _validationStreak);
-                        VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, luma, sampleNumber, Stride: _options.PreferredAnalysisWidth));
+                        VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, presentation.Luma, sampleNumber, Stride: _options.PreferredAnalysisWidth, PresentationBgra: presentation.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight, PresentationStride: _options.PreferredPresentationWidth * 4));
                         if (sampleNumber == 1)
                         {
                             _log.Write("capture.first-sample", $"Video payload received timestamp={timestamp.Ticks100ns} raw={timestamp.RawValue?.ToString() ?? "unavailable"} deviceTimestamp={(deviceTime is null ? "unavailable" : "available")} format='{CurrentFormat.Display}'");
@@ -317,7 +321,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     private void RefreshCurrentFormat()
     {
         if (_reader is null) return; _reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var type).ThrowIfFailed();
-        try { (CurrentFormat, _sourceFormat) = ParseFormat(type); _log.Write("capture.format", $"Dynamic format change: {CurrentFormat.Display}"); }
+        try { var parsed = ParseFormat(type); CurrentFormat = parsed.Format with { AudioSampleRate = CurrentFormat.AudioSampleRate }; _sourceFormat = parsed.Source; _log.Write("capture.format", $"Dynamic capture-mode change: {CurrentFormat.Display}"); }
         finally { Marshal.ReleaseComObject(type); }
     }
 
@@ -422,28 +426,55 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         return (new(width, height, Rational.From(numerator, Math.Max(1, denominator)), scan, order, PixelFormat: pixel), new(width, height, stride, pixel));
     }
 
-    private static unsafe byte[] ExtractAnalysisLuma(IMFMediaBuffer buffer, SourceFormat source, int targetWidth, int targetHeight)
+    private static unsafe (byte[] Luma, byte[] Bgra) ExtractPresentationFrame(IMFMediaBuffer buffer, SourceFormat source, int analysisWidth, int analysisHeight, int presentationWidth, int presentationHeight)
     {
         buffer.Lock(out var data, out _, out var length).ThrowIfFailed();
         try
         {
-            var output = new byte[targetWidth * targetHeight]; var pointer = (byte*)data;
-            for (var y = 0; y < targetHeight; y++)
+            var luma = new byte[analysisWidth * analysisHeight]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var pointer = (byte*)data;
+            for (var y = 0; y < analysisHeight; y++)
             {
-                var sy = Math.Min(source.Height - 1, y * source.Height / targetHeight); var sourceRow = source.Stride < 0 ? source.Height - 1 - sy : sy; var row = pointer + sourceRow * Math.Abs(source.Stride);
-                for (var x = 0; x < targetWidth; x++)
+                var sy = Math.Min(source.Height - 1, y * source.Height / analysisHeight);
+                for (var x = 0; x < analysisWidth; x++)
                 {
-                    var sx = Math.Min(source.Width - 1, x * source.Width / targetWidth); var offset = source.PixelFormat switch { VideoPixelFormat.Nv12 => sx, VideoPixelFormat.Yuy2 => sx * 2, VideoPixelFormat.Uyvy => sx * 2 + 1, VideoPixelFormat.Bgra32 => sx * 4, VideoPixelFormat.Bgr24 => sx * 3, _ => sx };
-                    var bytesNeeded = source.PixelFormat switch { VideoPixelFormat.Bgra32 => 4, VideoPixelFormat.Bgr24 => 3, _ => 1 };
-                    if (sy * Math.Abs(source.Stride) + offset + bytesNeeded > length) continue;
-                    output[y * targetWidth + x] = source.PixelFormat is VideoPixelFormat.Bgra32 or VideoPixelFormat.Bgr24
-                        ? (byte)Math.Clamp((row[offset + 2] * 54 + row[offset + 1] * 183 + row[offset] * 19) >> 8, 0, 255)
-                        : row[offset];
+                    var sx = Math.Min(source.Width - 1, x * source.Width / analysisWidth); ReadPixel(pointer, length, source, sx, sy, out var b, out var g, out var r, out var yValue);
+                    luma[y * analysisWidth + x] = yValue;
                 }
             }
-            return output;
+            for (var y = 0; y < presentationHeight; y++)
+            {
+                var sy = Math.Min(source.Height - 1, y * source.Height / presentationHeight);
+                for (var x = 0; x < presentationWidth; x++)
+                {
+                    var sx = Math.Min(source.Width - 1, x * source.Width / presentationWidth); ReadPixel(pointer, length, source, sx, sy, out var b, out var g, out var r, out _);
+                    var offset = (y * presentationWidth + x) * 4; bgra[offset] = b; bgra[offset + 1] = g; bgra[offset + 2] = r; bgra[offset + 3] = 255;
+                }
+            }
+            return (luma, bgra);
         }
         finally { buffer.Unlock(); }
     }
+
+    private static unsafe void ReadPixel(byte* pointer, int length, SourceFormat source, int x, int y, out byte blue, out byte green, out byte red, out byte luma)
+    {
+        blue = green = red = luma = 0; var stride = Math.Abs(source.Stride); var sourceRow = source.Stride < 0 ? source.Height - 1 - y : y; var baseOffset = sourceRow * stride;
+        bool Has(int offset, int bytes) => offset >= 0 && offset + bytes <= length;
+        if (source.PixelFormat == VideoPixelFormat.Nv12)
+        {
+            var yOffset = baseOffset + x; if (!Has(yOffset, 1)) return; luma = pointer[yOffset]; var uvOffset = stride * source.Height + y / 2 * stride + x / 2 * 2;
+            if (!Has(uvOffset, 2)) { blue = green = red = luma; return; } WindowsColorConversion.YuvToBgr(luma, pointer[uvOffset], pointer[uvOffset + 1], out blue, out green, out red); return;
+        }
+        if (source.PixelFormat is VideoPixelFormat.Yuy2 or VideoPixelFormat.Uyvy)
+        {
+            var pair = baseOffset + (x & ~1) * 2; if (!Has(pair, 4)) return;
+            byte u, v;
+            if (source.PixelFormat == VideoPixelFormat.Yuy2) { luma = pointer[pair + (x & 1) * 2]; u = pointer[pair + 1]; v = pointer[pair + 3]; }
+            else { luma = pointer[pair + 1 + (x & 1) * 2]; u = pointer[pair]; v = pointer[pair + 2]; }
+            WindowsColorConversion.YuvToBgr(luma, u, v, out blue, out green, out red); return;
+        }
+        var bytes = source.PixelFormat == VideoPixelFormat.Bgra32 ? 4 : 3; var offset = baseOffset + x * bytes; if (!Has(offset, bytes)) return;
+        blue = pointer[offset]; green = pointer[offset + 1]; red = pointer[offset + 2]; luma = (byte)Math.Clamp((red * 54 + green * 183 + blue * 19) >> 8, 0, 255);
+    }
+
     private readonly record struct SourceFormat(int Width, int Height, int Stride, VideoPixelFormat PixelFormat);
 }
