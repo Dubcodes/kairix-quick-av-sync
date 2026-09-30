@@ -2,7 +2,9 @@ name: Windows CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,7 +19,7 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet restore Kairix.QuickAVSync.sln
       - name: Architectural guard - build portable Core
-        run: dotnet build src/Kairix.QuickAVSync.Core/Kairix.QuickAVSync.Core.csproj -c Release --no-restore
-      - run: dotnet build Kairix.QuickAVSync.sln -c Release --no-restore
-      - run: dotnet test tests/Kairix.QuickAVSync.Core.Tests/Kairix.QuickAVSync.Core.Tests.csproj -c Release --no-build
-      - run: dotnet test tests/Kairix.QuickAVSync.Windows.Tests/Kairix.QuickAVSync.Windows.Tests.csproj -c Release --no-build
+        run: dotnet build src/Kairix.QuickAVSync.Core/Kairix.QuickAVSync.Core.csproj -c Release --no-restore -m:1 -nodeReuse:false
+      - run: dotnet build Kairix.QuickAVSync.sln -c Release --no-restore -m:1 -nodeReuse:false
+      - run: dotnet test tests/Kairix.QuickAVSync.Core.Tests/Kairix.QuickAVSync.Core.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
+      - run: dotnet test tests/Kairix.QuickAVSync.Windows.Tests/Kairix.QuickAVSync.Windows.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false

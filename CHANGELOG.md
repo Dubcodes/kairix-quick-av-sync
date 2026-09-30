@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Prepared the public Windows prerelease path: `main`-only Windows CI, tag-driven self-contained x64 packaging/release automation, and a completed MIT copyright holder.
 - Added a per-device capture-format selector with `Auto` plus deduplicated native modes. Selecting a mode persists only its stable native mode key, immediately clears stale media/results, and reconnects; unavailable saved modes fall back safely to Auto.
 - Auto native-format policy now prefers supported progressive modes by sensible native resolution and native rational frame rate, using the driver default only as a final tie-breaker. This prevents a C920-style 640×480 default from winning over a working 1080p30 native mode. Manual mode attempts first and then falls back through Auto-ranked candidates if the driver refuses it.
 - Strengthened automatic visual-clap scoring with robust motion baseline/deviation normalization and short-event scoring. Expanded deterministic end-to-end synthetic tests across signed 5–120 ms offsets, 25/50/29.97 fps cadences, incompatible clock domains, and continuous background motion.

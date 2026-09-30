@@ -1,0 +1,40 @@
+name: Package Windows Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore Kairix.QuickAVSync.sln
+      - run: dotnet build Kairix.QuickAVSync.sln -c Release --no-restore -m:1 -nodeReuse:false
+      - run: dotnet test tests/Kairix.QuickAVSync.Core.Tests/Kairix.QuickAVSync.Core.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
+      - run: dotnet test tests/Kairix.QuickAVSync.Windows.Tests/Kairix.QuickAVSync.Windows.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
+      - run: dotnet publish src/Kairix.QuickAVSync -p:PublishProfile=win-x64-self-contained --no-restore -m:1 -nodeReuse:false
+      - name: Package self-contained Windows x64 build
+        shell: pwsh
+        run: Compress-Archive -Path artifacts/publish/self-contained/* -DestinationPath Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64
+          path: Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64.zip
+          if-no-files-found: error
+      - name: Create prerelease and upload package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $arguments = @("${{ github.ref_name }}", "Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64.zip", "--repo", "${{ github.repository }}", "--title", "Kairix Quick A/V Sync ${{ github.ref_name }}", "--generate-notes")
+          if ("${{ github.ref_name }}" -match "-") { $arguments += "--prerelease" }
+          gh release create @arguments
