@@ -180,13 +180,21 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
             finally { if (source != IntPtr.Zero) { Marshal.Release(source); source = IntPtr.Zero; } Marshal.ReleaseComObject(activate); }
 
             var unique = new Dictionary<string, CaptureFormatOption>(StringComparer.Ordinal);
+            var currentHr = reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var currentType);
+            if (currentHr >= 0)
+            {
+                try { var current = ParseFormat(currentType); log.Write("capture.format-list", $"current/default {Describe(current.Format, current.Source)}"); }
+                catch (Exception ex) { log.Write("capture.format-list", $"current/default unsupported reason='{ex.Message}'"); }
+                finally { Marshal.ReleaseComObject(currentType); }
+            }
+            else log.Write("capture.format-list", $"current/default GetCurrentMediaType {DescribeHr(currentHr)}");
             for (var index = 0; ; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested(); var hr = reader.GetNativeMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, index, out var type);
                 if (hr == MediaFoundationNative.NoMoreTypes) break; hr.ThrowIfFailed();
                 try
                 {
-                    var parsed = ParseFormat(type); var candidate = new WindowsNativeFormatCandidate(index, parsed.Format, parsed.Source.PixelFormat);
+                    var parsed = ParseFormat(type); var candidate = new WindowsNativeFormatCandidate(index, parsed.Format, parsed.Source.PixelFormat); log.Write("capture.format-list", $"index={index} supported=true {Describe(parsed.Format, parsed.Source)}");
                     unique.TryAdd(WindowsNativeFormatRanker.ModeId(candidate), new(WindowsNativeFormatRanker.ModeId(candidate), $"{parsed.Format.Display} · {parsed.Source.PixelFormat}", parsed.Format));
                 }
                 catch (Exception ex) { log.Write("capture.format-list", $"Skipped native format index={index}: {ex.Message}"); }
@@ -376,15 +384,15 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
             finally { Marshal.ReleaseComObject(currentType); }
         }
         else log.Write("capture.current-format", $"GetCurrentMediaType {DescribeHr(currentHr)}; ranking native capabilities without a current-mode hint");
-        var candidates = new List<(int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)>(); var suppressedFormats = 0; var nativeTypeCount = 0;
+        var candidates = new List<(int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)>(); var nativeTypeCount = 0;
         for (var i = 0; ; i++)
         {
             var hr = reader.GetNativeMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, i, out var type); if (hr == MediaFoundationNative.NoMoreTypes) break; hr.ThrowIfFailed();
             nativeTypeCount++;
-            try { var parsed = ParseFormat(type); candidates.Add((i, type, parsed.Format, parsed.Source)); if (i < 40) log.Write("capture.native-format", $"index={i} supported=true {Describe(parsed.Format, parsed.Source)}"); else suppressedFormats++; }
-            catch (Exception ex) { if (i < 40) log.Write("capture.native-format", $"index={i} supported=false subtype='{type.TryGetGuid(MfGuids.Subtype)?.ToString() ?? "unavailable"}' reason='{ex.Message}'"); else suppressedFormats++; Marshal.ReleaseComObject(type); }
+            try { var parsed = ParseFormat(type); candidates.Add((i, type, parsed.Format, parsed.Source)); log.Write("capture.native-format", $"index={i} supported=true {Describe(parsed.Format, parsed.Source)}"); }
+            catch (Exception ex) { log.Write("capture.native-format", $"index={i} supported=false subtype='{type.TryGetGuid(MfGuids.Subtype)?.ToString() ?? "unavailable"}' interlacePresent={type.TryGetUInt32(MfGuids.InterlaceMode) is not null} interlaceRaw={type.TryGetUInt32(MfGuids.InterlaceMode)?.ToString() ?? "missing"} reason='{ex.Message}'"); Marshal.ReleaseComObject(type); }
         }
-        if (suppressedFormats > 0) log.Write("capture.native-format", $"suppressed={suppressedFormats} additional native media-type entries; total={nativeTypeCount} supported={candidates.Count}");
+        log.Write("capture.native-format", $"total={nativeTypeCount} supported={candidates.Count}");
         if (candidates.Count == 0) throw new InvalidOperationException("Capture device reported no usable video media types.");
         (int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)? chosen = null;
         try
@@ -399,8 +407,17 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                 if (setTypeHr >= 0) { chosen = candidate; break; }
             }
             if (chosen is null) throw new InvalidOperationException($"Media Foundation rejected all {candidates.Count} supported native video formats.");
-            log.Write("capture.open", $"Selected native media type index={chosen.Value.Index} candidate='{Describe(chosen.Value.Format, chosen.Value.Source)}'");
-            return (chosen.Value.Type, chosen.Value.Format, chosen.Value.Source);
+            var negotiatedFormat = chosen.Value.Format; var negotiatedSource = chosen.Value.Source;
+            var negotiatedHr = reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var negotiatedType);
+            if (negotiatedHr >= 0)
+            {
+                try { var parsed = ParseFormat(negotiatedType); negotiatedFormat = parsed.Format; negotiatedSource = parsed.Source; log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} {Describe(negotiatedFormat, negotiatedSource)}"); }
+                catch (Exception ex) { log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} current type unsupported after negotiation: {ex.Message}"); }
+                finally { Marshal.ReleaseComObject(negotiatedType); }
+            }
+            else log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} GetCurrentMediaType {DescribeHr(negotiatedHr)}; using requested metadata {Describe(negotiatedFormat, negotiatedSource)}");
+            log.Write("capture.open", $"Selected native media type index={chosen.Value.Index} candidate='{Describe(negotiatedFormat, negotiatedSource)}'");
+            return (chosen.Value.Type, negotiatedFormat, negotiatedSource);
         }
         finally
         {
@@ -411,8 +428,8 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         }
     }
 
-    private static string Describe(CaptureFormat format, SourceFormat source) => $"{format.Width}x{format.Height} rate={format.FrameRate} subtype={source.PixelFormat} scan={format.ScanMode} field={format.FieldOrder} stride={source.Stride}";
-    private static bool SameVideoMode(CaptureFormat left, SourceFormat leftSource, CaptureFormat right, SourceFormat rightSource) => left.Width == right.Width && left.Height == right.Height && left.FrameRate == right.FrameRate && left.ScanMode == right.ScanMode && leftSource.PixelFormat == rightSource.PixelFormat;
+    private static string Describe(CaptureFormat format, SourceFormat source) => $"{format.Width}x{format.Height} rate={format.FrameRate} subtype={source.PixelFormat} stride={source.Stride} interlacePresent={source.InterlaceAttributePresent} interlaceRaw={source.RawInterlaceMode?.ToString() ?? "missing"} scan={format.ScanMode} layout={format.InterlaceLayout} field={format.FieldOrder}";
+    private static bool SameVideoMode(CaptureFormat left, SourceFormat leftSource, CaptureFormat right, SourceFormat rightSource) => left.Width == right.Width && left.Height == right.Height && left.FrameRate == right.FrameRate && left.ScanMode == right.ScanMode && left.InterlaceLayout == right.InterlaceLayout && left.FieldOrder == right.FieldOrder && leftSource.PixelFormat == rightSource.PixelFormat;
     private static string DescribeHr(int hr) => $"HRESULT=0x{hr:X8} ({(hr >= 0 ? "S_OK" : Marshal.GetExceptionForHR(hr)?.Message ?? "unknown")})";
 
     private static (CaptureFormat Format, SourceFormat Source) ParseFormat(IMFMediaType type)
@@ -421,9 +438,9 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         var width = (int)((ulong)size >> 32); var height = (int)(size & uint.MaxValue); var numerator = (int)((ulong)rate >> 32); var denominator = (int)(rate & uint.MaxValue);
         var subtype = type.TryGetGuid(MfGuids.Subtype) ?? Guid.Empty; var pixel = subtype == MfGuids.Nv12 ? VideoPixelFormat.Nv12 : subtype == MfGuids.Yuy2 ? VideoPixelFormat.Yuy2 : subtype == MfGuids.Uyvy ? VideoPixelFormat.Uyvy : subtype == MfGuids.Rgb32 ? VideoPixelFormat.Bgra32 : subtype == MfGuids.Rgb24 ? VideoPixelFormat.Bgr24 : VideoPixelFormat.Unknown;
         if (pixel == VideoPixelFormat.Unknown) throw new NotSupportedException($"Unsupported native pixel subtype {subtype}");
-        var interlace = type.TryGetUInt32(MfGuids.InterlaceMode) ?? 2; var scan = interlace == 2 ? ScanMode.Progressive : ScanMode.Interlaced; var order = interlace == 3 || interlace == 5 ? FieldOrder.TopFirst : interlace == 4 || interlace == 6 ? FieldOrder.BottomFirst : FieldOrder.Unknown;
+        var interlace = WindowsInterlaceMetadata.Parse(type.TryGetUInt32(MfGuids.InterlaceMode));
         var defaultStride = type.TryGetUInt32(MfGuids.DefaultStride); var stride = defaultStride is { } s ? s : pixel switch { VideoPixelFormat.Yuy2 or VideoPixelFormat.Uyvy => width * 2, VideoPixelFormat.Bgra32 => width * 4, VideoPixelFormat.Bgr24 => width * 3, _ => width };
-        return (new(width, height, Rational.From(numerator, Math.Max(1, denominator)), scan, order, PixelFormat: pixel), new(width, height, stride, pixel));
+        return (new(width, height, Rational.From(numerator, Math.Max(1, denominator)), interlace.ScanMode, interlace.FieldOrder, PixelFormat: pixel, InterlaceLayout: interlace.Layout), new(width, height, stride, pixel, interlace.AttributePresent, interlace.RawValue));
     }
 
     private static unsafe (byte[] Luma, byte[] Bgra) ExtractPresentationFrame(IMFMediaBuffer buffer, SourceFormat source, int analysisWidth, int analysisHeight, int presentationWidth, int presentationHeight)
@@ -476,5 +493,5 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         blue = pointer[offset]; green = pointer[offset + 1]; red = pointer[offset + 2]; luma = (byte)Math.Clamp((red * 54 + green * 183 + blue * 19) >> 8, 0, 255);
     }
 
-    private readonly record struct SourceFormat(int Width, int Height, int Stride, VideoPixelFormat PixelFormat);
+    private readonly record struct SourceFormat(int Width, int Height, int Stride, VideoPixelFormat PixelFormat, bool InterlaceAttributePresent, int? RawInterlaceMode);
 }

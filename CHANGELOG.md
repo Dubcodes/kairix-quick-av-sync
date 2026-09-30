@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Raised luma analysis from 320×180 to 640×360 while keeping 160×90 BGRA presentation buffers, added a persisted 0–100 visual-sensitivity control, and kept confidence evidence-derived. Expanded deterministic coverage for weak distant-clap acceptance, high-sensitivity flash/camera/noise rejection, and representative analysis runtime.
+- Replaced the compact RAM meter with truthful available/other-system/Kairix partitions without double-counting process memory.
+- Preserved raw Media Foundation interlace presence/value plus interpreted layout and field order through enumeration, stable mode IDs, selection, final negotiation, logs, timing, and display. Missing metadata now remains unknown. A connected USB SDI device configured for 1080i50 reported all 133 modes—including negotiated 1080/50—as progressive output, so no field splitting was applied.
 - Reworked event review around a fixed event reference. Audio correction now stays inside the current retained window and preserves waveform, frames, Auto candidate, thumbnail, playhead, and history identity. Scrubbing enters live `MANUAL PREVIEW`; Enter commits `MANUAL RESULT`; the Auto candidate remains independently available.
 - Improved the waveform with a symmetric display-only amplitude curve, baseline, minor divisions, captured-frame ticks, and separate marker-label lanes. Corrected toggle content precedence and made the normal startup window maximized.
 - Replaced coarse-only visual evidence with deterministic fine/coarse spatial evidence plus temporal rise/peak/drop selection. Small localized motion has higher recall, broad camera/exposure changes and sparse noise remain rejected, and advancing to the post-peak contact frame requires measured temporal evidence rather than a fixed offset.

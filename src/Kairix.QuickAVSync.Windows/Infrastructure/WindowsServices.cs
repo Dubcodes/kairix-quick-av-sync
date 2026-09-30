@@ -14,14 +14,16 @@ public sealed class SettingsService(string? path = null)
     public void Save(AppSettings value)
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        var clean = new AppSettings { LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName, AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual, RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30), WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000), NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal) };
+        var clean = new AppSettings { LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName, AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual, VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30), WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000), NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal) };
         File.WriteAllText(Path, JsonSerializer.Serialize(clean, Options));
     }
 }
 
 public sealed record MemoryStatus(ulong TotalBytes, ulong AvailableBytes, long ProcessBytes)
 {
-    public ulong SystemUsedBytes => TotalBytes - AvailableBytes - (ulong)Math.Max(0, ProcessBytes);
+    public ulong SystemUsedBytes => TotalBytes >= AvailableBytes ? TotalBytes - AvailableBytes : 0;
+    public ulong ProcessUsedBytes => (ulong)Math.Clamp(ProcessBytes, 0, (long)Math.Min(SystemUsedBytes, long.MaxValue));
+    public ulong OtherSystemUsedBytes => SystemUsedBytes >= ProcessUsedBytes ? SystemUsedBytes - ProcessUsedBytes : 0;
 }
 
 public sealed class MemoryStatusService

@@ -29,7 +29,7 @@ public interface ICaptureSession : IAsyncDisposable
 
 public interface IVisualClapDetector
 {
-    Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken);
+    Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken, VisualDetectionOptions? options = null);
 }
 
 public interface IDiagnosticSink

@@ -22,7 +22,7 @@ public sealed class SyntheticCaptureBackend(TimeSpan? audioToVideoOffset = null)
 public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICaptureSession
 {
     private CancellationTokenSource? _cts; private Task? _task; private readonly Random _random = new(31415);
-    public CaptureFormat CurrentFormat { get; } = new(320, 180, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown, 48000, VideoPixelFormat.Luma8);
+    public CaptureFormat CurrentFormat { get; } = new(640, 360, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown, 48000, VideoPixelFormat.Luma8);
     public TimingQuality TimingQuality => TimingQuality.StreamTimestamp;
     public event EventHandler<VideoFrame>? VideoSampleReceived;
     public event EventHandler<AudioChunk>? AudioSampleReceived;
@@ -53,7 +53,7 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICapt
     }
     public static VideoFrame CreateFrame(TimeSpan now, double visualClapSeconds, int frame)
     {
-        const int width = 320, height = 180, presentationWidth = 160, presentationHeight = 90; var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var distance = Math.Abs(now.TotalSeconds - visualClapSeconds);
+        const int width = 640, height = 360, presentationWidth = 160, presentationHeight = 90; var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var distance = Math.Abs(now.TotalSeconds - visualClapSeconds);
         for (var y = 0; y < height; y++) for (var x = 0; x < width; x++)
         {
             var background = 22 + x * 22 / width + y * 12 / height;

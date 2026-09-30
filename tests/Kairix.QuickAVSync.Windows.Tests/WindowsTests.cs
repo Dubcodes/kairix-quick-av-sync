@@ -10,7 +10,7 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 }
@@ -94,6 +94,17 @@ public sealed class NativeFormatRankingTests
     }
 
     [Fact]
+    public void ModeIdPreservesScanLayoutAndFieldOrder()
+    {
+        var progressive = new CaptureFormat(1920, 1080, Rational.From(25), ScanMode.Progressive, FieldOrder.Unknown, PixelFormat: VideoPixelFormat.Yuy2);
+        var unknown = progressive with { ScanMode = ScanMode.Unknown };
+        var topFirst = progressive with { ScanMode = ScanMode.Interlaced, FieldOrder = FieldOrder.TopFirst, InterlaceLayout = InterlaceLayout.FullFrame };
+        var bottomFirst = topFirst with { FieldOrder = FieldOrder.BottomFirst };
+
+        Assert.Equal(4, new[] { progressive, unknown, topFirst, bottomFirst }.Select(format => WindowsNativeFormatRanker.ModeId(format, VideoPixelFormat.Yuy2)).Distinct().Count());
+    }
+
+    [Fact]
     public void PreservesFractionalNativeFrameRate()
     {
         var rate = Rational.From(30_000, 1_001);
@@ -103,6 +114,63 @@ public sealed class NativeFormatRankingTests
 
     private static WindowsNativeFormatCandidate Candidate(int index, int width, int height, int rate, VideoPixelFormat pixel) =>
         new(index, new(width, height, Rational.From(rate), ScanMode.Progressive, FieldOrder.Unknown, PixelFormat: pixel), pixel);
+}
+
+public sealed class InterlaceMetadataTests
+{
+    [Fact]
+    public void MissingAttributeRemainsUnknown()
+    {
+        var info = WindowsInterlaceMetadata.Parse(null);
+        Assert.False(info.AttributePresent);
+        Assert.Equal(ScanMode.Unknown, info.ScanMode);
+    }
+
+    [Fact]
+    public void ProgressiveValueIsMappedTruthfully() => Assert.Equal(ScanMode.Progressive, WindowsInterlaceMetadata.Parse(2).ScanMode);
+
+    [Theory]
+    [InlineData(3, FieldOrder.TopFirst, InterlaceLayout.FullFrame)]
+    [InlineData(4, FieldOrder.BottomFirst, InterlaceLayout.FullFrame)]
+    [InlineData(5, FieldOrder.TopFirst, InterlaceLayout.SingleField)]
+    [InlineData(6, FieldOrder.BottomFirst, InterlaceLayout.SingleField)]
+    public void InterlacedValuesPreserveLayoutAndOrder(int raw, FieldOrder order, InterlaceLayout layout)
+    {
+        var info = WindowsInterlaceMetadata.Parse(raw);
+        Assert.True(info.AttributePresent);
+        Assert.Equal(ScanMode.Interlaced, info.ScanMode);
+        Assert.Equal(order, info.FieldOrder);
+        Assert.Equal(layout, info.Layout);
+    }
+
+    [Fact]
+    public void MixedAndUnexpectedValuesNeverPretendToBeProgressive()
+    {
+        Assert.Equal(ScanMode.Unknown, WindowsInterlaceMetadata.Parse(7).ScanMode);
+        Assert.Equal(ScanMode.Unknown, WindowsInterlaceMetadata.Parse(99).ScanMode);
+    }
+}
+
+public sealed class MemoryStatusTests
+{
+    [Fact]
+    public void SegmentsPartitionPhysicalMemoryWithoutDoubleCountingProcess()
+    {
+        var status = new MemoryStatus(1_000, 300, 100);
+        Assert.Equal(700UL, status.SystemUsedBytes);
+        Assert.Equal(100UL, status.ProcessUsedBytes);
+        Assert.Equal(600UL, status.OtherSystemUsedBytes);
+        Assert.Equal(status.TotalBytes, status.AvailableBytes + status.OtherSystemUsedBytes + status.ProcessUsedBytes);
+    }
+
+    [Fact]
+    public void ProcessSegmentCannotExceedTotalUsedMemory()
+    {
+        var status = new MemoryStatus(1_000, 950, 100);
+        Assert.Equal(50UL, status.ProcessUsedBytes);
+        Assert.Equal(0UL, status.OtherSystemUsedBytes);
+        Assert.Equal(status.TotalBytes, status.AvailableBytes + status.OtherSystemUsedBytes + status.ProcessUsedBytes);
+    }
 }
 
 public sealed class CaptureReadinessTests

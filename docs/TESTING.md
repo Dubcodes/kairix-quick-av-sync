@@ -10,9 +10,9 @@ dotnet test tests/Kairix.QuickAVSync.Core.Tests -c Release
 dotnet test tests/Kairix.QuickAVSync.Windows.Tests -c Release
 ```
 
-The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/interlaced timing, transient detection, fixed-reference event review, timeline-to-nearest-frame mapping, manual preview/commit modes, idempotent history finalization, Hold gating, waveform placement, bounded synthetic colour presentation, multi-scale localized visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. Detector fixtures include close and distant claps, low/high contrast, varied positions and cadences, approach/contact/drop, steady movement, whole-frame movement, flashes, sparse noise, and no motion. An architecture test rejects Windows Desktop assembly references.
+The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/progressive/full-frame/single-field timing, transient detection, fixed-reference event review, timeline-to-nearest-frame mapping, manual preview/commit modes, idempotent history finalization, Hold gating, waveform placement, bounded 640×360 synthetic luma and 160×90 colour presentation, multi-scale localized visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. Detector fixtures include close and distant claps, low/high contrast, varied positions and cadences, approach/contact/drop, steady movement, whole-frame movement, flashes, sparse noise, and no motion. Sensitivity tests prove that weak-clap acceptance changes while confidence remains evidence-derived and global/noise rejection remains active. An architecture test rejects Windows Desktop assembly references.
 
-Windows tests cover settings allow-list/per-device-format persistence, Auto/manual native-format ranking and fallback, deterministic YUV-to-BGR colour conversion, and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
+Windows tests cover settings allow-list/per-device-format/sensitivity persistence, Auto/manual native-format ranking and fallback, raw Media Foundation interlace mapping and distinct mode identities, exact memory-segment accounting, deterministic YUV-to-BGR colour conversion, and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
 
 On this mapped workspace drive, `dotnet` project graph operations can intermittently fail without diagnostics under parallel MSBuild. Use `-m:1` for a deterministic local full-solution build; GitHub Actions uses a normal local runner filesystem.
 
@@ -45,5 +45,11 @@ The analysis-generation test proves the acceptance rule independently; applicati
 ## Physical hardware
 
 Use the checklist in `CURRENT_STATE.md`. Save diagnostic text only. For each format record the card/driver identity, paired endpoint, Container IDs, pixel subtype, frame-rate rational, scan/field metadata, active video timestamp source, audio QPC status, discontinuities, reconnect behavior, and an external known-delay comparison.
+
+Enumerate all native modes without starting capture or saving media:
+
+```powershell
+dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release -- --list-formats "USB Capture SDI"
+```
 
 Passing enumeration tests or seeing a picture is not enough to claim calibrated A/V timing.

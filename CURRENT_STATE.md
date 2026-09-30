@@ -6,10 +6,10 @@ Updated: 2026-10-01
 
 - `Kairix.QuickAVSync.Core` targets plain `net10.0`, builds independently, has no Windows Desktop reference, P/Invoke, COM, WPF, or Windows-native types, and is guarded by an assembly-reference test plus a source leakage audit.
 - The Windows WPF application and all three production projects build in Release with zero compiler warnings.
-- 84 portable Core tests pass. They cover the original buffer/timing/detection/history behavior plus fixed-reference event review, manual preview/commit modes, idempotent event finalization, device ranking, physical pairing policy, clock correlation/discontinuities, unrelated-domain rejection, supersession, timeline mapping/Hold gating, bounded synthetic colour presentation, multi-scale localized-motion detection/rejection, and full synthetic audio-to-measurement paths for signed 5–120 ms offsets.
-- 20 Windows tests pass, including Windows SDK COM IID/vtable/HRESULT-preservation regression checks, Auto/manual native-format ranking and fallback, per-device format settings persistence, deterministic YUV-to-BGR checks, readiness-state coverage, real MMDevice audio endpoint enumeration, and real Media Foundation video device enumeration on this computer.
+- 91 portable Core tests pass. They cover the original buffer/timing/detection/history behavior plus fixed-reference event review, manual preview/commit modes, idempotent event finalization, device ranking, physical pairing policy, clock correlation/discontinuities, unrelated-domain rejection, supersession, timeline mapping/Hold gating, bounded synthetic colour presentation, 640×360 multi-scale localized-motion detection/rejection, sensitivity invariants, and full synthetic audio-to-measurement paths for signed 5–120 ms offsets.
+- 30 Windows tests pass, including Windows SDK COM IID/vtable/HRESULT-preservation regression checks, truthful interlace metadata/layout mapping and mode identities, Auto/manual native-format ranking and fallback, per-device format/sensitivity settings persistence, exact RAM partitioning, deterministic YUV-to-BGR checks, readiness-state coverage, real MMDevice audio endpoint enumeration, and real Media Foundation video device enumeration on this computer.
 - The synthetic backend implements the same `ICaptureBackend`/`ICaptureSession` contracts as Windows, generates a known +60 ms video offset, and drives the existing live/review UI.
-- The published no-window startup failure was traced to the RAM `ProgressBar`'s default two-way binding against read-only `SystemFraction`. It is explicitly one-way now. WPF startup also explicitly creates, assigns, shows, and activates a normally resizable maximized `MainWindow` before device/capture initialization. Both published variants pass `scripts/smoke-test-windows.ps1`, which verifies a live process, non-zero main-window handle, visible maximized top-level window, title, and clean close.
+- The compact RAM bar now draws three truthful partitions: other system use, Kairix process use, and available physical memory. A non-zero subpixel Kairix share receives a one-pixel marker at its true boundary. WPF startup explicitly creates, assigns, shows, and activates a normally resizable maximized `MainWindow` before device/capture initialization. Both published variants pass `scripts/smoke-test-windows.ps1`, which verifies a live process, non-zero main-window handle, visible maximized top-level window, title, and clean close.
 - Event review now uses a fixed reference/window with independent Audio mark, Auto visual candidate, Manual visual mark, and video playhead. Scrubbing produces a live Manual Preview result; Enter commits Manual Result. Audio edits update the result live without rebuilding or clearing the event, and each event can enter session history only once.
 - Existing product behavior remains: bounded rolling buffers, automatic transient/visual analysis, current-event waveform, fixed auto-candidate thumbnail, manual overrides, a non-persistent Hold latch, keyboard/mouse timeline controls, RAM status, settings, three-result session history, reconnect, refresh, and privacy boundaries.
 - Preview dispatch is latest-frame coalesced. Waveform/work-window construction and visual analysis run off the WPF dispatcher. Analysis generations reject stale results after event supersession.
@@ -31,6 +31,12 @@ Updated: 2026-10-01
 - Owner desktop testing verified colour presentation at 1920×1080 30p NV12 on the C920.
 - Video supplied device/QPC timestamps in the same domain as WASAPI audio and passed the three-consecutive-frame acceptance rule. Observed timestamps averaged 66.668 ms during this run despite the declared 30 fps mode, which may reflect camera exposure/cadence behavior and is reported rather than hidden.
 
+## Physical USB Capture SDI interlace observations
+
+- With the camera configured for 1080i50, the connected `USB Capture SDI` driver reported the Media Foundation interlace attribute on all 133 native modes, always with raw value `2` (progressive). Its current/default mode was 1920×1080 60/1 YUY2, and all seven 1080 modes—60/1, 60000/1001, 50/1, 30/1, 30000/1001, 25/1, and 15/1—were likewise reported progressive.
+- An explicit 1920×1080 50/1 YUY2 open succeeded. The final negotiated media type still reported raw interlace value `2`, delivered real 640×360 luma frames at an average 20 ms timestamp interval, paired to `SDI (USB Capture SDI)` at 48 kHz float32, and reached ready state.
+- The card/driver therefore appears to expose a progressive/deinterlaced output rather than field-bearing interlaced samples. Kairix truthfully displays this as `50p`; no field extraction is performed because the negotiated hardware metadata does not report an interlaced layout.
+
 ## Implemented
 
 - Media Foundation video devices are enumerated into platform-neutral descriptors with stable symbolic-link identity, friendly name, Windows transport metadata, classification, and Container ID lookup.
@@ -39,24 +45,23 @@ Updated: 2026-10-01
 - Pairing is exact Container ID first, then hardware parent when available, then a cautious unique name match. The Windows default microphone is excluded from fallback pairing.
 - Selected video devices are activated through Media Foundation and opened through `MFCreateSourceReaderFromMediaSource`/`IMFSourceReader` on a background worker.
 - The capture-format selector presents Auto plus deduplicated directly supported native modes for the selected Windows device. It persists a mode key per device, reconnects immediately after a manual change, and clears stale media/results before reopening. An unavailable saved/manual candidate degrades safely to Auto.
-- Auto native negotiation ranks supported progressive modes by sensible native resolution, then native rational frame rate and pixel support; the Source Reader default is only a final tie-breaker. It attempts candidates until one is accepted and preserves rational rate, interlace mode, and field order metadata. Direct extraction supports NV12, YUY2, UYVY, RGB32, and RGB24.
+- Auto native negotiation ranks supported progressive modes by sensible native resolution, then native rational frame rate and pixel support; the Source Reader default is only a final tie-breaker. It attempts candidates until one is accepted and preserves rational rate, interlace presence/raw value, full-frame/single-field layout, and field order metadata. Missing or unrecognized scan metadata remains unknown instead of defaulting to progressive. Direct extraction supports NV12, YUY2, UYVY, RGB32, and RGB24.
 - Video samples use `IMFSample::GetSampleTime`; `MFSampleExtension_DeviceTimestamp` is preferred when supplied. The latter is represented in the shared Windows QPC/MFTIME 100 ns domain.
-- Native video buffers are sampled directly while locked into bounded 320×180 luma analysis and 160×90 BGRA presentation images; full 1080 frame arrays are not retained in Core. At the default five-second/60-frame-per-second capacity this adds about 17 MB of bounded presentation storage alongside roughly 17 MB of luma storage.
+- Native video buffers are sampled directly while locked into bounded 640×360 luma analysis and 160×90 BGRA presentation images; full 1080 frame arrays are not retained in Core. At the default five-second/60-frame-per-second capacity this uses about 69 MB of luma storage plus about 17 MB of BGRA presentation storage.
 - The matched endpoint is opened through shared-mode WASAPI. Float32 and 16-bit PCM mix formats are normalized to floats and delivered with `IAudioCaptureClient::GetBuffer` QPC timestamps. Discontinuity and timestamp-error flags are logged.
 - Device-timestamped video and WASAPI audio use the common `windows-qpc-100ns` domain. If video has only stream-relative time, Core refuses to label the streams comparable instead of returning false millisecond precision.
 - Reconnect disposes event subscriptions, cancels video/audio workers, flushes the source reader, and opens a new session.
 - A hardware session remains in `WAITING FOR FIRST VIDEO FRAME` until three consecutive payload-bearing frames arrive. Normal validation is bounded to three seconds. Audio open/failure is independent, and `READY TO CLAP` requires validated video, live paired audio, and comparable device/correlated timing.
 - Reconnect/open clears the prior preview, format, waveform, thumbnail, marks, review state, and current result before touching the new source, preventing stale synthetic media from being presented as hardware output.
-- `tools/Kairix.QuickAVSync.HardwareProbe` performs metadata-only physical validation without saving media.
+- `tools/Kairix.QuickAVSync.HardwareProbe` performs physical validation without saving media. `--list-formats` enumerates and reports every native mode without starting capture; `--mode` additionally opens the selected mode and validates sample delivery.
 
 ## Not yet implemented
 
 - MJPEG/H.264 capture formats and Media Foundation decoder/converter negotiation; current direct native capture supports NV12, YUY2, UYVY, RGB32, and RGB24 only.
-- Field extraction/bob display and field-by-field samples for interlaced input. Interlace metadata and cadence models exist, but each source-reader sample currently produces one luma image.
+- Field extraction/bob display for a device that actually negotiates full-frame interlaced samples. The metadata/cadence model distinguishes progressive, unknown, full-frame interlaced, and single-field interlaced media, but currently connected hardware exposes progressive output.
 - A long-running clock drift estimator. Current logic establishes explicit common domains, normalizes observations, detects jumps/backwards clocks, and degrades on uncertainty.
 - Dedicated Auto Spike post-trigger refinement beyond the adaptive detector's short-window timestamp.
 - Automatic capture recovery after device loss; the inline failure state and manual Reconnect path exist.
-- Three separately proportioned visual segments in the compact RAM bar (numeric System/Kairix/Available values are real).
 
 ## Known limitations and assumptions
 
@@ -66,7 +71,7 @@ Updated: 2026-10-01
 - The Media Foundation implementation intentionally keeps only downscaled luma in the rolling buffer. A future presentation path may retain a separate bounded native preview surface without changing Core.
 - Rolling-buffer capacity is currently sized from the seconds setting at approximately 60 temporal images per second; very low/high cadence devices therefore need future timestamp-bounded retention work.
 - Manual 1080p50 YUY2, YUY2/NV12 colour, and Hold were physically verified. The new fixed-reference timeline interaction and revised detector still require owner desktop retesting before release.
-- Visual detection uses separate coarse/global rejection and fine 16×9 local-cell evidence over bounded 320×180 luma. Fine cells combine top-percentile change, changed-pixel fraction, adjacent-cell support, and global mean; temporal scoring prefers a measured rise/peak/post-peak-drop contact pattern. It is deterministic, fast, and overridable. Close-range detection improved in the previous physical build, while distant claps were commonly missed; this pass improves synthetic distant-clap recall but is not claimed physically solved yet.
+- Visual detection uses separate coarse/global rejection and 32×18 local-cell evidence over bounded 640×360 luma (the historical 16×9 path remains for smaller inputs). Fine cells combine top-percentile change, changed-pixel fraction, adjacent-cell support, and global mean; temporal scoring prefers a measured rise/peak/post-peak-drop contact pattern. Sensitivity changes only score/evidence acceptance thresholds; confidence remains evidence-derived, and high sensitivity still rejects flashes, whole-frame motion, and sparse noise. The representative ten-frame 640×360 test completes in about 32 ms on this machine. Physical distant-clap tuning is not claimed solved yet.
 - The displayed format is the negotiated Media Foundation capture output mode. Generic Media Foundation device capabilities do not reliably expose an independent HDMI/input signal standard for all devices, so the application does not infer or label one; manual native format selection is the truthful operator override.
 - The smoke script verifies a top-level window through Windows process/window APIs; it does not inspect the rendered visual content.
 
@@ -88,13 +93,13 @@ Updated: 2026-10-01
 14. Unplug/replug, use Refresh Devices, then use Reconnect; check for duplicate callbacks or stale frames.
 15. Test driver stall/reconnect and camera privacy denied behavior; Resume Live must not claim READY after a non-ready capture state.
 16. Test 1080p25 and 1080p50.
-17. Test 1080i50 metadata; field-accurate review is expected to remain incomplete.
+17. Test 1080i50 metadata on a driver that reports an interlaced raw mode; confirm full-frame versus single-field layout and field order before enabling any field extraction.
 18. Compare reported delay with a known external delay/reference before treating the measurement as calibrated.
 
 ## Next priorities
 
 1. Run the checklist with at least two capture-card chipsets and retain metadata-only diagnostic logs.
 2. Add compressed-format conversion and harden source-reader cancellation/device-loss recovery.
-3. Implement top/bottom field extraction and bob review for 1080i50.
+3. Validate a genuinely interlaced Media Foundation device, then implement top/bottom field extraction and bob review for its reported layout.
 4. Add clock-drift observation across longer runs and confidence transitions.
 5. Tune audio and visual detection from real-room fixtures without committing private media.

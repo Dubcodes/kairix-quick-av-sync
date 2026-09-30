@@ -8,10 +8,20 @@ var backend = new WindowsCaptureBackend(sink);
 var devices = await backend.EnumerateDevicesAsync(default);
 var modeIndex = Array.FindIndex(args, argument => string.Equals(argument, "--mode", StringComparison.OrdinalIgnoreCase));
 var preferredMode = modeIndex >= 0 && modeIndex + 1 < args.Length ? args[modeIndex + 1] : null;
-var targetArguments = modeIndex < 0 ? args : args.Where((_, index) => index != modeIndex && index != modeIndex + 1).ToArray();
+var listFormats = args.Any(argument => string.Equals(argument, "--list-formats", StringComparison.OrdinalIgnoreCase));
+var targetArguments = args.Where((argument, index) => !string.Equals(argument, "--list-formats", StringComparison.OrdinalIgnoreCase) && index != modeIndex && index != modeIndex + 1).ToArray();
 var target = targetArguments.Length == 0 ? null : string.Join(' ', targetArguments);
 var device = target is null ? devices.FirstOrDefault() : devices.FirstOrDefault(candidate => candidate.FriendlyName.Equals(target, StringComparison.OrdinalIgnoreCase));
 if (device is null) throw new InvalidOperationException($"Capture device was not found. Available: {string.Join(", ", devices.Select(candidate => candidate.FriendlyName))}");
+
+if (listFormats)
+{
+    Console.WriteLine($"FORMAT ENUMERATION device='{device.FriendlyName}' id='{device.Id}' container='{device.ContainerId}'");
+    var formats = await backend.EnumerateFormatsAsync(device, default);
+    foreach (var format in formats) Console.WriteLine($"FORMAT id='{format.Id}' display='{format.Display}'");
+    Console.WriteLine($"RESULT selectableFormats={formats.Count} captureStarted=false mediaSaved=false");
+    return;
+}
 
 Console.WriteLine($"PROBE device='{device.FriendlyName}' id='{device.Id}' container='{device.ContainerId}' requestedMode='{preferredMode ?? "Auto"}'");
 await using var session = await backend.OpenAsync(device, new(PreferredNativeFormatId: preferredMode), default);

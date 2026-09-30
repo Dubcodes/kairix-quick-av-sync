@@ -31,7 +31,7 @@ Portable engine with no Windows Desktop dependency:
 - deterministic synthetic backend and known-offset fixtures;
 - analysis-generation guard for stale-result rejection.
 
-Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts analysis-size luma plus a separate 160×90 BGRA presentation image before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames. Luma alone is consumed by automatic visual analysis.
+Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts 640×360 analysis luma plus a separate 160×90 BGRA presentation image before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames. Luma alone is consumed by automatic visual analysis. Progressive, unknown, full-frame interlaced, and single-field interlaced metadata are distinct; temporal cadence is doubled only for a known full-frame interlaced layout.
 
 ### `Kairix.QuickAVSync.Windows` (`net10.0-windows`)
 
@@ -42,6 +42,8 @@ Windows infrastructure:
 - MMDevice endpoint/property enumeration;
 - WASAPI shared-mode PCM capture with endpoint QPC timestamps;
 - Windows memory/process status, bounded local logging, and settings persistence.
+
+Media Foundation native-mode diagnostics retain whether the interlace attribute was present, its raw value, interpreted scan/layout/order, and the final negotiated media type. Missing metadata never silently becomes progressive.
 
 ### `Kairix.QuickAVSync` (`net10.0-windows`, WPF)
 

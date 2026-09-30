@@ -10,8 +10,9 @@ public enum TimingQuality
     Unrelated = 0
 }
 
-public enum ScanMode { Progressive, Interlaced }
+public enum ScanMode { Unknown, Progressive, Interlaced }
 public enum FieldOrder { Unknown, TopFirst, BottomFirst }
+public enum InterlaceLayout { Unknown, FullFrame, SingleField, Mixed }
 public enum VideoPixelFormat { Luma8, Nv12, Yuy2, Uyvy, Bgra32, Bgr24, Unknown }
 public enum AudioSampleFormat { Float32, SignedPcm16, Unknown }
 public enum CaptureDeviceKind { Synthetic, ExternalCapture, IntegratedCamera, Unknown }
@@ -41,11 +42,21 @@ public sealed record CaptureFormat(
     ScanMode ScanMode,
     FieldOrder FieldOrder,
     int AudioSampleRate = 0,
-    VideoPixelFormat PixelFormat = VideoPixelFormat.Luma8)
+    VideoPixelFormat PixelFormat = VideoPixelFormat.Luma8,
+    InterlaceLayout InterlaceLayout = InterlaceLayout.Unknown)
 {
-    public TimeSpan TemporalImageDuration => ScanMode == ScanMode.Interlaced
+    public TimeSpan TemporalImageDuration => ScanMode == ScanMode.Interlaced && InterlaceLayout == InterlaceLayout.FullFrame
         ? TimeSpan.FromTicks(FrameRate.FrameDuration.Ticks / 2) : FrameRate.FrameDuration;
-    public string Display => $"{Width}×{Height} · {FrameRate.Value:0.##}{(ScanMode == ScanMode.Interlaced ? "i" : "p")}{(AudioSampleRate > 0 ? $" · audio {AudioSampleRate / 1000} kHz" : "")}";
+    private string ScanDisplay => ScanMode switch
+    {
+        _ when InterlaceLayout == InterlaceLayout.Mixed => $"{FrameRate.Value:0.##} fps · mixed interlace",
+        ScanMode.Progressive => $"{FrameRate.Value:0.##}p",
+        ScanMode.Interlaced when InterlaceLayout == InterlaceLayout.FullFrame => $"{FrameRate.Value * 2:0.##}i",
+        ScanMode.Interlaced when InterlaceLayout == InterlaceLayout.SingleField => $"{FrameRate.Value:0.##}i",
+        ScanMode.Interlaced => $"{FrameRate.Value:0.##} fps · interlaced",
+        _ => $"{FrameRate.Value:0.##} fps · scan unknown"
+    };
+    public string Display => $"{Width}×{Height} · {ScanDisplay}{(AudioSampleRate > 0 ? $" · audio {AudioSampleRate / 1000} kHz" : "")}";
 }
 
 public readonly record struct MediaTimestamp(
@@ -96,6 +107,11 @@ public sealed record AudioChunk(
 
 public sealed record AudioTransient(MediaTimestamp Timestamp, float Peak, float NoiseFloor);
 public sealed record VisualCandidate(MediaTimestamp Timestamp, int TemporalIndex, double Confidence, double MotionScore, VideoFrame Frame);
+public sealed record VisualDetectionOptions(int Sensitivity = 50)
+{
+    public int ClampedSensitivity => Math.Clamp(Sensitivity, 0, 100);
+    public double NormalizedSensitivity => ClampedSensitivity / 100d;
+}
 
 public sealed record CaptureDeviceDescriptor(
     string Id,
@@ -129,7 +145,7 @@ public sealed record CaptureFormatOption(string Id, string Display, CaptureForma
     public override string ToString() => Display;
 }
 
-public sealed record CaptureOpenOptions(int PreferredAnalysisWidth = 320, int PreferredAnalysisHeight = 180, bool IncludeAudio = true, string? PreferredNativeFormatId = null, int PreferredPresentationWidth = 160, int PreferredPresentationHeight = 90);
+public sealed record CaptureOpenOptions(int PreferredAnalysisWidth = 640, int PreferredAnalysisHeight = 360, bool IncludeAudio = true, string? PreferredNativeFormatId = null, int PreferredPresentationWidth = 160, int PreferredPresentationHeight = 90);
 public sealed record CaptureStatusChangedEventArgs(CaptureStatus Status, string Message, Exception? Error = null);
 
 public sealed record SyncResult(double SignedMilliseconds, string Wording, bool TimingComparable = true)
@@ -155,6 +171,7 @@ public sealed class AppSettings
     public bool AutoDetect { get; set; } = true;
     public bool AutoSpike { get; set; } = true;
     public bool AutoVisual { get; set; } = true;
+    public int VisualSensitivity { get; set; } = 50;
     public double RollingBufferSeconds { get; set; } = 5;
     public double WorkWindowMilliseconds { get; set; } = 250;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);

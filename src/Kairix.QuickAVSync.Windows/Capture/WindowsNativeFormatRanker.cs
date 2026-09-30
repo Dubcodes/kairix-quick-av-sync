@@ -26,7 +26,17 @@ public static class WindowsNativeFormatRanker
     }
 
     public static string ModeId(WindowsNativeFormatCandidate candidate) => ModeId(candidate.Format, candidate.PixelFormat);
-    public static string ModeId(CaptureFormat format, VideoPixelFormat pixelFormat) => $"{format.Width}x{format.Height}|{format.FrameRate.Numerator}/{format.FrameRate.Denominator}|{(format.ScanMode == ScanMode.Progressive ? "p" : "i")}|{pixelFormat}";
+    public static string ModeId(CaptureFormat format, VideoPixelFormat pixelFormat)
+    {
+        var scan = format.ScanMode switch
+        {
+            _ when format.InterlaceLayout == InterlaceLayout.Mixed => "i-mixed",
+            ScanMode.Progressive => "p",
+            ScanMode.Interlaced => $"i-{format.InterlaceLayout.ToString().ToLowerInvariant()}-{format.FieldOrder.ToString().ToLowerInvariant()}",
+            _ => "u"
+        };
+        return $"{format.Width}x{format.Height}|{format.FrameRate.Numerator}/{format.FrameRate.Denominator}|{scan}|{pixelFormat}";
+    }
 
     public static WindowsNativeFormatCandidate? TryInRankedOrder(
         IEnumerable<WindowsNativeFormatCandidate> candidates,

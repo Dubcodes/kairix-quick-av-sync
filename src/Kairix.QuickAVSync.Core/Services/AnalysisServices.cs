@@ -66,9 +66,12 @@ public sealed class WaveformBuilder
 
 public sealed class MotionVisualClapDetector : IVisualClapDetector
 {
-    public Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken) => Task.Run(() =>
+    public Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken, VisualDetectionOptions? options = null) => Task.Run(() =>
     {
         if (frames.Count < 4) return null;
+        var sensitivity = (options ?? new()).NormalizedSensitivity;
+        var scoreThreshold = sensitivity <= .5 ? 2.5 + (.5 - sensitivity) * 7 : 2.5 - (sensitivity - .5) * 3;
+        var evidenceThreshold = sensitivity <= .5 ? .008 + (.5 - sensitivity) * .224 : .008 - (sensitivity - .5) * .008;
         var evidence = new double[frames.Count];
         for (var i = 1; i < frames.Count; i++)
         {
@@ -93,9 +96,10 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
             var candidateDistance = Math.Abs(frames[candidateIndex].Timestamp.Ticks100ns - expected.Ticks100ns);
             if (score > bestScore + .01 || (Math.Abs(score - bestScore) <= .01 && candidateDistance < currentDistance)) { bestScore = score; bestPeakIndex = i; bestIndex = candidateIndex; }
         }
-        if (bestIndex < 0 || bestPeakIndex < 0 || bestScore < 2.5 || evidence[bestPeakIndex] < .008) return null;
+        if (bestIndex < 0 || bestPeakIndex < 0 || bestScore < scoreThreshold || evidence[bestPeakIndex] < evidenceThreshold) return null;
         var normalizedStrength = Math.Clamp(evidence[bestPeakIndex] / .2, 0, 1);
-        var confidence = Math.Clamp(.08 + .58 * (1 - Math.Exp(-Math.Max(0, bestScore - 1.2) / 5)) + .25 * normalizedStrength, .08, .94); var chosen = frames[bestIndex];
+        var temporalConfidence = 1 - Math.Exp(-Math.Max(0, bestScore - 1.2) / 5);
+        var confidence = Math.Clamp(.08 + .45 * temporalConfidence * Math.Sqrt(normalizedStrength) + .35 * normalizedStrength, .08, .94); var chosen = frames[bestIndex];
         return new VisualCandidate(chosen.Timestamp, chosen.TemporalIndex, confidence, bestScore, chosen);
     }, cancellationToken);
 
@@ -109,8 +113,8 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
     {
         var width = Math.Min(previous.Width, current.Width); var height = Math.Min(previous.Height, current.Height);
         if (width < 2 || height < 2) return 0;
-        const int columns = 16, rows = 9; var cells = Enumerable.Range(0, columns * rows).Select(_ => new List<double>()).ToArray(); double total = 0; var samples = 0; var globallyChanged = 0;
-        var stepX = Math.Max(1, width / 160); var stepY = Math.Max(1, height / 90);
+        var highResolution = width >= 480 && height >= 270; var columns = highResolution ? 32 : 16; var rows = highResolution ? 18 : 9; var cells = Enumerable.Range(0, columns * rows).Select(_ => new List<double>()).ToArray(); double total = 0; var samples = 0; var globallyChanged = 0;
+        var stepX = Math.Max(1, width / (highResolution ? 320 : 160)); var stepY = Math.Max(1, height / (highResolution ? 180 : 90));
         for (var y = 0; y < height; y += stepY) for (var x = 0; x < width; x += stepX)
         {
             var previousOffset = y * previous.EffectiveStride + x; var currentOffset = y * current.EffectiveStride + x;
@@ -153,7 +157,7 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
 public sealed class VisualClapDetector : IVisualClapDetector
 {
     private readonly MotionVisualClapDetector _inner = new();
-    public Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken) => _inner.DetectAsync(frames, expected, cancellationToken);
+    public Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken, VisualDetectionOptions? options = null) => _inner.DetectAsync(frames, expected, cancellationToken, options);
 }
 
 public sealed class SessionHistoryService(int capacity = 3)

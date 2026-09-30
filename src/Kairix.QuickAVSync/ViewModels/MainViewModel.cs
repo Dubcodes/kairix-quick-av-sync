@@ -42,7 +42,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private EventReviewState? _review;
     private IReadOnlyList<float> _waveform = [];
     private IReadOnlyList<double> _reviewFrameTicks = [];
-    private double _systemFraction, _appFraction, _availableFraction;
+    private double _systemFraction, _otherSystemFraction, _appFraction, _availableFraction;
     private ImageSource? _pendingPreview;
     private int _previewScheduled;
     private bool _suppressFormatReconnect;
@@ -96,6 +96,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; Changed(); SaveSettings(); } } }
     public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; Changed(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
+    public int VisualSensitivity { get => Math.Clamp(_settings.VisualSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.VisualSensitivity != clamped) { _settings.VisualSensitivity = clamped; Changed(); SaveSettings(); } } }
     public double RollingBufferSeconds { get => _settings.RollingBufferSeconds; set { var v = Math.Clamp(value, 1, 30); if (_settings.RollingBufferSeconds != v) { _settings.RollingBufferSeconds = v; ResizeBuffers(); Changed(); SaveSettings(); } } }
     public double WorkWindowMilliseconds { get => _settings.WorkWindowMilliseconds; set { var v = Math.Clamp(value, 50, 2000); if (_settings.WorkWindowMilliseconds != v) { _settings.WorkWindowMilliseconds = v; Changed(); Changed(nameof(HalfWindow)); SaveSettings(); } } }
     public double HalfWindow => WorkWindowMilliseconds;
@@ -106,6 +107,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string TimingText { get => _timingText; private set => Set(ref _timingText, value); }
     public string MemoryText { get => _memoryText; private set => Set(ref _memoryText, value); }
     public double SystemFraction { get => _systemFraction; private set => Set(ref _systemFraction, value); }
+    public double OtherSystemFraction { get => _otherSystemFraction; private set => Set(ref _otherSystemFraction, value); }
     public double AppFraction { get => _appFraction; private set => Set(ref _appFraction, value); }
     public double AvailableFraction { get => _availableFraction; private set => Set(ref _availableFraction, value); }
     public IReadOnlyList<float> Waveform { get => _waveform; private set => Set(ref _waveform, value); }
@@ -251,7 +253,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             await BuildEventSnapshotAsync(generation); if (!_analysisGeneration.IsCurrent(generation)) return;
             if (AutoVisual && audioFinalized)
             {
-                var candidate = await _visualDetector.DetectAsync(_reviewFrames, review.AudioMark, _analysisCts.Token);
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                var candidate = await _visualDetector.DetectAsync(_reviewFrames, review.AudioMark, _analysisCts.Token, new(VisualSensitivity));
+                stopwatch.Stop(); _log.Write("visual.analysis", $"frames={_reviewFrames.Count} resolution={_reviewFrames.FirstOrDefault()?.Width ?? 0}x{_reviewFrames.FirstOrDefault()?.Height ?? 0} sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))}");
                 if (candidate is not null && _analysisGeneration.IsCurrent(generation) && ReferenceEquals(_review, review))
                 {
                     review.SetAutoCandidate(candidate); AutoThumbnail = ToBitmap(candidate.Frame);
@@ -318,7 +322,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         bitmap.Freeze(); return bitmap;
     }
     private void ResizeBuffers() { _video.Resize(Math.Max(50, (int)(RollingBufferSeconds * 60))); _audio.Resize(Math.Max(50, (int)(RollingBufferSeconds * 60))); }
-    private void UpdateMemory() { var m = _memoryService.Get(); if (m.TotalBytes == 0) return; SystemFraction = m.SystemUsedBytes / (double)m.TotalBytes; AppFraction = m.ProcessBytes / (double)m.TotalBytes; AvailableFraction = m.AvailableBytes / (double)m.TotalBytes; MemoryText = $"System: {Gb(m.SystemUsedBytes):0.0} GB   Kairix: {Gb((ulong)m.ProcessBytes):0.00} GB   Available: {Gb(m.AvailableBytes):0.0} GB"; }
+    private void UpdateMemory() { var m = _memoryService.Get(); if (m.TotalBytes == 0) return; SystemFraction = m.SystemUsedBytes / (double)m.TotalBytes; OtherSystemFraction = m.OtherSystemUsedBytes / (double)m.TotalBytes; AppFraction = m.ProcessUsedBytes / (double)m.TotalBytes; AvailableFraction = m.AvailableBytes / (double)m.TotalBytes; MemoryText = $"System: {Gb(m.SystemUsedBytes):0.0} GB   Kairix: {Gb(m.ProcessUsedBytes):0.00} GB   Available: {Gb(m.AvailableBytes):0.0} GB"; }
     private static double Gb(ulong bytes) => bytes / 1024d / 1024 / 1024;
     private void SaveSettings() { try { _settingsService.Save(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
     private static void OpenCoffee() { if (!string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppConstants.BuyMeACoffeeUrl) { UseShellExecute = true }); }
