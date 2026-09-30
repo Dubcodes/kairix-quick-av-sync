@@ -21,6 +21,9 @@ public static class KairixWindowProbe
 {
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool IsZoomed(IntPtr hWnd);
 }
 '@
 }
@@ -38,11 +41,12 @@ try {
         $handle = $process.MainWindowHandle
         $title = $process.MainWindowTitle
         $visible = $handle -ne [IntPtr]::Zero -and [KairixWindowProbe]::IsWindowVisible($handle)
-        $mainWindowReady = $visible -and $title -eq 'Kairix Quick A/V Sync'
+        $maximized = $visible -and [KairixWindowProbe]::IsZoomed($handle)
+        $mainWindowReady = $visible -and $maximized -and $title -eq 'Kairix Quick A/V Sync'
     } while (-not $mainWindowReady -and [DateTime]::UtcNow -lt $deadline)
 
     if (-not $mainWindowReady) {
-        throw "Application remained alive but did not present a visible titled Kairix main window within $TimeoutSeconds seconds (handle=$handle, title='$title')."
+        throw "Application remained alive but did not present a visible maximized titled Kairix main window within $TimeoutSeconds seconds (handle=$handle, title='$title', maximized=$maximized)."
     }
 
     [pscustomobject]@{
@@ -50,6 +54,7 @@ try {
         MainWindowHandle = ('0x{0:X}' -f $handle.ToInt64())
         MainWindowTitle = $title
         Visible = $visible
+        Maximized = $maximized
     }
 }
 finally {

@@ -68,7 +68,7 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
 {
     public Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken) => Task.Run(() =>
     {
-        if (frames.Count < 3) return null;
+        if (frames.Count < 4) return null;
         var evidence = new double[frames.Count];
         for (var i = 1; i < frames.Count; i++)
         {
@@ -76,18 +76,26 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
         }
         var measured = evidence.Skip(1).ToArray(); var baseline = Median(measured);
         var deviations = measured.Select(value => Math.Abs(value - baseline)).ToArray(); var spread = Math.Max(.0015, Median(deviations) * 1.4826);
-        var bestIndex = -1; var bestScore = 0d;
+        var bestIndex = -1; var bestPeakIndex = -1; var bestScore = 0d;
         for (var i = 1; i < frames.Count - 1; i++)
         {
             var proximity = Math.Exp(-Math.Abs(frames[i].Timestamp.Ticks100ns - expected.Ticks100ns) / (double)TimeSpan.FromMilliseconds(160).Ticks);
-            // A clap contact is a short, spatially concentrated change, not a global exposure pulse.
-            var localFloor = (evidence[i - 1] + evidence[i + 1]) / 2d;
-            var transientness = Math.Max(0, evidence[i] - Math.Max(baseline, localFloor * .55));
-            var score = transientness / spread * (.7 + .3 * proximity);
-            if (score > bestScore) { bestScore = score; bestIndex = i; }
+            var previous = evidence[i - 1]; var peak = evidence[i]; var next = evidence[i + 1];
+            // A contact can be the low-motion image immediately after a strong final
+            // approach. Advance only when the measured rise/peak/drop supports it.
+            var hasRise = previous > baseline + spread * .5 && peak > Math.Max(baseline + spread, previous * 1.12);
+            var hasPostPeakDrop = next < peak * .52 && peak - next > Math.Max(.006, spread * .8);
+            var localFloor = Math.Max(baseline, (previous + next) * .38);
+            var transientness = Math.Max(0, peak - localFloor);
+            var score = transientness / spread * (.72 + .28 * proximity) * (hasRise && hasPostPeakDrop ? 3 : 1);
+            var candidateIndex = hasRise && hasPostPeakDrop ? i + 1 : i;
+            var currentDistance = bestIndex < 0 ? long.MaxValue : Math.Abs(frames[bestIndex].Timestamp.Ticks100ns - expected.Ticks100ns);
+            var candidateDistance = Math.Abs(frames[candidateIndex].Timestamp.Ticks100ns - expected.Ticks100ns);
+            if (score > bestScore + .01 || (Math.Abs(score - bestScore) <= .01 && candidateDistance < currentDistance)) { bestScore = score; bestPeakIndex = i; bestIndex = candidateIndex; }
         }
-        if (bestIndex < 0 || bestScore < 2.5) return null;
-        var confidence = Math.Clamp((bestScore - 2) / 12, .08, .96); var chosen = frames[bestIndex];
+        if (bestIndex < 0 || bestPeakIndex < 0 || bestScore < 2.5 || evidence[bestPeakIndex] < .008) return null;
+        var normalizedStrength = Math.Clamp(evidence[bestPeakIndex] / .2, 0, 1);
+        var confidence = Math.Clamp(.08 + .58 * (1 - Math.Exp(-Math.Max(0, bestScore - 1.2) / 5)) + .25 * normalizedStrength, .08, .94); var chosen = frames[bestIndex];
         return new VisualCandidate(chosen.Timestamp, chosen.TemporalIndex, confidence, bestScore, chosen);
     }, cancellationToken);
 
@@ -101,22 +109,43 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
     {
         var width = Math.Min(previous.Width, current.Width); var height = Math.Min(previous.Height, current.Height);
         if (width < 2 || height < 2) return 0;
-        const int columns = 10, rows = 6; var sums = new double[columns * rows]; var counts = new int[sums.Length]; double total = 0; var samples = 0;
-        var stepX = Math.Max(1, width / 40); var stepY = Math.Max(1, height / 24);
+        const int columns = 16, rows = 9; var cells = Enumerable.Range(0, columns * rows).Select(_ => new List<double>()).ToArray(); double total = 0; var samples = 0; var globallyChanged = 0;
+        var stepX = Math.Max(1, width / 160); var stepY = Math.Max(1, height / 90);
         for (var y = 0; y < height; y += stepY) for (var x = 0; x < width; x += stepX)
         {
             var previousOffset = y * previous.EffectiveStride + x; var currentOffset = y * current.EffectiveStride + x;
             if (previousOffset >= previous.Luma.Length || currentOffset >= current.Luma.Length) continue;
             var difference = Math.Abs(previous.Luma[previousOffset] - current.Luma[currentOffset]) / 255d; var block = Math.Min(rows - 1, y * rows / height) * columns + Math.Min(columns - 1, x * columns / width);
-            sums[block] += difference; counts[block]++; total += difference; samples++;
+            cells[block].Add(difference); total += difference; samples++; if (difference > .055) globallyChanged++;
         }
         if (samples == 0) return 0;
-        var blocks = sums.Select((sum, index) => counts[index] == 0 ? 0 : sum / counts[index]).ToArray(); var mean = total / samples;
-        var variation = Math.Sqrt(blocks.Select(value => (value - mean) * (value - mean)).Average()); var materiallyChanged = blocks.Count(value => value > .06);
-        // A short, uniform exposure/brightness change is not useful clap evidence.
-        if (materiallyChanged >= blocks.Length * .85 && variation < .018) return 0;
-        var strongest = blocks.OrderByDescending(value => value).Take(6).Average();
-        return Math.Max(0, strongest * .7 + mean * .3 - mean * .18);
+        var globalMean = total / samples; var globalChangedFraction = globallyChanged / (double)samples;
+        var scores = new double[cells.Length]; var coherentFractions = new double[cells.Length];
+        for (var index = 0; index < cells.Length; index++)
+        {
+            var values = cells[index]; if (values.Count == 0) continue;
+            values.Sort((left, right) => right.CompareTo(left)); var topCount = Math.Max(1, values.Count / 5);
+            var topMean = values.Take(topCount).Average(); var changedFraction = values.Count(value => value > .045) / (double)values.Count; var strongFraction = values.Count(value => value > .11) / (double)values.Count;
+            coherentFractions[index] = changedFraction;
+            scores[index] = topMean * .62 + changedFraction * .18 + strongFraction * .2;
+        }
+        var active = scores.Count(value => value > .035); var activeFraction = active / (double)scores.Length; var broadFraction = scores.Count(value => value > .01) / (double)scores.Length; var scoreMean = scores.Average();
+        var scoreVariation = Math.Sqrt(scores.Select(value => (value - scoreMean) * (value - scoreMean)).Average());
+        // Uniform exposure changes and broad camera motion are deliberately not clap evidence.
+        if (globalChangedFraction > .72 && scoreVariation < .08) return 0;
+        var strongestIndex = Enumerable.Range(0, scores.Length).MaxBy(index => scores[index]); var strongest = scores[strongestIndex];
+        if (globalMean > .01 && broadFraction > .65) return 0;
+        if (activeFraction > .58 && strongest < scoreMean * 2.2) return 0;
+        var row = strongestIndex / columns; var column = strongestIndex % columns; double bestNeighbor = 0;
+        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++)
+        {
+            if (dx == 0 && dy == 0) continue; var neighborRow = row + dy; var neighborColumn = column + dx;
+            if (neighborRow >= 0 && neighborRow < rows && neighborColumn >= 0 && neighborColumn < columns) bestNeighbor = Math.Max(bestNeighbor, scores[neighborRow * columns + neighborColumn]);
+        }
+        if (coherentFractions[strongestIndex] < .05 && bestNeighbor < .04) return 0;
+        var localCoherence = Math.Max(bestNeighbor, coherentFractions[strongestIndex] * .35);
+        var localEvidence = strongest * .72 + localCoherence * .24 + globalMean * .04;
+        return Math.Max(0, localEvidence - globalMean * .12);
     }
 }
 

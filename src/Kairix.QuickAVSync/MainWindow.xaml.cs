@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     }
     private void Window_KeyUp(object sender, KeyEventArgs e) { if (e.Key == Key.H) e.Handled = true; }
     private void Waveform_PlayheadSelected(object? sender, double relativeMs) => _viewModel.MovePlayheadTo(relativeMs);
+    private void Waveform_AudioPointPreviewed(object? sender, double relativeMs) => _viewModel.PreviewAudioPoint(relativeMs);
     private void Waveform_AudioPointCommitted(object? sender, double relativeMs) => _viewModel.SelectAudioPoint(relativeMs);
     private void Waveform_FrameStepRequested(object? sender, int amount) => _viewModel.StepTimeline(amount);
     private void Window_Closing(object? sender, CancelEventArgs e)

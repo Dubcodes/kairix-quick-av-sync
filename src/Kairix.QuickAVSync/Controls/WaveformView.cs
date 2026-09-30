@@ -12,13 +12,16 @@ public sealed class WaveformView : FrameworkElement
     public static readonly DependencyProperty AutoVisualMsProperty = DependencyProperty.Register(nameof(AutoVisualMs), typeof(double?), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty VisualMarkerMsProperty = DependencyProperty.Register(nameof(VisualMarkerMs), typeof(double?), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty PlayheadMsProperty = DependencyProperty.Register(nameof(PlayheadMs), typeof(double), typeof(WaveformView), new FrameworkPropertyMetadata(0d, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty FrameTicksMsProperty = DependencyProperty.Register(nameof(FrameTicksMs), typeof(IReadOnlyList<double>), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public IReadOnlyList<float>? Samples { get => (IReadOnlyList<float>?)GetValue(SamplesProperty); set => SetValue(SamplesProperty, value); }
     public double HalfWindowMs { get => (double)GetValue(HalfWindowMsProperty); set => SetValue(HalfWindowMsProperty, value); }
     public double AudioMarkerMs { get => (double)GetValue(AudioMarkerMsProperty); set => SetValue(AudioMarkerMsProperty, value); }
     public double? AutoVisualMs { get => (double?)GetValue(AutoVisualMsProperty); set => SetValue(AutoVisualMsProperty, value); }
     public double? VisualMarkerMs { get => (double?)GetValue(VisualMarkerMsProperty); set => SetValue(VisualMarkerMsProperty, value); }
     public double PlayheadMs { get => (double)GetValue(PlayheadMsProperty); set => SetValue(PlayheadMsProperty, value); }
+    public IReadOnlyList<double>? FrameTicksMs { get => (IReadOnlyList<double>?)GetValue(FrameTicksMsProperty); set => SetValue(FrameTicksMsProperty, value); }
     public event EventHandler<double>? PlayheadSelected;
+    public event EventHandler<double>? AudioPointPreviewed;
     public event EventHandler<double>? AudioPointCommitted;
     public event EventHandler<int>? FrameStepRequested;
     private bool _scrubbing, _draggingAudio;
@@ -37,7 +40,7 @@ public sealed class WaveformView : FrameworkElement
     {
         var position = e.GetPosition(this); _draggingAudio = Math.Abs(position.X - MsToX(AudioMarkerMs)) <= 10;
         _scrubbing = !_draggingAudio; _pendingAudioMs = XToMs(position.X); CaptureMouse();
-        if (_scrubbing) PlayheadSelected?.Invoke(this, _pendingAudioMs); else InvalidateVisual();
+        if (_scrubbing) PlayheadSelected?.Invoke(this, _pendingAudioMs); else { AudioPointPreviewed?.Invoke(this, _pendingAudioMs); InvalidateVisual(); }
         e.Handled = true;
     }
 
@@ -45,7 +48,7 @@ public sealed class WaveformView : FrameworkElement
     {
         if (!IsMouseCaptured) return; var milliseconds = XToMs(e.GetPosition(this).X);
         if (_scrubbing) PlayheadSelected?.Invoke(this, milliseconds);
-        else if (_draggingAudio) { _pendingAudioMs = milliseconds; InvalidateVisual(); }
+        else if (_draggingAudio) { _pendingAudioMs = milliseconds; AudioPointPreviewed?.Invoke(this, milliseconds); InvalidateVisual(); }
     }
 
     private void OnMouseLeftButtonUp(object? sender, MouseButtonEventArgs e)
@@ -65,26 +68,40 @@ public sealed class WaveformView : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(13, 19, 27)), null, new Rect(0, 0, ActualWidth, ActualHeight), 6, 6);
-        var grid = new Pen(new SolidColorBrush(Color.FromRgb(44, 57, 72)), 1); var foreground = new SolidColorBrush(Color.FromRgb(151, 166, 183));
+        var grid = new Pen(new SolidColorBrush(Color.FromRgb(44, 57, 72)), 1); var minorGrid = new Pen(new SolidColorBrush(Color.FromArgb(95, 44, 57, 72)), .6); var foreground = new SolidColorBrush(Color.FromRgb(151, 166, 183));
+        for (var i = -10; i <= 10; i++)
+        {
+            if (i % 2 == 0) continue; var x = MsToX(HalfWindowMs * i / 10); dc.DrawLine(minorGrid, new(x, 42), new(x, ActualHeight - 18));
+        }
         for (var i = -5; i <= 5; i++)
         {
-            var ms = HalfWindowMs * i / 5; var x = MsToX(ms); dc.DrawLine(grid, new(x, 22), new(x, ActualHeight - 18));
+            var ms = HalfWindowMs * i / 5; var x = MsToX(ms); dc.DrawLine(grid, new(x, 42), new(x, ActualHeight - 18));
             var text = new FormattedText($"{(ms > 0 ? "+" : "")}{ms:0} ms", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 10, foreground, VisualTreeHelper.GetDpi(this).PixelsPerDip);
             dc.DrawText(text, new Point(Math.Clamp(x - text.Width / 2, 2, Math.Max(2, ActualWidth - text.Width - 2)), ActualHeight - 16));
         }
+        if (FrameTicksMs is { Count: > 0 })
+        {
+            var framePen = new Pen(new SolidColorBrush(Color.FromArgb(125, 151, 166, 183)), 1);
+            foreach (var milliseconds in FrameTicksMs) { var x = MsToX(milliseconds); if (x >= 0 && x <= ActualWidth) dc.DrawLine(framePen, new(x, ActualHeight - 24), new(x, ActualHeight - 18)); }
+        }
         if (Samples is { Count: > 1 })
         {
-            var pen = new Pen(new SolidColorBrush(Color.FromRgb(91, 209, 191)), 1.2); var mid = (ActualHeight - 18 + 22) / 2;
-            for (var i = 1; i < Samples.Count; i++) dc.DrawLine(pen, new((i - 1d) / (Samples.Count - 1) * ActualWidth, mid - Samples[i - 1] * (mid - 26)), new(i / (double)(Samples.Count - 1) * ActualWidth, mid - Samples[i] * (mid - 26)));
+            var baseline = new Pen(new SolidColorBrush(Color.FromRgb(57, 77, 96)), 1); var pen = new Pen(new SolidColorBrush(Color.FromRgb(91, 209, 191)), 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47);
+            dc.DrawLine(baseline, new(0, mid), new(ActualWidth, mid));
+            for (var i = 0; i < Samples.Count; i++)
+            {
+                var x = i / (double)Math.Max(1, Samples.Count - 1) * ActualWidth; var display = Math.Sqrt(Math.Clamp(Samples[i], 0, 1));
+                dc.DrawLine(pen, new(x, mid - display * amplitude), new(x, mid + display * amplitude));
+            }
         }
-        Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, Color.FromRgb(250, 204, 74), 2.5, "AUDIO");
-        if (AutoVisualMs is { } auto) Marker(dc, auto, Color.FromRgb(105, 164, 255), 1.5, "AUTO");
-        if (VisualMarkerMs is { } visual) Marker(dc, visual, Color.FromRgb(255, 111, 107), 2.5, "VISUAL");
-        Marker(dc, PlayheadMs, Colors.White, 1, "PLAYHEAD");
+        Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, Color.FromRgb(250, 204, 74), 2.5, "AUDIO", 2);
+        if (AutoVisualMs is { } auto) Marker(dc, auto, Color.FromRgb(105, 164, 255), 1.5, "AUTO", 12);
+        if (VisualMarkerMs is { } visual) Marker(dc, visual, Color.FromRgb(255, 111, 107), 2.5, "VISUAL", 22);
+        Marker(dc, PlayheadMs, Colors.White, 1, "PLAYHEAD", 32);
     }
-    private void Marker(DrawingContext dc, double ms, Color color, double width, string label)
+    private void Marker(DrawingContext dc, double ms, Color color, double width, string label, double labelTop)
     {
-        var x = Math.Clamp(MsToX(ms), 0, ActualWidth); var brush = new SolidColorBrush(color); dc.DrawLine(new(brush, width), new(x, 18), new(x, ActualHeight - 18));
-        var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 9, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip); dc.DrawText(text, new(Math.Clamp(x + 3, 1, Math.Max(1, ActualWidth - text.Width - 2)), 2));
+        var x = Math.Clamp(MsToX(ms), 0, ActualWidth); var brush = new SolidColorBrush(color); dc.DrawLine(new(brush, width), new(x, 42), new(x, ActualHeight - 18));
+        var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 9, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip); dc.DrawText(text, new(Math.Clamp(x + 3, 1, Math.Max(1, ActualWidth - text.Width - 2)), labelTop));
     }
 }

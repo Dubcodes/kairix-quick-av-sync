@@ -1,16 +1,17 @@
 # Current state
 
-Updated: 2026-09-30
+Updated: 2026-10-01
 
 ## Verified
 
 - `Kairix.QuickAVSync.Core` targets plain `net10.0`, builds independently, has no Windows Desktop reference, P/Invoke, COM, WPF, or Windows-native types, and is guarded by an assembly-reference test plus a source leakage audit.
 - The Windows WPF application and all three production projects build in Release with zero compiler warnings.
-- 64 portable Core tests pass. They cover the original buffer/timing/detection/history behavior plus device ranking, physical pairing policy, clock correlation/discontinuities, unrelated-domain rejection, supersession, timeline mapping/Hold gating, bounded synthetic colour presentation, robust localized-motion rejection, and full synthetic audio-to-measurement paths for signed 5–120 ms offsets.
+- 84 portable Core tests pass. They cover the original buffer/timing/detection/history behavior plus fixed-reference event review, manual preview/commit modes, idempotent event finalization, device ranking, physical pairing policy, clock correlation/discontinuities, unrelated-domain rejection, supersession, timeline mapping/Hold gating, bounded synthetic colour presentation, multi-scale localized-motion detection/rejection, and full synthetic audio-to-measurement paths for signed 5–120 ms offsets.
 - 20 Windows tests pass, including Windows SDK COM IID/vtable/HRESULT-preservation regression checks, Auto/manual native-format ranking and fallback, per-device format settings persistence, deterministic YUV-to-BGR checks, readiness-state coverage, real MMDevice audio endpoint enumeration, and real Media Foundation video device enumeration on this computer.
 - The synthetic backend implements the same `ICaptureBackend`/`ICaptureSession` contracts as Windows, generates a known +60 ms video offset, and drives the existing live/review UI.
-- The published no-window startup failure was traced to the RAM `ProgressBar`'s default two-way binding against read-only `SystemFraction`. It is explicitly one-way now. WPF startup also explicitly creates, assigns, shows, and activates `MainWindow` before device/capture initialization. Both published variants pass `scripts/smoke-test-windows.ps1`, which verifies a live process, non-zero main-window handle, visible top-level window, title, and clean close.
-- Existing product behavior remains: bounded rolling buffers, automatic transient/visual analysis, current-event waveform, independent Audio Zero/automatic/effective/playhead markers, fixed auto-candidate thumbnail, manual overrides, a non-persistent Hold latch, keyboard/mouse timeline controls, RAM status, settings, three-result session history, reconnect, refresh, and privacy boundaries.
+- The published no-window startup failure was traced to the RAM `ProgressBar`'s default two-way binding against read-only `SystemFraction`. It is explicitly one-way now. WPF startup also explicitly creates, assigns, shows, and activates a normally resizable maximized `MainWindow` before device/capture initialization. Both published variants pass `scripts/smoke-test-windows.ps1`, which verifies a live process, non-zero main-window handle, visible maximized top-level window, title, and clean close.
+- Event review now uses a fixed reference/window with independent Audio mark, Auto visual candidate, Manual visual mark, and video playhead. Scrubbing produces a live Manual Preview result; Enter commits Manual Result. Audio edits update the result live without rebuilding or clearing the event, and each event can enter session history only once.
+- Existing product behavior remains: bounded rolling buffers, automatic transient/visual analysis, current-event waveform, fixed auto-candidate thumbnail, manual overrides, a non-persistent Hold latch, keyboard/mouse timeline controls, RAM status, settings, three-result session history, reconnect, refresh, and privacy boundaries.
 - Preview dispatch is latest-frame coalesced. Waveform/work-window construction and visual analysis run off the WPF dispatcher. Analysis generations reject stale results after event supersession.
 
 ## Physical XI100DUSB-HDMI observations
@@ -20,13 +21,14 @@ Updated: 2026-09-30
 - On the connected `XI100DUSB-HDMI Video`, Media Foundation startup, source activation, and Source Reader creation now return `S_OK`. The device exposes native progressive YUY2 formats including 1920×1080 at 60/1, 60000/1001, 50/1, 30/1, 30000/1001, 25/1, and 15/1, plus lower resolutions/rates.
 - Source-driven negotiation discovered the Source Reader's current/default mode and selected native index 0, 1920×1080 at 60/1 progressive YUY2 with stride 3840. `SetCurrentMediaType` returned `S_OK`.
 - The exact-Container-ID audio endpoint `Digital Audio Interface (XI100DUSB-HDMI Audio)` opened successfully and delivered 48 kHz stereo float32 blocks with WASAPI/QPC timestamps.
+- Owner desktop testing verified manual 1920×1080 50p YUY2 capture, colour presentation, paired 48 kHz audio, and DEVICE/QPC timestamps. Hold also behaved correctly as a toggle.
 - Physical validation delivered real 4,147,200-byte video buffers and 65 analysis frames in 1.13 seconds, averaging 16.666 ms by device timestamp. Three consecutive payload-bearing frames are required before Media Foundation is accepted. Video and audio both used the `windows-qpc-100ns` domain with device/platform capture timing, and the resulting state was `READY TO CLAP`.
 
 ## Physical Logitech C920 observations
 
 - The independently different UVC webcam paired to `Microphone (HD Pro Webcam C920)` by exact Container ID.
 - Before the format-selector pass, its Source Reader current/default mode was native index 0, 640×480 at 30/1 progressive YUY2. The device had also previously delivered payload at a native 1920×1080 30/1 NV12 mode. Auto now ranks that quality class ahead of the low-resolution current default; the policy is covered by deterministic native-mode tests.
-- The 2026-09-30 post-change probe still enumerated the C920 and exact-Container audio endpoint, but Windows denied `IMFActivate::ActivateObject` with `E_ACCESSDENIED` before a new live selection could be made. The implementation therefore does not claim a new physical 1080p result until camera access is available again.
+- Owner desktop testing verified colour presentation at 1920×1080 30p NV12 on the C920.
 - Video supplied device/QPC timestamps in the same domain as WASAPI audio and passed the three-consecutive-frame acceptance rule. Observed timestamps averaged 66.668 ms during this run despite the declared 30 fps mode, which may reflect camera exposure/cadence behavior and is reported rather than hidden.
 
 ## Implemented
@@ -63,8 +65,8 @@ Updated: 2026-09-30
 - WASAPI uses the endpoint's shared-mode mix format, which might apply Windows audio processing. The timing remains endpoint QPC-based, but format/processing behavior needs capture-card testing.
 - The Media Foundation implementation intentionally keeps only downscaled luma in the rolling buffer. A future presentation path may retain a separate bounded native preview surface without changing Core.
 - Rolling-buffer capacity is currently sized from the seconds setting at approximately 60 temporal images per second; very low/high cadence devices therefore need future timestamp-bounded retention work.
-- The post-change XI100DUSB physical retest is pending because this execution context received `E_ACCESSDENIED` while activating the already-enumerated device. No release claim is made for the new timeline/colour path until an operator retests it in the permitted desktop session.
-- Visual detection uses a robust sparse-luma motion baseline, compact block-level evidence, uniform-brightness rejection, and short-event scoring around the audio mark. It is deterministic, fast, and overridable, but is not robust to every background or hand pose.
+- Manual 1080p50 YUY2, YUY2/NV12 colour, and Hold were physically verified. The new fixed-reference timeline interaction and revised detector still require owner desktop retesting before release.
+- Visual detection uses separate coarse/global rejection and fine 16×9 local-cell evidence over bounded 320×180 luma. Fine cells combine top-percentile change, changed-pixel fraction, adjacent-cell support, and global mean; temporal scoring prefers a measured rise/peak/post-peak-drop contact pattern. It is deterministic, fast, and overridable. Close-range detection improved in the previous physical build, while distant claps were commonly missed; this pass improves synthetic distant-clap recall but is not claimed physically solved yet.
 - The displayed format is the negotiated Media Foundation capture output mode. Generic Media Foundation device capabilities do not reliably expose an independent HDMI/input signal standard for all devices, so the application does not infer or label one; manual native format selection is the truthful operator override.
 - The smoke script verifies a top-level window through Windows process/window APIs; it does not inspect the rendered visual content.
 
@@ -77,16 +79,17 @@ Updated: 2026-09-30
 5. Reconnect and confirm the negotiated resolution, rational frame rate, pixel format, scan mode, and field order.
 6. Confirm live preview appears and remains low-latency.
 7. Inspect whether timing reports device/QPC, stream-only, or degraded arrival timing.
-8. Clap and confirm PCM transient detection and immediate review transition.
-9. Confirm the automatic visual thumbnail remains fixed while scrubbing.
-10. Step to the true contact image/field, press Enter, and compare the manual result.
-11. Repeat several claps and confirm only the newest three numeric results remain.
-12. Hold H across a clap and confirm capture continues without a new event.
-13. Unplug/replug, use Refresh Devices, then use Reconnect; check for duplicate callbacks or stale frames.
-14. Test driver stall/reconnect and camera privacy denied behavior.
-15. Test 1080p25 and 1080p50.
-16. Test 1080i50 metadata; field-accurate review is expected to remain incomplete.
-17. Compare reported delay with a known external delay/reference before treating the measurement as calibrated.
+8. Clap at close and normal working distances and confirm PCM transient detection and a plausible visual candidate; note confidence and whether contact, rather than final approach, is selected.
+9. Confirm the automatic visual thumbnail remains fixed while scrubbing and that Current Result becomes Manual Preview.
+10. Drag Audio through the event window and confirm the waveform, frames, Auto candidate, thumbnail, and playhead remain visible while the result updates live.
+11. Step to true contact, press Enter, confirm Manual Result, then click the Auto thumbnail and confirm the committed manual result is retained.
+12. Repeat several claps and Resume Live transitions; confirm one history item per real event and only the newest three remain.
+13. Hold H across a clap and confirm capture continues without a new event.
+14. Unplug/replug, use Refresh Devices, then use Reconnect; check for duplicate callbacks or stale frames.
+15. Test driver stall/reconnect and camera privacy denied behavior; Resume Live must not claim READY after a non-ready capture state.
+16. Test 1080p25 and 1080p50.
+17. Test 1080i50 metadata; field-accurate review is expected to remain incomplete.
+18. Compare reported delay with a known external delay/reference before treating the measurement as calibrated.
 
 ## Next priorities
 

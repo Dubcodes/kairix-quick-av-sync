@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reworked event review around a fixed event reference. Audio correction now stays inside the current retained window and preserves waveform, frames, Auto candidate, thumbnail, playhead, and history identity. Scrubbing enters live `MANUAL PREVIEW`; Enter commits `MANUAL RESULT`; the Auto candidate remains independently available.
+- Improved the waveform with a symmetric display-only amplitude curve, baseline, minor divisions, captured-frame ticks, and separate marker-label lanes. Corrected toggle content precedence and made the normal startup window maximized.
+- Replaced coarse-only visual evidence with deterministic fine/coarse spatial evidence plus temporal rise/peak/drop selection. Small localized motion has higher recall, broad camera/exposure changes and sparse noise remain rejected, and advancing to the post-peak contact frame requires measured temporal evidence rather than a fixed offset.
+- Resume Live now restores the last authoritative capture state instead of fabricating readiness, and event finalization is idempotent so marker edits cannot duplicate history.
 - Changed review timeline interaction: click/drag now scrub only between captured temporal images, wheel/keyboard share the same playhead, and Audio Zero changes only by yellow-marker drag release or the `A` shortcut. Hold is now a non-persistent latch instead of a press-and-hold action.
 - Added bounded colour presentation alongside luma analysis: 160×90 BGRA preview/review/thumbnail buffers are derived from supported native formats while the detector remains luma-only. Added spatial block evidence to visual-clap scoring and rejection for uniform brightness flashes.
 - Clarified that displayed format is the negotiated capture mode, not inferred input-signal cadence. Added metadata-only hardware-probe support for an explicit native mode request.

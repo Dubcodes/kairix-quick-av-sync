@@ -59,12 +59,14 @@ ICaptureSession
          ├─ bounded rolling buffer
          └─ adaptive transient detector → Audio Zero
 
-Audio Zero + auto/manual visual mark → comparable-domain check → SyncResult
+Fixed event reference + independently movable Audio/Auto/Manual/Playhead marks → selected result mode → comparable-domain check → SyncResult
 ```
 
 Windows video prefers `MFSampleExtension_DeviceTimestamp`, which Microsoft defines as the QPC-epoch MFTIME domain in 100 ns units. WASAPI capture's QPC position is also delivered in 100 ns units. Those observations are comparable. `IMFSample::GetSampleTime` is retained as a stream-relative fallback but is not silently compared with endpoint QPC. See [capture backends](CAPTURE_BACKENDS.md).
 
 The signed calculation remains `visual - audio`: positive is audio leads, negative is audio lags. Core returns `TIMING DOMAINS NOT CORRELATED` instead of a number when domains differ.
+
+`EventReviewState` owns the current event reference and keeps it fixed for the event lifetime. Audio correction, playhead preview, automatic visual selection, and committed manual visual selection are independent state transitions. Only a genuinely new event or Resume Live finalizes the current result for session history, and finalization is idempotent.
 
 ## Concurrency and ownership
 
