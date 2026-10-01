@@ -22,13 +22,14 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 
 ## Workflow
 
-1. Select a video source, then choose **Auto — best native format** or one of its native modes. A manual format choice reconnects immediately and is remembered for that device.
-2. With all three automatic modes enabled, clap in front of the camera.
-3. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
-4. Click or drag the timeline to scrub to the nearest real temporal image. Mouse wheel and Left/Right step one image, while Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
-5. Drag the yellow **AUDIO** marker (or press A at the playhead) to correct Audio Zero inside the fixed event window. The result updates live without clearing the waveform, playhead, automatic candidate, or thumbnail.
-6. Press Enter to commit the playhead as **MANUAL RESULT**. The automatic candidate remains available from its thumbnail for comparison.
-7. Clap again; the previous event moves into the three-item session history once.
+1. Select a video source, then choose **Auto — best native format** or one of its native capture modes. A manual capture-format choice reconnects immediately and is remembered for that device.
+2. Leave **Physical Input** at **Auto / Detect**, or declare a known source standard. This declaration is labelled user-declared, is remembered per device, and never changes the capture mode.
+3. With all three automatic modes enabled, clap in front of the camera.
+4. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
+5. Click or drag the timeline to scrub to the nearest real temporal image. Mouse wheel and Left/Right step one image, while Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
+6. Drag the yellow **AUDIO** marker (or press A at the playhead) to correct Audio Zero inside the fixed event window. The result updates live without clearing the waveform, playhead, automatic candidate, or thumbnail.
+7. Press Enter to commit the playhead as **MANUAL RESULT**. The automatic candidate remains available from its thumbnail for comparison.
+8. Clap again; the previous event moves into the three-item session history once.
 
 **Manual Clap** (Space) freezes a work window around the latest rolling-buffer position. Capture and rolling buffers continue while reviewing. Press H once to toggle Hold for new automatic detections; press it again to resume. Hold never stops capture or buffering and resets off at launch.
 
@@ -80,7 +81,7 @@ Self-contained is the simplest public download but includes the runtime. Framewo
 - The Windows backend uses Media Foundation source readers for video and shared-mode WASAPI for audio. Pairing prefers exact device Container IDs, then hardware parents, and uses a unique-name fallback only when unambiguous; it never silently substitutes the default microphone.
 - Native capture has been physically validated on an XI100DUSB HDMI capture device and Logitech C920 UVC webcam. It is designed for standard Windows Media Foundation/UVC capture devices; hardware and driver compatibility may vary.
 - Native video is reduced directly from locked NV12, YUY2, UYVY, RGB32, or RGB24 buffers to bounded 640×360 luma frames plus a separate bounded 160×90 BGRA presentation buffer. Luma remains the detector input; colour is used only for preview/review/thumbnail presentation. Audio is normalized from float32 or PCM16 to owned float samples.
-- The displayed **Capture mode** is the negotiated Media Foundation output mode, not a claim about an HDMI/input signal standard. When a device exposes several output rates, use the manual native-format selector when the expected source cadence is known.
+- **Input / Source** and **Capture** are separate. Capture is the authoritative negotiated Media Foundation output. Source information comes from the strongest available provider, a visibly user-declared override, or passive luma/timestamp analysis labelled as an estimate. Kairix never claims universal discovery of the physical connector format.
 - Physical hardware behavior remains driver-dependent and is not yet certified. Field extraction is not applied without a driver that actually reports an interlaced layout; the currently tested USB SDI driver reports progressive Media Foundation output for every enumerated mode, including 1080/50. Broader native formats, reconnect after hot-unplug, and broad capture-card compatibility validation remain V1 work.
 - The unobtrusive coffee control opens `https://buymeacoffee.com/dubcodes` only after an explicit click.
 

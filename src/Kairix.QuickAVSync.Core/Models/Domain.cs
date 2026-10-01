@@ -18,6 +18,9 @@ public enum AudioSampleFormat { Float32, SignedPcm16, Unknown }
 public enum CaptureDeviceKind { Synthetic, ExternalCapture, IntegratedCamera, Unknown }
 public enum CaptureStatus { Created, Starting, Running, Stopping, Stopped, DeviceLost, Failed }
 public enum PairingConfidence { None, NameFallback, HardwareParent, ExactContainer }
+public enum InputSignalProvenance { Unknown, OperatingSystem, DeviceStandardProperty, VendorApi, ObservedAnalysis, UserDeclared }
+public enum SignalAuthority { Unknown, EstimatedLow, EstimatedMedium, EstimatedHigh, Authoritative }
+public enum SignalLockStatus { Unknown, Unlocked, Locking, Locked }
 
 public readonly record struct Rational(int Numerator, int Denominator)
 {
@@ -113,6 +116,42 @@ public sealed record VisualDetectionOptions(int Sensitivity = 50)
     public double NormalizedSensitivity => ClampedSensitivity / 100d;
 }
 
+public sealed record InputSignalInfo(
+    int? Width = null,
+    int? Height = null,
+    Rational? FrameRate = null,
+    double? FieldRate = null,
+    double? TemporalCadenceHz = null,
+    ScanMode ScanMode = ScanMode.Unknown,
+    FieldOrder FieldOrder = FieldOrder.Unknown,
+    SignalLockStatus LockStatus = SignalLockStatus.Unknown,
+    InputSignalProvenance Provenance = InputSignalProvenance.Unknown,
+    SignalAuthority Authority = SignalAuthority.Unknown,
+    string? ProviderName = null,
+    string? DeviceIdentity = null)
+{
+    public static InputSignalInfo Unknown { get; } = new();
+    public double? EffectiveTemporalRate => TemporalCadenceHz ?? (ScanMode == ScanMode.Interlaced ? FieldRate ?? FrameRate?.Value * 2 : FrameRate?.Value ?? FieldRate);
+    public bool HasUsefulData => EffectiveTemporalRate is not null || Width is not null || Height is not null || ScanMode != ScanMode.Unknown || LockStatus != SignalLockStatus.Unknown;
+}
+
+public sealed record ObservedSignalAnalysis(
+    InputSignalInfo Signal,
+    double ObservedFrameRate,
+    double MedianIntervalMilliseconds,
+    double JitterPercent,
+    double DuplicateFraction,
+    string RepeatPattern,
+    double InterlaceEvidence,
+    int FramesAnalyzed,
+    double DurationSeconds);
+
+public sealed record InputSignalOption(string Id, string Display, InputSignalInfo? Signal = null)
+{
+    public static InputSignalOption Auto { get; } = new("", "Auto / Detect");
+    public override string ToString() => Display;
+}
+
 public sealed record CaptureDeviceDescriptor(
     string Id,
     string FriendlyName,
@@ -175,4 +214,5 @@ public sealed class AppSettings
     public double RollingBufferSeconds { get; set; } = 5;
     public double WorkWindowMilliseconds { get; set; } = 250;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> InputSignalByDevice { get; set; } = new(StringComparer.Ordinal);
 }

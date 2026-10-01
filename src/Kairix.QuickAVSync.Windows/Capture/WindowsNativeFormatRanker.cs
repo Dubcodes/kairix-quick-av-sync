@@ -1,4 +1,5 @@
 using Kairix.QuickAVSync.Models;
+using Kairix.QuickAVSync.Services;
 
 namespace Kairix.QuickAVSync.Windows.Capture;
 
@@ -23,6 +24,16 @@ public static class WindowsNativeFormatRanker
         var autoRanked = Rank(list);
         var positions = autoRanked.Select((candidate, index) => (candidate.NativeIndex, index)).ToDictionary(x => x.NativeIndex, x => x.index);
         return list.OrderByDescending(candidate => string.Equals(ModeId(candidate), preferredModeId, StringComparison.Ordinal)).ThenBy(candidate => positions[candidate.NativeIndex]).ToArray();
+    }
+
+    public static IReadOnlyList<WindowsNativeFormatCandidate> RankForSource(IEnumerable<WindowsNativeFormatCandidate> candidates, InputSignalInfo? source)
+    {
+        var autoRanked = Rank(candidates);
+        if (!SourceAwareFormatMatcher.CanAutomaticallyApply(source)) return autoRanked;
+        var formats = autoRanked.Select(candidate => candidate.Format).ToArray();
+        var recommended = SourceAwareFormatMatcher.Recommend(formats, source);
+        if (recommended is null) return autoRanked;
+        return autoRanked.OrderByDescending(candidate => candidate.Format == recommended).ToArray();
     }
 
     public static string ModeId(WindowsNativeFormatCandidate candidate) => ModeId(candidate.Format, candidate.PixelFormat);

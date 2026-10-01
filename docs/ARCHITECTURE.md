@@ -30,6 +30,7 @@ Portable engine with no Windows Desktop dependency:
 - device ranking, conservative audio/video pairing, sync wording, and history;
 - deterministic synthetic backend and known-offset fixtures;
 - analysis-generation guard for stale-result rejection.
+- platform-neutral input-signal provenance/authority/lock models, provider coordination, passive cadence analysis, and source-aware format recommendations.
 
 Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts 640×360 analysis luma plus a separate 160×90 BGRA presentation image before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames. Luma alone is consumed by automatic visual analysis. Progressive, unknown, full-frame interlaced, and single-field interlaced metadata are distinct; temporal cadence is doubled only for a known full-frame interlaced layout.
 
@@ -44,6 +45,14 @@ Windows infrastructure:
 - Windows memory/process status, bounded local logging, and settings persistence.
 
 Media Foundation native-mode diagnostics retain whether the interlace attribute was present, its raw value, interpreted scan/layout/order, and the final negotiated media type. Missing metadata never silently becomes progressive.
+
+## Source identification
+
+Kairix deliberately separates the authoritative Media Foundation **capture output** from the pre-conversion **physical input signal** and from **observed estimates**. `IInputSignalProvider` permits generic Windows metadata and future optional vendor adapters without putting vendor code in Core. `InputSignalCoordinator` applies explicit precedence: authoritative standard device metadata, authoritative vendor metadata, user declaration, then high/medium/low observed estimates. A provider exception is isolated and never prevents capture.
+
+The generic Windows provider currently returns unavailable because no universal documented Windows contract exposes connector lock, source dimensions, cadence, and scan state across ordinary capture hardware. Passive `ObservedSignalAnalyzer` therefore samples the bounded luma stream in the background. It measures timestamp cadence/jitter, robust consecutive-frame change, periodic repeat patterns, and alternating row-parity evidence. Temporal cadence and scan mode remain separate; absence of interlace evidence never proves progressive scan.
+
+User declarations are persisted per device and labelled `UserDeclared`. They do not reconnect or alter capture. Source-aware matching can recommend an actually supported output mode for an estimate, but automatic ranking accepts only authoritative or user-declared source information. No vendor runtime is a hard dependency.
 
 ### `Kairix.QuickAVSync` (`net10.0-windows`, WPF)
 

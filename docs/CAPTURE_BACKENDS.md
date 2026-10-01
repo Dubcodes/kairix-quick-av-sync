@@ -27,6 +27,12 @@ Timing order:
 
 Microsoft documents both the Media Foundation device timestamp and WASAPI QPC position as QPC-derived 100 ns values. Core compares them only when the domain labels match. Relevant references: [Media Foundation device timestamp](https://learn.microsoft.com/en-us/windows/win32/medfound/mfsampleextension-devicetimestamp), [Source Reader processing](https://learn.microsoft.com/en-us/windows/win32/medfound/processing-media-data-with-the-source-reader), [WASAPI capture buffer timestamps](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer), and [Windows device Container IDs](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/devpkey-device-containerid).
 
+### Generic source-status finding
+
+Media Foundation Source Reader native/current media types and DirectShow [`IAMStreamConfig`](https://learn.microsoft.com/en-us/windows/win32/api/strmif/nn-strmif-iamstreamconfig) describe device-to-application output capabilities, not a universal pre-processing connector signal. [Media Foundation advanced video processing](https://learn.microsoft.com/en-us/windows/win32/medfound/mf-source-reader-enable-advanced-video-processing) may insert deinterlacing, scaling, and frame-rate conversion. [Kernel Streaming properties](https://learn.microsoft.com/en-us/windows-hardware/drivers/stream/ks-properties) define extensible property mechanisms, but not one cross-device connector-status property for source lock/timing/scan. [UVC Extension Units](https://learn.microsoft.com/en-us/windows-hardware/drivers/stream/device-requirements-for-usb-video-class-extension-units) are vendor-defined private controls identified by vendor GUIDs. Kairix therefore does not add DirectShow, probe undocumented extension units, or reinterpret output formats as physical input metadata. The Windows standard provider remains optional/unavailable unless a device exposes documented standard source status.
+
+Future Magewell, DeckLink, AJA, Elgato, or other adapters can implement `IInputSignalProvider` in Windows-side optional modules. Missing SDKs/runtimes must leave Media Foundation/WASAPI capture and passive analysis fully operational.
+
 ## Synthetic backend
 
 The synthetic backend is portable and uses a shared synthetic clock. Its default video event is 60 ms after the audio impulse. It is the CI/development reference for the end-to-end contract and both lead/lag directions are fixture-tested.

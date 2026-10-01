@@ -10,7 +10,7 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, InputSignalByDevice = new() { ["device"] = "1920x1080-50i" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.Equal("1920x1080-50i", loaded.InputSignalByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 }
@@ -26,6 +26,13 @@ public sealed class WindowsEnumerationTests
     {
         var devices = await new WindowsCaptureBackend().EnumerateDevicesAsync(default);
         Assert.Equal(devices.Count, devices.Select(x => x.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+    [Fact] public async Task GenericProviderDoesNotMislabelCaptureOutputAsPhysicalInput()
+    {
+        var provider = new GenericWindowsInputSignalProvider();
+        var device = new CaptureDeviceDescriptor("one", "Capture", CaptureDeviceKind.ExternalCapture, "windows-mf");
+        Assert.True(provider.CanHandle(device));
+        Assert.Null(await provider.GetSignalAsync(device, default));
     }
 }
 

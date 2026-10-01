@@ -10,7 +10,7 @@ dotnet test tests/Kairix.QuickAVSync.Core.Tests -c Release
 dotnet test tests/Kairix.QuickAVSync.Windows.Tests -c Release
 ```
 
-The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/progressive/full-frame/single-field timing, transient detection, fixed-reference event review, timeline-to-nearest-frame mapping, manual preview/commit modes, idempotent history finalization, Hold gating, waveform placement, bounded 640×360 synthetic luma and 160×90 colour presentation, multi-scale localized visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. Detector fixtures include close and distant claps, low/high contrast, varied positions and cadences, approach/contact/drop, steady movement, whole-frame movement, flashes, sparse noise, and no motion. Sensitivity tests prove that weak-clap acceptance changes while confidence remains evidence-derived and global/noise rejection remains active. An architecture test rejects Windows Desktop assembly references.
+The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/progressive/full-frame/single-field timing, transient detection, fixed-reference event review, timeline-to-nearest-frame mapping, manual preview/commit modes, idempotent history finalization, Hold gating, waveform placement, bounded 640×360 synthetic luma and 160×90 colour presentation, multi-scale localized visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. Detector fixtures include close and distant claps, low/high contrast, varied positions and cadences, approach/contact/drop, steady movement, whole-frame movement, flashes, sparse noise, and no motion. Source-signal fixtures cover native 25/50/59.94, repeated 25→50 and 30→60, deterministic 50→60 conversion, sensor noise, slow/fast/camera-like motion, alternating-line interlace evidence, high-detail progressive rejection, and already-deinterlaced unknown scan. Sensitivity tests prove that weak-clap acceptance changes while confidence remains evidence-derived and global/noise rejection remains active. An architecture test rejects Windows Desktop assembly references.
 
 Windows tests cover settings allow-list/per-device-format/sensitivity persistence, Auto/manual native-format ranking and fallback, raw Media Foundation interlace mapping and distinct mode identities, exact memory-segment accounting, deterministic YUV-to-BGR colour conversion, and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
 
@@ -51,5 +51,13 @@ Enumerate all native modes without starting capture or saving media:
 ```powershell
 dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release -- --list-formats "USB Capture SDI"
 ```
+
+Run a bounded blind source analysis without saving media:
+
+```powershell
+dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release -- --analyze-signal "USB Capture SDI"
+```
+
+The report keeps declared/observed capture output separate from estimated unique cadence, repeat pattern, interlace evidence, authority, and provenance. Compare an operator-known source only after recording the blind result.
 
 Passing enumeration tests or seeing a picture is not enough to claim calibrated A/V timing.

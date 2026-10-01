@@ -26,7 +26,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly WaveformBuilder _waveformBuilder = new();
     private readonly AnalysisGeneration _analysisGeneration = new();
     private readonly SessionHistoryService _history = new();
+    private readonly ObservedSignalAnalyzer _signalAnalyzer = new();
+    private readonly InputSignalCoordinator _signalCoordinator;
     private RollingBuffer<VideoFrame> _video = new(300, f => f.Timestamp.Ticks100ns);
+    private readonly RollingBuffer<VideoFrame> _signalVideo = new(600, f => f.Timestamp.Ticks100ns);
     private RollingBuffer<AudioChunk> _audio = new(300, a => a.Timestamp.Ticks100ns);
     private ICaptureSession? _capture;
     private CancellationTokenSource? _analysisCts;
@@ -34,6 +37,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private AppSettings _settings;
     private CaptureDeviceDescriptor? _selectedDevice;
     private CaptureFormatOption? _selectedCaptureFormat;
+    private InputSignalOption? _selectedInputSignal;
+    private InputSignalInfo? _providerSignal, _observedSignal;
+    private double? _observedDeliveredRate;
     private ImageSource? _videoImage, _autoThumbnail;
     private string _status = "STARTING", _formatText = "No negotiated format", _timingText = "TIMING NOT AVAILABLE", _memoryText = "Reading memory…";
     private bool _isReview, _isHold;
@@ -46,6 +52,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private ImageSource? _pendingPreview;
     private int _previewScheduled;
     private bool _suppressFormatReconnect;
+    private bool _suppressInputSignalSave;
+    private int _signalAnalysisRunning;
+    private long _lastSignalAnalysisUtcTicks;
     private long _formatRequest;
     private readonly SemaphoreSlim _reconnectGate = new(1, 1);
     private CaptureStatus _captureStatus = CaptureStatus.Created;
@@ -54,6 +63,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public event PropertyChangedEventHandler? PropertyChanged;
     public ObservableCollection<CaptureDeviceDescriptor> Devices { get; } = [];
     public ObservableCollection<CaptureFormatOption> CaptureFormats { get; } = [];
+    public ObservableCollection<InputSignalOption> InputSignals { get; } = [];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -68,6 +78,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public MainViewModel()
     {
         _settings = _settingsService.Load(); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
+        _signalCoordinator = new([new GenericWindowsInputSignalProvider()], _log);
+        foreach (var option in InputSignalOptions.Common) InputSignals.Add(option);
         RefreshCommand = new AsyncRelayCommand(RefreshDevicesAsync);
         ReconnectCommand = new AsyncRelayCommand(ReconnectAsync);
         ManualClapCommand = new RelayCommand(_ => BeginManualClap());
@@ -80,7 +92,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current.Dispatcher);
     }
 
-    public CaptureDeviceDescriptor? SelectedDevice { get => _selectedDevice; set { if (Set(ref _selectedDevice, value) && value is not null) { _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName; SaveSettings(); _ = RefreshCaptureFormatsAsync(value); } } }
+    public CaptureDeviceDescriptor? SelectedDevice
+    {
+        get => _selectedDevice;
+        set
+        {
+            if (!Set(ref _selectedDevice, value) || value is null) return;
+            _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName;
+            _suppressInputSignalSave = true;
+            try { SelectedInputSignal = InputSignalOptions.Find(_settings.InputSignalByDevice.GetValueOrDefault(value.Id)); }
+            finally { _suppressInputSignalSave = false; }
+            _providerSignal = null; _observedSignal = null; RefreshInputSignalDisplay();
+            SaveSettings(); _ = RefreshCaptureFormatsAsync(value); _ = RefreshInputSignalAsync(value);
+        }
+    }
     public CaptureFormatOption? SelectedCaptureFormat
     {
         get => _selectedCaptureFormat;
@@ -91,6 +116,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             else _settings.NativeFormatByDevice[SelectedDevice.Id] = value.Id;
             SaveSettings(); _log.Write("capture.format-selection", $"device='{SelectedDevice.FriendlyName}' selection='{value?.Display ?? CaptureFormatOption.Auto.Display}'");
             _ = ReconnectAsync();
+        }
+    }
+    public InputSignalOption? SelectedInputSignal
+    {
+        get => _selectedInputSignal;
+        set
+        {
+            if (!Set(ref _selectedInputSignal, value)) return;
+            if (!_suppressInputSignalSave && SelectedDevice is not null)
+            {
+                if (string.IsNullOrWhiteSpace(value?.Id)) _settings.InputSignalByDevice.Remove(SelectedDevice.Id);
+                else _settings.InputSignalByDevice[SelectedDevice.Id] = value.Id;
+                SaveSettings();
+                _log.Write("input-signal.selection", $"device='{SelectedDevice.FriendlyName}' selection='{value?.Display ?? InputSignalOption.Auto.Display}' (capture unchanged)");
+            }
+            RefreshInputSignalDisplay();
         }
     }
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; Changed(); SaveSettings(); } } }
@@ -104,6 +145,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ImageSource? AutoThumbnail { get => _autoThumbnail; private set => Set(ref _autoThumbnail, value); }
     public string Status { get => _status; private set => Set(ref _status, value); }
     public string FormatText { get => _formatText; private set => Set(ref _formatText, value); }
+    public string InputSignalText => InputSignalFormatter.Format(EffectiveInputSignal());
+    public string InputSignalDetailText
+    {
+        get
+        {
+            var signal = EffectiveInputSignal();
+            var recommendation = SourceAwareFormatMatcher.Recommend(CaptureFormats.Where(option => option.Format is not null).Select(option => option.Format!), signal);
+            var suffix = recommendation is null || signal?.Provenance != InputSignalProvenance.ObservedAnalysis ? "" : $" Suggested capture: {recommendation.Display}; operator selection required.";
+            return InputSignalFormatter.Detail(signal) + suffix;
+        }
+    }
     public string TimingText { get => _timingText; private set => Set(ref _timingText, value); }
     public string MemoryText { get => _memoryText; private set => Set(ref _memoryText, value); }
     public double SystemFraction { get => _systemFraction; private set => Set(ref _systemFraction, value); }
@@ -157,8 +209,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var selected = options.FirstOrDefault(option => string.Equals(option.Id, saved, StringComparison.Ordinal)) ?? CaptureFormatOption.Auto;
         if (!string.IsNullOrWhiteSpace(saved) && selected == CaptureFormatOption.Auto) { _settings.NativeFormatByDevice.Remove(device.Id); SaveSettings(); _log.Write("capture.format-selection", $"device='{device.FriendlyName}' saved native mode is unavailable; falling back to Auto"); }
         _suppressFormatReconnect = true;
-        try { CaptureFormats.Clear(); foreach (var option in options) CaptureFormats.Add(option); SelectedCaptureFormat = selected; }
+        try { CaptureFormats.Clear(); foreach (var option in options) CaptureFormats.Add(option); SelectedCaptureFormat = selected; RefreshInputSignalDisplay(); }
         finally { _suppressFormatReconnect = false; }
+    }
+
+    private async Task RefreshInputSignalAsync(CaptureDeviceDescriptor device)
+    {
+        var result = await _signalCoordinator.QueryAsync(device, CancellationToken.None);
+        if (SelectedDevice?.Id != device.Id) return;
+        _providerSignal = result;
+        _log.Write("input-signal.provider", result is null
+            ? $"device='{device.FriendlyName}' standard source metadata unavailable"
+            : $"device='{device.FriendlyName}' provider='{result.ProviderName}' provenance={result.Provenance} authority={result.Authority}");
+        RefreshInputSignalDisplay();
     }
 
     public async Task ReconnectAsync()
@@ -166,13 +229,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         await _reconnectGate.WaitAsync();
         try
         {
-        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _audio.Clear();
+        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _signalVideo.Clear(); _audio.Clear(); _observedSignal = null; _observedDeliveredRate = null; RefreshInputSignalDisplay();
         if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
         var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
         try
         {
             _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: SelectedCaptureFormat?.Id), CancellationToken.None); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
-            await _capture.StartAsync(CancellationToken.None); FormatText = $"Capture mode: {_capture.CurrentFormat.Display}"; TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
+            await _capture.StartAsync(CancellationToken.None); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
         }
         catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); }
         }
@@ -187,8 +250,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private void OnVideoFrame(object? sender, VideoFrame frame)
     {
-        _video.Add(frame);
+        _video.Add(frame); _signalVideo.Add(frame); ScheduleSignalAnalysis();
         if (!_isReview) ScheduleLatestPreview(ToBitmap(frame));
+    }
+
+    private void ScheduleSignalAnalysis()
+    {
+        var now = DateTime.UtcNow.Ticks;
+        if (now - Volatile.Read(ref _lastSignalAnalysisUtcTicks) < TimeSpan.FromSeconds(5).Ticks || Interlocked.CompareExchange(ref _signalAnalysisRunning, 1, 0) != 0) return;
+        Volatile.Write(ref _lastSignalAnalysisUtcTicks, now);
+        var frames = _signalVideo.Snapshot();
+        if (frames.Count < 30) { Interlocked.Exchange(ref _signalAnalysisRunning, 0); return; }
+        _ = Task.Run(() => _signalAnalyzer.Analyze(frames)).ContinueWith(task =>
+        {
+            Interlocked.Exchange(ref _signalAnalysisRunning, 0);
+            if (!task.IsCompletedSuccessfully) return;
+            Application.Current.Dispatcher.BeginInvoke(() =>
+            {
+                _observedSignal = task.Result.Signal.HasUsefulData ? task.Result.Signal : null;
+                _observedDeliveredRate = task.Result.ObservedFrameRate > 0 ? task.Result.ObservedFrameRate : null;
+                FormatText = BuildCaptureText();
+                RefreshInputSignalDisplay();
+                _log.Write("input-signal.analysis", $"frames={task.Result.FramesAnalyzed} duration={task.Result.DurationSeconds:0.00}s output={task.Result.ObservedFrameRate:0.###}Hz cadence={task.Result.Signal.EffectiveTemporalRate?.ToString("0.###") ?? "unknown"} duplicates={task.Result.DuplicateFraction:P1} pattern='{task.Result.RepeatPattern}' interlace={task.Result.InterlaceEvidence:0.000} authority={task.Result.Signal.Authority}");
+            });
+        }, TaskScheduler.Default);
     }
 
     private void ScheduleLatestPreview(ImageSource image)
@@ -203,7 +288,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (_capture is not null)
             {
                 TimingText = DescribeTiming(_capture.TimingQuality);
-                var format = $"Capture mode: {_capture.CurrentFormat.Display}";
+                var format = BuildCaptureText();
                 if (FormatText != format) FormatText = format;
             }
         }, DispatcherPriority.Render);
@@ -327,6 +412,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void SaveSettings() { try { _settingsService.Save(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
     private static void OpenCoffee() { if (!string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppConstants.BuyMeACoffeeUrl) { UseShellExecute = true }); }
     private static string DescribeTiming(TimingQuality quality) => quality switch { TimingQuality.DeviceHardware => "DEVICE/QPC TIMESTAMPS", TimingQuality.PlatformCaptureClock => "PLATFORM CAPTURE CLOCK", TimingQuality.ClockCorrelated => "CLOCKS CORRELATED", TimingQuality.StreamTimestamp => "STREAM TIMESTAMPS", TimingQuality.ArrivalFallback => "TIMING DEGRADED · ARRIVAL", _ => "TIMING DOMAINS UNRELATED" };
+    private string BuildCaptureText()
+    {
+        if (_capture is null) return "Capture: Not negotiated";
+        var declared = _capture.CurrentFormat.FrameRate.Value;
+        var observed = _observedDeliveredRate;
+        var difference = observed.HasValue && declared > 0 ? Math.Abs(observed.Value - declared) / declared : 0;
+        return difference >= .03 ? $"Capture: {_capture.CurrentFormat.Display} · observed {observed:0.###} fps" : $"Capture: {_capture.CurrentFormat.Display}";
+    }
+    private InputSignalInfo? EffectiveInputSignal()
+    {
+        if (SelectedInputSignal?.Signal is { } manual && SelectedDevice is { } device) return manual with { DeviceIdentity = device.Id };
+        return InputSignalCoordinator.SelectStrongest([_providerSignal, _observedSignal]);
+    }
+    private void RefreshInputSignalDisplay() { Changed(nameof(InputSignalText)); Changed(nameof(InputSignalDetailText)); }
     private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoSampleReceived -= OnVideoFrame; _capture.AudioSampleReceived -= OnAudio; _capture.StatusChanged -= OnCaptureStatus; await _capture.DisposeAsync(); _capture = null; }
     public async ValueTask DisposeAsync() { _memoryTimer.Stop(); _analysisCts?.Cancel(); SaveSettings(); await StopCaptureAsync(); }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Changed(name); return true; }

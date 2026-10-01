@@ -16,6 +16,13 @@ public interface ICaptureFormatProvider
     Task<IReadOnlyList<CaptureFormatOption>> EnumerateFormatsAsync(CaptureDeviceDescriptor device, CancellationToken cancellationToken);
 }
 
+public interface IInputSignalProvider
+{
+    string Name { get; }
+    bool CanHandle(CaptureDeviceDescriptor device);
+    Task<InputSignalInfo?> GetSignalAsync(CaptureDeviceDescriptor device, CancellationToken cancellationToken);
+}
+
 public interface ICaptureSession : IAsyncDisposable
 {
     CaptureFormat CurrentFormat { get; }

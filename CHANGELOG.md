@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added hardware-agnostic physical-input/source modelling with explicit provenance, authority, lock status, layered provider precedence, a per-device user declaration that never changes capture, source-aware supported-mode recommendations, and a generic passive timestamp/luma cadence analyzer. The UI now separates estimated/user-declared input from authoritative Media Foundation capture output, and HardwareProbe supports bounded `--analyze-signal` reports without saving media.
 - Raised luma analysis from 320×180 to 640×360 while keeping 160×90 BGRA presentation buffers, added a persisted 0–100 visual-sensitivity control, and kept confidence evidence-derived. Expanded deterministic coverage for weak distant-clap acceptance, high-sensitivity flash/camera/noise rejection, and representative analysis runtime.
 - Replaced the compact RAM meter with truthful available/other-system/Kairix partitions without double-counting process memory.
 - Preserved raw Media Foundation interlace presence/value plus interpreted layout and field order through enumeration, stable mode IDs, selection, final negotiation, logs, timing, and display. Missing metadata now remains unknown. A connected USB SDI device configured for 1080i50 reported all 133 modes—including negotiated 1080/50—as progressive output, so no field splitting was applied.
