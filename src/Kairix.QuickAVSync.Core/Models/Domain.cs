@@ -184,7 +184,14 @@ public sealed record CaptureFormatOption(string Id, string Display, CaptureForma
     public override string ToString() => Display;
 }
 
-public sealed record CaptureOpenOptions(int PreferredAnalysisWidth = 640, int PreferredAnalysisHeight = 360, bool IncludeAudio = true, string? PreferredNativeFormatId = null, int PreferredPresentationWidth = 160, int PreferredPresentationHeight = 90);
+public sealed record CaptureOpenOptions(
+    int PreferredAnalysisWidth = 640,
+    int PreferredAnalysisHeight = 360,
+    bool IncludeAudio = true,
+    string? PreferredNativeFormatId = null,
+    int PreferredPresentationWidth = 160,
+    int PreferredPresentationHeight = 90,
+    InputSignalInfo? PreferredSourceSignal = null);
 public sealed record CaptureStatusChangedEventArgs(CaptureStatus Status, string Message, Exception? Error = null);
 
 public sealed record SyncResult(double SignedMilliseconds, string Wording, bool TimingComparable = true)

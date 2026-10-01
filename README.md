@@ -4,6 +4,19 @@ Kairix Quick A/V Sync is a small Windows 10/11 utility for measuring the timing 
 
 > Current V1 status: Windows Media Foundation video capture, paired WASAPI audio, native format selection, comparable timing, and automatic/manual clap review are implemented. The native path has been physically validated on representative USB HDMI capture and UVC webcam hardware; broad device/driver compatibility remains under testing. See [CURRENT_STATE.md](CURRENT_STATE.md) for the precise boundary.
 
+## Download
+
+**Windows 10/11 x64:** download the current alpha from [GitHub Releases](https://github.com/Dubcodes/kairix-quick-av-sync/releases).
+
+The self-contained EXE needs no separate .NET installation or installer. Administrator rights are not normally expected, although Windows privacy settings and capture-device drivers still control hardware access. This is an unsigned public alpha, so Windows SmartScreen may show an **Unknown Publisher** warning. Download builds only from this repository's Releases page. Hardware compatibility remains under active testing.
+
+First run:
+
+1. Download and run the self-contained EXE.
+2. Select the capture device and leave **Capture Format** on **Auto** initially.
+3. If the physical source is known but cannot be identified automatically, optionally declare it under **Physical Input**, then press **Reconnect** to let Auto prefer a matching capture output.
+4. Clap and review the sync result. Manual timeline scrubbing and Audio/Visual corrections remain available.
+
 ## Platform support
 
 **Current:** Windows 10/11.
@@ -22,7 +35,7 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 
 ## Workflow
 
-1. Select a video source, then choose **Auto — best native format** or one of its native capture modes. A manual capture-format choice reconnects immediately and is remembered for that device.
+1. Select a video source, then choose **Auto — best native format** or one of its recommended native capture modes. **Show all formats** reveals uncommon driver modes without reconnecting. A manual capture-format choice reconnects immediately and is remembered for that device.
 2. Leave **Physical Input** at **Auto / Detect**, or declare a known source standard. This declaration is labelled user-declared, is remembered per device, and never changes the capture mode.
 3. With all three automatic modes enabled, clap in front of the camera.
 4. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.

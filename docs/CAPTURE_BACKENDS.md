@@ -18,6 +18,8 @@ A backend must:
 
 The current implementation uses Media Foundation for video and MMDevice/WASAPI for the paired capture endpoint. Video device symbolic links are stable backend identities. PnP Container IDs associate separate USB video/audio functions where drivers publish them.
 
+The format catalog retains every directly supported native mode. The normal operator list shows common 720p/1080p/2K/UHD rates from 23.976 through 60 plus conventional 720×480/576 SD; uncommon computer rasters and low rates remain available under **Show all formats**. A saved advanced selection remains visible even with Show All off. When capture is Auto, authoritative or user-declared source metadata can move an exact supported temporal/resolution match to the front of negotiation; explicit capture-mode selection always wins, and estimated/unknown source metadata leaves generic ranking unchanged.
+
 Timing order:
 
 1. Media Foundation device timestamp (`MFSampleExtension_DeviceTimestamp`) → `DeviceHardware`, domain `windows-qpc-100ns`.

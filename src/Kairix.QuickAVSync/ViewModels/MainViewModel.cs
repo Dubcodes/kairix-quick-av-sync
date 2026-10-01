@@ -53,10 +53,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private int _previewScheduled;
     private bool _suppressFormatReconnect;
     private bool _suppressInputSignalSave;
+    private bool _suppressDeviceRefresh;
     private int _signalAnalysisRunning;
     private long _lastSignalAnalysisUtcTicks;
     private long _formatRequest;
     private readonly SemaphoreSlim _reconnectGate = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCts = new();
+    private int _disposing;
+    private IReadOnlyList<CaptureFormatOption> _allCaptureFormats = [CaptureFormatOption.Auto];
+    private bool _showAllFormats;
     private CaptureStatus _captureStatus = CaptureStatus.Created;
     private string _captureStatusText = "CAPTURE NOT STARTED";
 
@@ -103,7 +108,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             try { SelectedInputSignal = InputSignalOptions.Find(_settings.InputSignalByDevice.GetValueOrDefault(value.Id)); }
             finally { _suppressInputSignalSave = false; }
             _providerSignal = null; _observedSignal = null; RefreshInputSignalDisplay();
-            SaveSettings(); _ = RefreshCaptureFormatsAsync(value); _ = RefreshInputSignalAsync(value);
+            SaveSettings();
+            if (!_suppressDeviceRefresh) { _ = RefreshCaptureFormatsAsync(value); _ = RefreshInputSignalAsync(value); }
         }
     }
     public CaptureFormatOption? SelectedCaptureFormat
@@ -134,6 +140,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             RefreshInputSignalDisplay();
         }
     }
+    public bool ShowAllFormats
+    {
+        get => _showAllFormats;
+        set
+        {
+            if (!Set(ref _showAllFormats, value)) return;
+            RebuildVisibleCaptureFormats(SelectedCaptureFormat ?? CaptureFormatOption.Auto);
+            Changed(nameof(ShowAllFormatsText));
+        }
+    }
+    public string ShowAllFormatsText => $"Show all formats ({Math.Max(0, _allCaptureFormats.Count - 1)})";
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; Changed(); SaveSettings(); } } }
     public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; Changed(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
@@ -151,7 +168,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         get
         {
             var signal = EffectiveInputSignal();
-            var recommendation = SourceAwareFormatMatcher.Recommend(CaptureFormats.Where(option => option.Format is not null).Select(option => option.Format!), signal);
+            var recommendation = SourceAwareFormatMatcher.Recommend(_allCaptureFormats.Where(option => option.Format is not null).Select(option => option.Format!), signal);
             var suffix = recommendation is null || signal?.Provenance != InputSignalProvenance.ObservedAnalysis ? "" : $" Suggested capture: {recommendation.Display}; operator selection required.";
             return InputSignalFormatter.Detail(signal) + suffix;
         }
@@ -179,18 +196,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public bool IsHold { get => _isHold; set => Set(ref _isHold, value); }
     public string LogPath => _log.Path;
 
-    public async Task InitializeAsync() { await RefreshDevicesAsync(); if (SelectedDevice is not null) await RefreshCaptureFormatsAsync(SelectedDevice); UpdateMemory(); _memoryTimer.Start(); await ReconnectAsync(); }
+    public async Task InitializeAsync()
+    {
+        await RefreshDevicesAsync();
+        if (Volatile.Read(ref _disposing) != 0) return;
+        UpdateMemory(); _memoryTimer.Start(); await ReconnectAsync();
+    }
     private async Task RefreshDevicesAsync()
     {
         var selected = SelectedDevice?.Id; var found = new List<CaptureDeviceDescriptor>();
         foreach (var backend in _backends)
         {
-            try { found.AddRange(await backend.EnumerateDevicesAsync(CancellationToken.None)); }
+            try { found.AddRange(await backend.EnumerateDevicesAsync(_lifetimeCts.Token)); }
+            catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { return; }
             catch (Exception ex) { _log.Write("device.enumeration", $"backend={backend.Id} failed: {ex.Message}"); }
         }
+        if (Volatile.Read(ref _disposing) != 0) return;
         var ranked = _deviceRanker.Rank(found, _settings.LastDeviceId, _settings.LastDeviceName); Devices.Clear(); foreach (var device in ranked) { Devices.Add(device); _log.Write("device.ranking", $"rank={Devices.Count} name='{device.FriendlyName}' kind={device.Kind} available={device.IsAvailable} container='{device.ContainerId ?? "unavailable"}'"); }
-        SelectedDevice = Devices.FirstOrDefault(d => d.Id == selected) ?? _deviceRanker.SelectBest(found, _settings.LastDeviceId, _settings.LastDeviceName) ?? Devices.FirstOrDefault();
-        if (SelectedDevice is not null) await RefreshCaptureFormatsAsync(SelectedDevice);
+        _suppressDeviceRefresh = true;
+        try { SelectedDevice = Devices.FirstOrDefault(d => d.Id == selected) ?? _deviceRanker.SelectBest(found, _settings.LastDeviceId, _settings.LastDeviceName) ?? Devices.FirstOrDefault(); }
+        finally { _suppressDeviceRefresh = false; }
+        if (SelectedDevice is not null) { await RefreshCaptureFormatsAsync(SelectedDevice); await RefreshInputSignalAsync(SelectedDevice); }
         _log.Write("device.selection", $"selected='{SelectedDevice?.FriendlyName ?? "none"}' id='{SelectedDevice?.Id ?? "none"}'");
         var hardwareCount = found.Count(d => d.Kind != CaptureDeviceKind.Synthetic); Status = hardwareCount == 0 ? "NO HARDWARE CAPTURE DEVICE — SYNTHETIC MODE" : $"{hardwareCount} CAPTURE DEVICE(S) FOUND";
     }
@@ -201,21 +227,38 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var backend = _backends.FirstOrDefault(candidate => candidate.Id == device.BackendId);
         if (backend is ICaptureFormatProvider provider)
         {
-            try { options.AddRange(await provider.EnumerateFormatsAsync(device, CancellationToken.None)); }
+            try { options.AddRange(await provider.EnumerateFormatsAsync(device, _lifetimeCts.Token)); }
+            catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { return; }
             catch (Exception ex) { _log.Write("capture.format-list", $"device='{device.FriendlyName}' failed: {ex.Message}"); }
         }
         if (request != Volatile.Read(ref _formatRequest) || SelectedDevice?.Id != device.Id) return;
         var saved = _settings.NativeFormatByDevice.TryGetValue(device.Id, out var modeId) ? modeId : null;
         var selected = options.FirstOrDefault(option => string.Equals(option.Id, saved, StringComparison.Ordinal)) ?? CaptureFormatOption.Auto;
         if (!string.IsNullOrWhiteSpace(saved) && selected == CaptureFormatOption.Auto) { _settings.NativeFormatByDevice.Remove(device.Id); SaveSettings(); _log.Write("capture.format-selection", $"device='{device.FriendlyName}' saved native mode is unavailable; falling back to Auto"); }
+        _allCaptureFormats = options;
+        RebuildVisibleCaptureFormats(selected);
+        Changed(nameof(ShowAllFormatsText));
+        RefreshInputSignalDisplay();
+    }
+
+    private void RebuildVisibleCaptureFormats(CaptureFormatOption selected)
+    {
         _suppressFormatReconnect = true;
-        try { CaptureFormats.Clear(); foreach (var option in options) CaptureFormats.Add(option); SelectedCaptureFormat = selected; RefreshInputSignalDisplay(); }
+        try
+        {
+            var visible = CaptureFormatCatalog.VisibleOptions(_allCaptureFormats, ShowAllFormats, selected.Id);
+            CaptureFormats.Clear();
+            foreach (var option in visible) CaptureFormats.Add(option);
+            SelectedCaptureFormat = selected;
+        }
         finally { _suppressFormatReconnect = false; }
     }
 
     private async Task RefreshInputSignalAsync(CaptureDeviceDescriptor device)
     {
-        var result = await _signalCoordinator.QueryAsync(device, CancellationToken.None);
+        InputSignalInfo? result;
+        try { result = await _signalCoordinator.QueryAsync(device, _lifetimeCts.Token); }
+        catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { return; }
         if (SelectedDevice?.Id != device.Id) return;
         _providerSignal = result;
         _log.Write("input-signal.provider", result is null
@@ -226,17 +269,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public async Task ReconnectAsync()
     {
+        if (Volatile.Read(ref _disposing) != 0) return;
         await _reconnectGate.WaitAsync();
         try
         {
+        if (Volatile.Read(ref _disposing) != 0) return;
         _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _signalVideo.Clear(); _audio.Clear(); _observedSignal = null; _observedDeliveredRate = null; RefreshInputSignalDisplay();
         if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
         var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
         try
         {
-            _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: SelectedCaptureFormat?.Id), CancellationToken.None); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
-            await _capture.StartAsync(CancellationToken.None); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
+            var sourcePreference = string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? EffectiveInputSignal() : null;
+            _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: SelectedCaptureFormat?.Id, PreferredSourceSignal: sourcePreference), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
+            await _capture.StartAsync(_lifetimeCts.Token); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
         }
+        catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { await StopCaptureAsync(); }
         catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); }
         }
         finally { _reconnectGate.Release(); }
@@ -427,7 +474,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void RefreshInputSignalDisplay() { Changed(nameof(InputSignalText)); Changed(nameof(InputSignalDetailText)); }
     private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoSampleReceived -= OnVideoFrame; _capture.AudioSampleReceived -= OnAudio; _capture.StatusChanged -= OnCaptureStatus; await _capture.DisposeAsync(); _capture = null; }
-    public async ValueTask DisposeAsync() { _memoryTimer.Stop(); _analysisCts?.Cancel(); SaveSettings(); await StopCaptureAsync(); }
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposing, 1) != 0) return;
+        _log.Write("shutdown", "View model disposal started; canceling capture lifetime.");
+        _lifetimeCts.Cancel(); _memoryTimer.Stop(); _analysisCts?.Cancel(); SaveSettings();
+        await _reconnectGate.WaitAsync();
+        try { await StopCaptureAsync(); _log.Write("shutdown", "Capture disposal completed."); }
+        finally { _reconnectGate.Release(); _lifetimeCts.Dispose(); }
+    }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Changed(name); return true; }
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
 }

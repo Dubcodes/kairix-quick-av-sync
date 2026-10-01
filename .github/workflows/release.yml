@@ -21,20 +21,61 @@ jobs:
       - run: dotnet build Kairix.QuickAVSync.sln -c Release --no-restore -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Core.Tests/Kairix.QuickAVSync.Core.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Windows.Tests/Kairix.QuickAVSync.Windows.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
-      - run: dotnet publish src/Kairix.QuickAVSync -p:PublishProfile=win-x64-self-contained --no-restore -m:1 -nodeReuse:false
-      - name: Package self-contained Windows x64 build
+      - run: dotnet publish src/Kairix.QuickAVSync -p:PublishProfile=win-x64-self-contained -m:1 -nodeReuse:false
+      - name: Prepare verified public assets
         shell: pwsh
-        run: Compress-Archive -Path artifacts/publish/self-contained/* -DestinationPath Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64.zip -Force
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $publishDirectory = Join-Path $PWD 'artifacts/publish/self-contained'
+          $publishedExe = Join-Path $publishDirectory 'Kairix.QuickAVSync.exe'
+          if (-not (Test-Path -LiteralPath $publishedExe -PathType Leaf)) { throw "Published executable was not found: $publishedExe" }
+
+          $releaseDirectory = Join-Path $PWD 'artifacts/release'
+          $zipDirectory = Join-Path $env:RUNNER_TEMP 'kairix-release-zip'
+          New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
+          New-Item -ItemType Directory -Path $zipDirectory -Force | Out-Null
+
+          $exeName = "Kairix.QuickAVSync-$tag-win-x64.exe"
+          $zipName = "Kairix-Quick-AV-Sync-$tag-win-x64.zip"
+          $publicExe = Join-Path $releaseDirectory $exeName
+          $publicZip = Join-Path $releaseDirectory $zipName
+          Copy-Item -LiteralPath $publishedExe -Destination $publicExe
+          Copy-Item -LiteralPath $publishedExe -Destination (Join-Path $zipDirectory 'Kairix.QuickAVSync.exe')
+          Copy-Item -LiteralPath (Join-Path $PWD 'README.md') -Destination $zipDirectory
+          Copy-Item -LiteralPath (Join-Path $PWD 'LICENSE') -Destination $zipDirectory
+          Compress-Archive -Path (Join-Path $zipDirectory '*') -DestinationPath $publicZip -Force
+
+          $checksumPath = Join-Path $releaseDirectory 'SHA256SUMS.txt'
+          $checksumLines = @($publicExe, $publicZip) | ForEach-Object {
+            $file = Get-Item -LiteralPath $_
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          Set-Content -LiteralPath $checksumPath -Value $checksumLines -Encoding ascii
+
+          foreach ($required in @($publicExe, $publicZip, $checksumPath)) {
+            if (-not (Test-Path -LiteralPath $required -PathType Leaf) -or (Get-Item -LiteralPath $required).Length -le 0) {
+              throw "Release asset is missing or empty: $required"
+            }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64
-          path: Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64.zip
+          path: artifacts/release/*
           if-no-files-found: error
-      - name: Create prerelease and upload package
+      - name: Create prerelease and upload verified assets
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $arguments = @("${{ github.ref_name }}", "Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64.zip", "--repo", "${{ github.repository }}", "--title", "Kairix Quick A/V Sync ${{ github.ref_name }}", "--generate-notes")
-          if ("${{ github.ref_name }}" -match "-") { $arguments += "--prerelease" }
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $notes = Join-Path $PWD "docs/RELEASE_NOTES_$tag.md"
+          if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw "Release notes were not found: $notes" }
+          $assets = @(Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts/release') -File | ForEach-Object FullName)
+          if ($assets.Count -lt 3) { throw 'Expected the EXE, ZIP, and checksum assets before creating the release.' }
+          $arguments = @($tag) + $assets + @("--repo", "${{ github.repository }}", "--title", "Kairix Quick A/V Sync $tag", "--notes-file", $notes, "--verify-tag")
+          if ($tag -match '-') { $arguments += '--prerelease' }
           gh release create @arguments
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }

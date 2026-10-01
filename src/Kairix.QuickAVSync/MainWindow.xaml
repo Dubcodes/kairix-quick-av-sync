@@ -23,6 +23,7 @@
         <TextBlock Text="KAIRIX" FontSize="11" FontWeight="Bold" Foreground="#5BD1BF"/><TextBlock Text="Quick A/V Sync" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,10"/>
         <TextBlock Text="VIDEO DEVICE" Style="{StaticResource Label}"/><ComboBox ItemsSource="{Binding Devices}" SelectedItem="{Binding SelectedDevice}" Margin="0,0,0,8"/>
         <TextBlock Text="CAPTURE FORMAT" Style="{StaticResource Label}"/><ComboBox ItemsSource="{Binding CaptureFormats}" SelectedItem="{Binding SelectedCaptureFormat}" Margin="0,0,0,8" ToolTip="Auto chooses the best supported native format. Selecting a mode reconnects immediately."/>
+        <CheckBox Content="{Binding ShowAllFormatsText}" IsChecked="{Binding ShowAllFormats}" Foreground="#AAB8C7" FontSize="11" Margin="1,0,0,6" ToolTip="Show every driver-exposed format, including uncommon computer and low-frame-rate modes. This does not reconnect capture."/>
         <TextBlock Text="PHYSICAL INPUT" Style="{StaticResource Label}"/><ComboBox ItemsSource="{Binding InputSignals}" SelectedItem="{Binding SelectedInputSignal}" Margin="0,0,0,8" ToolTip="Optional source declaration, saved per device. This does not change or reconnect capture."/>
         <WrapPanel><Button Content="Refresh Devices" Command="{Binding RefreshCommand}"/><Button Content="Reconnect" Command="{Binding ReconnectCommand}"/></WrapPanel>
         <TextBlock Text="DETECTION" Style="{StaticResource Label}"/>

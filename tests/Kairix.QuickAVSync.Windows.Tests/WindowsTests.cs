@@ -1,4 +1,5 @@
 using Kairix.QuickAVSync.Models;
+using Kairix.QuickAVSync.Services;
 using Kairix.QuickAVSync.Windows.Infrastructure;
 using Kairix.QuickAVSync.Windows.Capture;
 using System.Reflection;
@@ -117,6 +118,50 @@ public sealed class NativeFormatRankingTests
         var rate = Rational.From(30_000, 1_001);
         var candidate = new WindowsNativeFormatCandidate(0, new(1920, 1080, rate, ScanMode.Progressive, FieldOrder.Unknown, PixelFormat: VideoPixelFormat.Yuy2), VideoPixelFormat.Yuy2, true);
         Assert.Equal(rate, WindowsNativeFormatRanker.Rank([candidate])[0].Format.FrameRate);
+    }
+
+    [Fact]
+    public void AutoWithUserDeclared1080i50Prefers1080p50()
+    {
+        var p60 = Candidate(0, 1920, 1080, 60, VideoPixelFormat.Yuy2);
+        var p50 = Candidate(1, 1920, 1080, 50, VideoPixelFormat.Yuy2);
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal;
+        Assert.Equal(1, WindowsNativeFormatRanker.Rank([p60, p50], null, source)[0].NativeIndex);
+    }
+
+    [Fact]
+    public void AutoWithUserDeclared1080p25Prefers1080p25()
+    {
+        var p60 = Candidate(0, 1920, 1080, 60, VideoPixelFormat.Yuy2);
+        var p25 = Candidate(1, 1920, 1080, 25, VideoPixelFormat.Yuy2);
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-25p").Signal;
+        Assert.Equal(1, WindowsNativeFormatRanker.Rank([p60, p25], null, source)[0].NativeIndex);
+    }
+
+    [Fact]
+    public void ExplicitCaptureModeOverridesSourcePreference()
+    {
+        var p60 = Candidate(0, 1920, 1080, 60, VideoPixelFormat.Yuy2);
+        var p50 = Candidate(1, 1920, 1080, 50, VideoPixelFormat.Yuy2);
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal;
+        Assert.Equal(0, WindowsNativeFormatRanker.Rank([p60, p50], WindowsNativeFormatRanker.ModeId(p60), source)[0].NativeIndex);
+    }
+
+    [Fact]
+    public void EstimatedAndUnknownSourcesLeaveGenericRankingUnchanged()
+    {
+        var modes = new[] { Candidate(0, 1920, 1080, 60, VideoPixelFormat.Yuy2), Candidate(1, 1920, 1080, 50, VideoPixelFormat.Yuy2) };
+        var estimated = new InputSignalInfo(1920, 1080, TemporalCadenceHz: 50, Provenance: InputSignalProvenance.ObservedAnalysis, Authority: SignalAuthority.EstimatedHigh);
+        Assert.Equal(WindowsNativeFormatRanker.Rank(modes).Select(candidate => candidate.NativeIndex), WindowsNativeFormatRanker.Rank(modes, null, estimated).Select(candidate => candidate.NativeIndex));
+        Assert.Equal(WindowsNativeFormatRanker.Rank(modes).Select(candidate => candidate.NativeIndex), WindowsNativeFormatRanker.Rank(modes, null, InputSignalInfo.Unknown).Select(candidate => candidate.NativeIndex));
+    }
+
+    [Fact]
+    public void MissingSourceMatchFallsBackToGenericRanking()
+    {
+        var modes = new[] { Candidate(0, 1920, 1080, 60, VideoPixelFormat.Yuy2), Candidate(1, 1280, 720, 50, VideoPixelFormat.Yuy2) };
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal;
+        Assert.Equal(WindowsNativeFormatRanker.Rank(modes).Select(candidate => candidate.NativeIndex), WindowsNativeFormatRanker.Rank(modes, null, source).Select(candidate => candidate.NativeIndex));
     }
 
     private static WindowsNativeFormatCandidate Candidate(int index, int width, int height, int rate, VideoPixelFormat pixel) =>

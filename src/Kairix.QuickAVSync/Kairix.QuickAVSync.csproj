@@ -9,6 +9,11 @@
     <ApplicationIcon />
     <AssemblyName>Kairix.QuickAVSync</AssemblyName>
     <RootNamespace>Kairix.QuickAVSync</RootNamespace>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>alpha</VersionSuffix>
+    <Product>Kairix Quick A/V Sync</Product>
+    <Description>Windows audio/video synchronization measurement utility</Description>
+    <Authors>Dubcodes</Authors>
   </PropertyGroup>
 
   <ItemGroup>

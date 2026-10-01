@@ -9,7 +9,7 @@ namespace Kairix.QuickAVSync;
 
 public partial class MainWindow : Window
 {
-    private readonly MainViewModel _viewModel = new(); private readonly AppLogger _shutdownLog = new(); private bool _closing;
+    private readonly MainViewModel _viewModel = new(); private readonly AppLogger _shutdownLog = new(); private bool _closing; private bool _shutdownComplete;
     public MainWindow() { InitializeComponent(); DataContext = _viewModel; Loaded += async (_, _) => await _viewModel.InitializeAsync(); }
     private static bool EditingText() => Keyboard.FocusedElement is System.Windows.Controls.TextBox;
     private void Window_KeyDown(object sender, KeyEventArgs e)
@@ -22,22 +22,26 @@ public partial class MainWindow : Window
     private void Waveform_AudioPointPreviewed(object? sender, double relativeMs) => _viewModel.PreviewAudioPoint(relativeMs);
     private void Waveform_AudioPointCommitted(object? sender, double relativeMs) => _viewModel.SelectAudioPoint(relativeMs);
     private void Waveform_FrameStepRequested(object? sender, int amount) => _viewModel.StepTimeline(amount);
-    private void Window_Closing(object? sender, CancelEventArgs e)
+    private async void Window_Closing(object? sender, CancelEventArgs e)
     {
+        if (_shutdownComplete) return;
+        e.Cancel = true;
         if (_closing) return;
         _closing = true;
-        _ = DisposeAfterWindowCloseAsync();
-    }
-
-    private async Task DisposeAfterWindowCloseAsync()
-    {
+        _shutdownLog.Write("shutdown", "Window close requested; disposing application services.");
         try
         {
             await _viewModel.DisposeAsync();
+            _shutdownLog.Write("shutdown", "Application services disposed; completing window close.");
         }
         catch (Exception ex)
         {
             _shutdownLog.Write("shutdown.failure", ex.ToString());
+        }
+        finally
+        {
+            _shutdownComplete = true;
+            Application.Current.Shutdown();
         }
     }
 }

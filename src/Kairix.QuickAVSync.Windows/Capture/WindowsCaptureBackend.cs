@@ -397,7 +397,11 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         (int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)? chosen = null;
         try
         {
-            var ranked = WindowsNativeFormatRanker.Rank(candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))), options.PreferredNativeFormatId);
+            var ranked = WindowsNativeFormatRanker.Rank(
+                candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))),
+                options.PreferredNativeFormatId,
+                options.PreferredSourceSignal);
+            log.Write("capture.negotiation", $"ranking={(string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) ? SourceAwareFormatMatcher.CanAutomaticallyApply(options.PreferredSourceSignal) ? "source-aware-auto" : "generic-auto" : "explicit-mode")} sourceProvenance={options.PreferredSourceSignal?.Provenance.ToString() ?? "none"}");
             foreach (var rankedCandidate in ranked)
             {
                 var candidate = candidates.First(item => item.Index == rankedCandidate.NativeIndex);

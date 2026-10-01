@@ -31,6 +31,7 @@ Portable engine with no Windows Desktop dependency:
 - deterministic synthetic backend and known-offset fixtures;
 - analysis-generation guard for stale-result rejection.
 - platform-neutral input-signal provenance/authority/lock models, provider coordination, passive cadence analysis, and source-aware format recommendations.
+- platform-neutral capture-format classification that keeps common HD and conventional SD modes concise while retaining every driver mode for advanced access.
 
 Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts 640×360 analysis luma plus a separate 160×90 BGRA presentation image before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames. Luma alone is consumed by automatic visual analysis. Progressive, unknown, full-frame interlaced, and single-field interlaced metadata are distinct; temporal cadence is doubled only for a known full-frame interlaced layout.
 
@@ -53,6 +54,8 @@ Kairix deliberately separates the authoritative Media Foundation **capture outpu
 The generic Windows provider currently returns unavailable because no universal documented Windows contract exposes connector lock, source dimensions, cadence, and scan state across ordinary capture hardware. Passive `ObservedSignalAnalyzer` therefore samples the bounded luma stream in the background. It measures timestamp cadence/jitter, robust consecutive-frame change, periodic repeat patterns, and alternating row-parity evidence. Temporal cadence and scan mode remain separate; absence of interlace evidence never proves progressive scan.
 
 User declarations are persisted per device and labelled `UserDeclared`. They do not reconnect or alter capture. Source-aware matching can recommend an actually supported output mode for an estimate, but automatic ranking accepts only authoritative or user-declared source information. No vendor runtime is a hard dependency.
+
+`CaptureOpenOptions` carries an optional preferred source signal across the portable backend boundary. The Windows backend uses it only when Capture Format is Auto. An explicit native-format ID always ranks first and cannot be overridden by source metadata. Passive estimates are passed safely but rejected for automatic application by the authority policy.
 
 ### `Kairix.QuickAVSync` (`net10.0-windows`, WPF)
 

@@ -70,9 +70,16 @@ public static class InputSignalOptions
         Add(options, 1920, 1080, 30000, 1001, ScanMode.Interlaced, 60000d / 1001);
         Add(options, 1920, 1080, 60000, 1001, ScanMode.Progressive);
         Add(options, 1920, 1080, 60, 1, ScanMode.Progressive);
+        Add(options, 1280, 720, 24000, 1001, ScanMode.Progressive);
+        Add(options, 1280, 720, 24, 1, ScanMode.Progressive);
+        Add(options, 1280, 720, 25, 1, ScanMode.Progressive);
+        Add(options, 1280, 720, 30000, 1001, ScanMode.Progressive);
+        Add(options, 1280, 720, 30, 1, ScanMode.Progressive);
         Add(options, 1280, 720, 50, 1, ScanMode.Progressive);
         Add(options, 1280, 720, 60000, 1001, ScanMode.Progressive);
         Add(options, 1280, 720, 60, 1, ScanMode.Progressive);
+        Add(options, 720, 576, 25, 1, ScanMode.Interlaced, 50);
+        Add(options, 720, 480, 30000, 1001, ScanMode.Interlaced, 60000d / 1001);
         return options;
     }
 
@@ -82,8 +89,16 @@ public static class InputSignalOptions
         var cadence = scanMode == ScanMode.Interlaced ? fieldRate ?? rate.Value * 2 : rate.Value;
         var signal = new InputSignalInfo(width, height, rate, fieldRate, cadence, scanMode, FieldOrder.Unknown,
             SignalLockStatus.Unknown, InputSignalProvenance.UserDeclared, SignalAuthority.Authoritative, "User", null);
-        var scan = scanMode == ScanMode.Interlaced ? $"{cadence:0.##}i" : $"{rate.Value:0.##}p";
+        var scan = scanMode == ScanMode.Interlaced ? $"{RateLabel(cadence)}i" : $"{RateLabel(rate.Value)}p";
         options.Add(new($"{width}x{height}-{scan}", $"{width}×{height} · {scan}", signal));
+    }
+
+    private static string RateLabel(double rate)
+    {
+        if (Math.Abs(rate - 24000d / 1001) < .01) return "23.976";
+        if (Math.Abs(rate - 30000d / 1001) < .01) return "29.97";
+        if (Math.Abs(rate - 60000d / 1001) < .01) return "59.94";
+        return rate.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
     }
 }
 

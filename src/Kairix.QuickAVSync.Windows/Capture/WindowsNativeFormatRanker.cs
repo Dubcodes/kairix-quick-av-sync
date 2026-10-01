@@ -26,6 +26,17 @@ public static class WindowsNativeFormatRanker
         return list.OrderByDescending(candidate => string.Equals(ModeId(candidate), preferredModeId, StringComparison.Ordinal)).ThenBy(candidate => positions[candidate.NativeIndex]).ToArray();
     }
 
+    public static IReadOnlyList<WindowsNativeFormatCandidate> Rank(
+        IEnumerable<WindowsNativeFormatCandidate> candidates,
+        string? preferredModeId,
+        InputSignalInfo? preferredSourceSignal)
+    {
+        var list = candidates.ToArray();
+        return string.IsNullOrWhiteSpace(preferredModeId)
+            ? RankForSource(list, preferredSourceSignal)
+            : Rank(list, preferredModeId);
+    }
+
     public static IReadOnlyList<WindowsNativeFormatCandidate> RankForSource(IEnumerable<WindowsNativeFormatCandidate> candidates, InputSignalInfo? source)
     {
         var autoRanked = Rank(candidates);
