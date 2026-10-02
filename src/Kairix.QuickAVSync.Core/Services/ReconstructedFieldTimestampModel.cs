@@ -31,23 +31,10 @@ public static class ReconstructedFieldTimestampModel
         var firstTimestamp = new MediaTimestamp(captureTimestamp.Ticks100ns - interval, captureTimestamp.Quality, captureTimestamp.ClockDomain);
         return
         [
-            new(firstKind, firstTimestamp, TimestampOrigin.ReconstructedFirstField, Shift(observation, -interval)),
+            // Both positions retain the one factual transport observation from the
+            // native sample. Only the review timestamp is reconstructed.
+            new(firstKind, firstTimestamp, TimestampOrigin.ReconstructedFirstField, observation),
             new(secondKind, captureTimestamp, TimestampOrigin.CaptureTimestampAssumedSecondField, observation)
         ];
     }
-
-    private static VideoTimingObservation? Shift(VideoTimingObservation? value, long ticks100ns)
-    {
-        if (value is null) return null;
-        var stopwatchShift = (long)Math.Round(ticks100ns / 10_000_000d * value.StopwatchFrequency, MidpointRounding.AwayFromZero);
-        return value with
-        {
-            ArrivalStopwatchTicks = value.ArrivalStopwatchTicks + stopwatchShift,
-            DeviceTimestampTicks100ns = Add(value.DeviceTimestampTicks100ns, ticks100ns),
-            SampleTimeTicks100ns = Add(value.SampleTimeTicks100ns, ticks100ns),
-            ReaderTimestampTicks100ns = Add(value.ReaderTimestampTicks100ns, ticks100ns)
-        };
-    }
-
-    private static long? Add(long? value, long delta) => value is { } ticks ? ticks + delta : null;
 }

@@ -48,8 +48,9 @@ if (options.ReconstructFields)
 
 Console.WriteLine("REQUESTED MODE:"); Console.WriteLine(options.ModeId ?? "Auto");
 Console.WriteLine("INPUT INTERPRETATION:"); Console.WriteLine(reconstruction is null ? "Native progressive frames" : $"{reconstruction.CapturedProgressiveRate.Value:0.000}p -> {reconstruction.TargetFieldRate.Value:0.000}i · {reconstruction.FieldOrder}");
+Console.WriteLine($"PROCESSING RASTERS: detection={options.DetectionWidth}x{options.DetectionHeight} review={options.ReviewWidth}x{options.ReviewHeight}");
 ICaptureSession session;
-try { session = await backend.OpenAsync(device, new(PreferredNativeFormatId: options.ModeId, PreferredSourceSignal: preferredSource, RequirePreferredNativeFormat: options.ModeId is not null, FieldReconstruction: reconstruction), default); }
+try { session = await backend.OpenAsync(device, new(options.DetectionWidth, options.DetectionHeight, PreferredNativeFormatId: options.ModeId, PreferredPresentationWidth: options.ReviewWidth, PreferredPresentationHeight: options.ReviewHeight, PreferredSourceSignal: preferredSource, RequirePreferredNativeFormat: options.ModeId is not null, FieldReconstruction: reconstruction), default); }
 catch (Exception ex) { Console.Error.WriteLine("FORMAT NEGOTIATION FAILED"); Console.Error.WriteLine($"Requested: {options.ModeId ?? "Auto"}"); Console.Error.WriteLine(ex.Message); return 5; }
 await using var ownedSession = session;
 Console.WriteLine("NEGOTIATED MODE:"); Console.WriteLine($"{session.CurrentFormat.Display} {session.CurrentFormat.PixelFormat}");
@@ -70,8 +71,9 @@ await Task.Delay(options.AnalyzeSignal || options.TimingDetail ? TimeSpan.FromSe
 
 var captured = frames.ToArray();
 var declaredRate = reconstruction?.ReviewTemporalRate ?? (session.CurrentFormat.TemporalImageDuration.TotalSeconds > 0 ? 1 / session.CurrentFormat.TemporalImageDuration.TotalSeconds : 0);
-var timing = new FrameTimingAnalyzer().Analyze(captured, declaredRate);
-var review = captured.Length == 0 ? null : ReviewTimelineIntegrity.Build(captured, captured[captured.Length / 2].Timestamp, TimeSpan.FromMilliseconds(250), declaredRate);
+var captureTransportRate = session.CurrentFormat.FrameRate.Value;
+var timing = new FrameTimingAnalyzer().Analyze(captured, declaredRate, captureTransportRate);
+var review = captured.Length == 0 ? null : ReviewTimelineIntegrity.Build(captured, captured[captured.Length / 2].Timestamp, TimeSpan.FromMilliseconds(250), declaredRate, captureTransportRate);
 if (options.TimingDetail) PrintTimingDetail(captured, 100);
 
 Console.WriteLine("DEVICE"); Console.WriteLine($"Requested: {options.DeviceId ?? options.DeviceName ?? "<only available device>"}"); Console.WriteLine($"Resolved: {device.FriendlyName} [{device.Id}]");
@@ -80,8 +82,10 @@ Console.WriteLine($"Interpretation: {(reconstruction is null ? "native capture c
 if (reconstruction is not null) Console.WriteLine($"Reconstructed field timing: {reconstruction.FieldOrder}; captured sample assumed to represent second field / completed pair; interval={reconstruction.FieldIntervalTicks100ns / 10_000d:0.###} ms");
 Console.WriteLine("TIMESTAMPS");
 Console.WriteLine($"Primary source: {captured.FirstOrDefault()?.TimingObservation?.PrimarySource.ToString() ?? captured.FirstOrDefault()?.Timestamp.Quality.ToString() ?? "unknown"}");
-Console.WriteLine($"Declared rate: {timing.DeclaredTemporalRate:0.###} fps"); Console.WriteLine($"Observed primary rate: {timing.Primary.ObservedRate:0.###} fps"); Console.WriteLine($"Observed arrival rate: {timing.Arrival.ObservedRate:0.###} fps");
-Console.WriteLine($"Median interval: {timing.Primary.MedianIntervalMilliseconds:0.###} ms"); Console.WriteLine($"Jitter: {timing.Primary.JitterPercent:0.###}%");
+Console.WriteLine($"REVIEW TIMING: {timing.Primary.ObservedRate:0.000} {(reconstruction is null ? "frames" : "fields")}/sec · {timing.Primary.MedianIntervalMilliseconds:0.000} ms{(reconstruction is null ? "" : " · reconstructed")}");
+Console.WriteLine($"CAPTURE TRANSPORT: {timing.CaptureTransport.ObservedRate:0.000} samples/sec · {timing.CaptureTransport.MedianIntervalMilliseconds:0.000} ms · native samples={timing.NativeSamplesAnalyzed}");
+Console.WriteLine($"TIMESTAMP PHASE: {(reconstruction is null ? "direct capture" : "assumed captured timestamp represents second field")}");
+Console.WriteLine($"Observed arrival transport rate: {timing.Arrival.ObservedRate:0.###} fps"); Console.WriteLine($"Review jitter: {timing.Primary.JitterPercent:0.###}%");
 Console.WriteLine($"Duplicate timestamps: {timing.Primary.DuplicateCount}"); Console.WriteLine($"Backwards timestamps: {timing.Primary.BackwardCount}"); Console.WriteLine($"Large gaps: {timing.Primary.LargeGapCount}");
 PrintSource("DeviceTimestamp", timing.DeviceTimestamp); PrintSource("SampleTime", timing.SampleTime); PrintSource("ReaderTimestamp", timing.ReaderTimestamp);
 if (review is not null)
@@ -102,7 +106,7 @@ if (options.AnalyzeSignal)
     Console.WriteLine($"estimate='{InputSignalFormatter.Format(signal.Signal)}' authority={signal.Signal.Authority} nearIdenticalFraction={signal.NearIdenticalFraction:P1} sceneActivity={signal.SceneActivitySufficient} pairedRepeat={signal.PairedRepeatDetected} uniqueRate={signal.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} repeat='{signal.RepeatPattern}' interlaceEvidence={signal.InterlaceEvidence:0.000}");
 }
 var result = !timing.TimingValid ? "FAIL" : timing.DeclaredVsObservedErrorPercent >= 3 ? "WARNING" : "PASS";
-Console.WriteLine("RESULT"); Console.WriteLine(result); Console.WriteLine($"SUMMARY payloadFrames={samples} audioBlocks={audioBlocks} elapsedMs={stopwatch.ElapsedMilliseconds} mediaSaved=false");
+Console.WriteLine("RESULT"); Console.WriteLine(result); Console.WriteLine($"SUMMARY temporalPositions={samples} nativeSamples={captured.Select(frame => frame.NativeSampleIndex).Where(index => index >= 0).Distinct().Count()} audioBlocks={audioBlocks} elapsedMs={stopwatch.ElapsedMilliseconds} mediaSaved=false");
 return result == "FAIL" ? 5 : 0;
 
 static void PrintSource(string name, CadenceStatistics statistics) => Console.WriteLine($"{name}: samples={statistics.Samples} rate={statistics.ObservedRate:0.###} fps median={statistics.MedianIntervalMilliseconds:0.###} ms duplicates={statistics.DuplicateCount} backwards={statistics.BackwardCount}");
@@ -141,7 +145,7 @@ static string Usage() => """
 Kairix Quick A/V Sync HardwareProbe
 
 Canonical usage:
-  --device "<friendly name>" [--mode "<native mode id>"] [--reconstruct-fields] [--field-order top|bottom] [--analyze-signal] [--timing-detail]
+  --device "<friendly name>" [--mode "<native mode id>"] [--reconstruct-fields] [--field-order top|bottom] [--detection-resolution WxH] [--review-resolution WxH] [--analyze-signal] [--timing-detail]
 
 Options:
   --device <name>       Exact friendly-name match; ambiguity requires --device-id.
@@ -150,6 +154,8 @@ Options:
   --source <id>         Manual physical-source option used only by Auto mode.
   --reconstruct-fields  Split each supported progressive transport frame into two bobbed temporal fields.
   --field-order <order> Field order for reconstruction: top (default) or bottom.
+  --detection-resolution <WxH> Luma-analysis raster (default 640x360).
+  --review-resolution <WxH>    BGRA preview/review raster (default 160x90).
   --list-formats        List native modes without starting capture.
   --analyze-signal      Run bounded passive signal analysis.
   --timing-detail       Print at most the first 100 timing rows.

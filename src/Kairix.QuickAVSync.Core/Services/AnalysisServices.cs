@@ -1,3 +1,4 @@
+using System.Buffers;
 using Kairix.QuickAVSync.Capture;
 using Kairix.QuickAVSync.Models;
 
@@ -66,6 +67,13 @@ public sealed class WaveformBuilder
 
 public sealed class MotionVisualClapDetector : IVisualClapDetector
 {
+    public static string DetailDescription(int width, int height)
+    {
+        if (width < 2 || height < 2) return "unavailable";
+        var (columns, rows, stepX, stepY) = DetailGrid(width, height);
+        return $"{columns}x{rows} cells · approximately {(width + stepX - 1) / stepX}x{(height + stepY - 1) / stepY} samples";
+    }
+
     public Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken, VisualDetectionOptions? options = null) => Task.Run(() =>
     {
         if (frames.Count < 4) return null;
@@ -113,43 +121,77 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
     {
         var width = Math.Min(previous.Width, current.Width); var height = Math.Min(previous.Height, current.Height);
         if (width < 2 || height < 2) return 0;
-        var highResolution = width >= 480 && height >= 270; var columns = highResolution ? 32 : 16; var rows = highResolution ? 18 : 9; var cells = Enumerable.Range(0, columns * rows).Select(_ => new List<double>()).ToArray(); double total = 0; var samples = 0; var globallyChanged = 0;
-        var stepX = Math.Max(1, width / (highResolution ? 320 : 160)); var stepY = Math.Max(1, height / (highResolution ? 180 : 90));
-        for (var y = 0; y < height; y += stepY) for (var x = 0; x < width; x += stepX)
+        // 640x360 intentionally remains the compatibility baseline (32x18
+        // cells and a 320x180 sample grid). Lower settings do less work while
+        // larger stored rasters add proportionally finer cells and samples.
+        var (columns, rows, stepX, stepY) = DetailGrid(width, height);
+        var sampledColumns = (width + stepX - 1) / stepX; var sampledRows = (height + stepY - 1) / stepY;
+        var maximumPerCell = ((sampledColumns + columns - 1) / columns + 1) * ((sampledRows + rows - 1) / rows + 1);
+        var cellCount = columns * rows;
+        var cellSamples = ArrayPool<float>.Shared.Rent(cellCount * maximumPerCell);
+        var counts = ArrayPool<int>.Shared.Rent(cellCount);
+        var scores = ArrayPool<double>.Shared.Rent(cellCount);
+        var coherentFractions = ArrayPool<double>.Shared.Rent(cellCount);
+        Array.Clear(counts, 0, cellCount);
+        try
         {
-            var previousOffset = y * previous.EffectiveStride + x; var currentOffset = y * current.EffectiveStride + x;
-            if (previousOffset >= previous.Luma.Length || currentOffset >= current.Luma.Length) continue;
-            var difference = Math.Abs(previous.Luma[previousOffset] - current.Luma[currentOffset]) / 255d; var block = Math.Min(rows - 1, y * rows / height) * columns + Math.Min(columns - 1, x * columns / width);
-            cells[block].Add(difference); total += difference; samples++; if (difference > .055) globallyChanged++;
+            double total = 0; var samples = 0; var globallyChanged = 0;
+            for (var y = 0; y < height; y += stepY) for (var x = 0; x < width; x += stepX)
+            {
+                var previousOffset = y * previous.EffectiveStride + x; var currentOffset = y * current.EffectiveStride + x;
+                if (previousOffset >= previous.Luma.Length || currentOffset >= current.Luma.Length) continue;
+                var difference = Math.Abs(previous.Luma[previousOffset] - current.Luma[currentOffset]) / 255f;
+                var block = Math.Min(rows - 1, y * rows / height) * columns + Math.Min(columns - 1, x * columns / width);
+                var count = counts[block]; if (count < maximumPerCell) cellSamples[block * maximumPerCell + count] = difference;
+                counts[block] = count + 1; total += difference; samples++; if (difference > .055) globallyChanged++;
+            }
+            if (samples == 0) return 0;
+            var globalMean = total / samples; var globalChangedFraction = globallyChanged / (double)samples;
+            double scoreTotal = 0; var active = 0; var broad = 0; var strongestIndex = 0;
+            for (var index = 0; index < cellCount; index++)
+            {
+                var count = Math.Min(counts[index], maximumPerCell); scores[index] = 0; coherentFractions[index] = 0;
+                if (count == 0) continue;
+                var offset = index * maximumPerCell; Array.Sort(cellSamples, offset, count);
+                var topCount = Math.Max(1, count / 5); double topTotal = 0; var changed = 0; var strong = 0;
+                for (var sampleIndex = 0; sampleIndex < count; sampleIndex++)
+                {
+                    var value = cellSamples[offset + sampleIndex];
+                    if (sampleIndex >= count - topCount) topTotal += value;
+                    if (value > .045) changed++; if (value > .11) strong++;
+                }
+                var changedFraction = changed / (double)count; var score = topTotal / topCount * .62 + changedFraction * .18 + strong / (double)count * .2;
+                coherentFractions[index] = changedFraction; scores[index] = score; scoreTotal += score;
+                if (score > .035) active++; if (score > .01) broad++; if (score > scores[strongestIndex]) strongestIndex = index;
+            }
+            var activeFraction = active / (double)cellCount; var broadFraction = broad / (double)cellCount; var scoreMean = scoreTotal / cellCount;
+            double variationTotal = 0; for (var index = 0; index < cellCount; index++) { var delta = scores[index] - scoreMean; variationTotal += delta * delta; }
+            var scoreVariation = Math.Sqrt(variationTotal / cellCount);
+            if (globalChangedFraction > .72 && scoreVariation < .08) return 0;
+            var strongest = scores[strongestIndex];
+            if (globalMean > .01 && broadFraction > .65) return 0;
+            if (activeFraction > .58 && strongest < scoreMean * 2.2) return 0;
+            var row = strongestIndex / columns; var column = strongestIndex % columns; double bestNeighbor = 0;
+            for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++)
+            {
+                if (dx == 0 && dy == 0) continue; var neighborRow = row + dy; var neighborColumn = column + dx;
+                if (neighborRow >= 0 && neighborRow < rows && neighborColumn >= 0 && neighborColumn < columns) bestNeighbor = Math.Max(bestNeighbor, scores[neighborRow * columns + neighborColumn]);
+            }
+            if (coherentFractions[strongestIndex] < .05 && bestNeighbor < .04) return 0;
+            var localCoherence = Math.Max(bestNeighbor, coherentFractions[strongestIndex] * .35);
+            return Math.Max(0, strongest * .72 + localCoherence * .24 + globalMean * .04 - globalMean * .12);
         }
-        if (samples == 0) return 0;
-        var globalMean = total / samples; var globalChangedFraction = globallyChanged / (double)samples;
-        var scores = new double[cells.Length]; var coherentFractions = new double[cells.Length];
-        for (var index = 0; index < cells.Length; index++)
+        finally
         {
-            var values = cells[index]; if (values.Count == 0) continue;
-            values.Sort((left, right) => right.CompareTo(left)); var topCount = Math.Max(1, values.Count / 5);
-            var topMean = values.Take(topCount).Average(); var changedFraction = values.Count(value => value > .045) / (double)values.Count; var strongFraction = values.Count(value => value > .11) / (double)values.Count;
-            coherentFractions[index] = changedFraction;
-            scores[index] = topMean * .62 + changedFraction * .18 + strongFraction * .2;
+            ArrayPool<float>.Shared.Return(cellSamples); ArrayPool<int>.Shared.Return(counts);
+            ArrayPool<double>.Shared.Return(scores); ArrayPool<double>.Shared.Return(coherentFractions);
         }
-        var active = scores.Count(value => value > .035); var activeFraction = active / (double)scores.Length; var broadFraction = scores.Count(value => value > .01) / (double)scores.Length; var scoreMean = scores.Average();
-        var scoreVariation = Math.Sqrt(scores.Select(value => (value - scoreMean) * (value - scoreMean)).Average());
-        // Uniform exposure changes and broad camera motion are deliberately not clap evidence.
-        if (globalChangedFraction > .72 && scoreVariation < .08) return 0;
-        var strongestIndex = Enumerable.Range(0, scores.Length).MaxBy(index => scores[index]); var strongest = scores[strongestIndex];
-        if (globalMean > .01 && broadFraction > .65) return 0;
-        if (activeFraction > .58 && strongest < scoreMean * 2.2) return 0;
-        var row = strongestIndex / columns; var column = strongestIndex % columns; double bestNeighbor = 0;
-        for (var dy = -1; dy <= 1; dy++) for (var dx = -1; dx <= 1; dx++)
-        {
-            if (dx == 0 && dy == 0) continue; var neighborRow = row + dy; var neighborColumn = column + dx;
-            if (neighborRow >= 0 && neighborRow < rows && neighborColumn >= 0 && neighborColumn < columns) bestNeighbor = Math.Max(bestNeighbor, scores[neighborRow * columns + neighborColumn]);
-        }
-        if (coherentFractions[strongestIndex] < .05 && bestNeighbor < .04) return 0;
-        var localCoherence = Math.Max(bestNeighbor, coherentFractions[strongestIndex] * .35);
-        var localEvidence = strongest * .72 + localCoherence * .24 + globalMean * .04;
-        return Math.Max(0, localEvidence - globalMean * .12);
+    }
+
+    private static (int Columns, int Rows, int StepX, int StepY) DetailGrid(int width, int height)
+    {
+        var columns = Math.Clamp(width / 20, 16, 96); var rows = Math.Clamp(height / 20, 9, 54);
+        return (columns, rows, Math.Max(1, width / (columns * 10)), Math.Max(1, height / (rows * 10)));
     }
 }
 

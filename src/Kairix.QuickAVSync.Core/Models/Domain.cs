@@ -51,18 +51,36 @@ public sealed record CaptureFormat(
     VideoPixelFormat PixelFormat = VideoPixelFormat.Luma8,
     InterlaceLayout InterlaceLayout = InterlaceLayout.Unknown)
 {
-    public TimeSpan TemporalImageDuration => ScanMode == ScanMode.Interlaced && InterlaceLayout == InterlaceLayout.FullFrame
-        ? TimeSpan.FromTicks(FrameRate.FrameDuration.Ticks / 2) : FrameRate.FrameDuration;
-    private string ScanDisplay => ScanMode switch
+    public double TemporalRate => CaptureFormatFormatter.TemporalRate(FrameRate, ScanMode, InterlaceLayout);
+    public TimeSpan TemporalImageDuration => TimeSpan.FromSeconds(1 / TemporalRate);
+    public string Display => CaptureFormatFormatter.Format(this, includePixelFormat: false, includeAudio: true);
+}
+
+public static class CaptureFormatFormatter
+{
+    public static double TemporalRate(Rational storedRate, ScanMode scanMode, InterlaceLayout layout) =>
+        scanMode == ScanMode.Interlaced && layout == InterlaceLayout.FullFrame ? storedRate.Value * 2 : storedRate.Value;
+
+    public static string FormatRate(Rational storedRate, ScanMode scanMode, InterlaceLayout layout = InterlaceLayout.Unknown)
     {
-        _ when InterlaceLayout == InterlaceLayout.Mixed => $"{FrameRate.Value:0.##} fps · mixed interlace",
-        ScanMode.Progressive => $"{FrameRate.Value:0.##}p",
-        ScanMode.Interlaced when InterlaceLayout == InterlaceLayout.FullFrame => $"{FrameRate.Value * 2:0.##}i",
-        ScanMode.Interlaced when InterlaceLayout == InterlaceLayout.SingleField => $"{FrameRate.Value:0.##}i",
-        ScanMode.Interlaced => $"{FrameRate.Value:0.##} fps · interlaced",
-        _ => $"{FrameRate.Value:0.##} fps · scan unknown"
-    };
-    public string Display => $"{Width}×{Height} · {ScanDisplay}{(AudioSampleRate > 0 ? $" · audio {AudioSampleRate / 1000} kHz" : "")}";
+        if (layout == InterlaceLayout.Mixed) return $"{storedRate.Value:0.000} fps · mixed interlace";
+        return scanMode switch
+        {
+            ScanMode.Progressive => $"{storedRate.Value:0.000}p",
+            ScanMode.Interlaced when layout == InterlaceLayout.FullFrame => $"{storedRate.Value * 2:0.000}i",
+            ScanMode.Interlaced when layout == InterlaceLayout.SingleField => $"{storedRate.Value:0.000}i",
+            ScanMode.Interlaced => $"{storedRate.Value:0.000} fps · interlaced",
+            _ => $"{storedRate.Value:0.000} fps · scan unknown"
+        };
+    }
+
+    public static string Format(CaptureFormat format, bool includePixelFormat = true, bool includeAudio = false)
+    {
+        var text = $"{format.Width}×{format.Height} · {FormatRate(format.FrameRate, format.ScanMode, format.InterlaceLayout)}";
+        if (includePixelFormat) text += $" · {new PixelFormatOption(format.PixelFormat)}";
+        if (includeAudio && format.AudioSampleRate > 0) text += $" · audio {format.AudioSampleRate / 1000} kHz";
+        return text;
+    }
 }
 
 public readonly record struct MediaTimestamp(
@@ -94,7 +112,8 @@ public sealed record VideoFrame(
     int PresentationWidth = 0,
     int PresentationHeight = 0,
     int PresentationStride = 0,
-    VideoTimingObservation? TimingObservation = null)
+    VideoTimingObservation? TimingObservation = null,
+    long NativeSampleIndex = -1)
 {
     public bool IsField => TemporalImageKind is TemporalImageKind.TopField or TemporalImageKind.BottomField;
     public bool TopField => TemporalImageKind == TemporalImageKind.TopField;
@@ -128,12 +147,15 @@ public sealed record CadenceStatistics(
 public sealed record FrameTimingAnalysis(
     double DeclaredTemporalRate,
     double ExpectedIntervalMilliseconds,
+    double DeclaredTransportRate,
+    CadenceStatistics CaptureTransport,
     CadenceStatistics Primary,
     CadenceStatistics Arrival,
     CadenceStatistics DeviceTimestamp,
     CadenceStatistics SampleTime,
     CadenceStatistics ReaderTimestamp,
     int FramesAnalyzed,
+    int NativeSamplesAnalyzed,
     FrameContentAnalysis Content,
     double DeclaredVsObservedErrorPercent,
     bool TimingValid,
@@ -214,15 +236,21 @@ public sealed record ResolutionOption(int Width, int Height)
     public override string ToString() => $"{Width}×{Height}";
 }
 
+public sealed record ProcessingResolutionOption(int Width, int Height, string? Description = null)
+{
+    public override string ToString() => $"{Width}×{Height}{(string.IsNullOrWhiteSpace(Description) ? "" : $" · {Description}")}";
+}
+
 public sealed record InterpretationFormatOption(
     Rational TransportRate,
     ScanMode TransportScanMode,
     bool ReconstructFields = false,
     Rational? InterpretedFieldRate = null,
-    FieldOrder FieldOrder = FieldOrder.Unknown)
+    FieldOrder FieldOrder = FieldOrder.Unknown,
+    InterlaceLayout TransportInterlaceLayout = InterlaceLayout.Unknown)
 {
-    public double ReviewTemporalRate => ReconstructFields ? InterpretedFieldRate?.Value ?? TransportRate.Value * 2 : TransportRate.Value;
-    public string TransportDisplay => $"{TransportRate.Value:0.000}{(TransportScanMode == ScanMode.Progressive ? "p" : TransportScanMode == ScanMode.Interlaced ? "i" : " fps")}";
+    public double ReviewTemporalRate => ReconstructFields ? InterpretedFieldRate?.Value ?? TransportRate.Value * 2 : CaptureFormatFormatter.TemporalRate(TransportRate, TransportScanMode, TransportInterlaceLayout);
+    public string TransportDisplay => CaptureFormatFormatter.FormatRate(TransportRate, TransportScanMode, TransportInterlaceLayout);
     public override string ToString() => !ReconstructFields
         ? TransportDisplay
         : $"{TransportDisplay} → {InterpretedFieldRate?.Value ?? TransportRate.Value * 2:0.000}i · {(FieldOrder == FieldOrder.BottomFirst ? "Bottom first" : "Top first")}";
@@ -322,6 +350,12 @@ public sealed class AppSettings
     public int VisualSensitivity { get; set; } = 50;
     public double RollingBufferSeconds { get; set; } = 5;
     public double WorkWindowMilliseconds { get; set; } = 250;
+    public int DetectionWidth { get; set; } = 640;
+    public int DetectionHeight { get; set; } = 360;
+    public int ReviewWidth { get; set; } = 160;
+    public int ReviewHeight { get; set; } = 90;
+    public string Theme { get; set; } = "Graphite";
+    public bool SettingsPanelExpanded { get; set; } = true;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, bool> ReconstructFieldsByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> ReconstructionFieldOrderByDevice { get; set; } = new(StringComparer.Ordinal);

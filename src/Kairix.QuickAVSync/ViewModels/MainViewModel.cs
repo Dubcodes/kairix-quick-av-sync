@@ -28,7 +28,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly SessionHistoryService _history = new();
     private readonly ObservedSignalAnalyzer _signalAnalyzer = new();
     private RollingBuffer<VideoFrame> _video = new(300, f => f.Timestamp.Ticks100ns);
-    private readonly RollingBuffer<VideoFrame> _signalVideo = new(600, f => f.Timestamp.Ticks100ns);
     private RollingBuffer<AudioChunk> _audio = new(300, a => a.Timestamp.Ticks100ns);
     private ICaptureSession? _capture;
     private CancellationTokenSource? _analysisCts;
@@ -39,6 +38,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private ResolutionOption? _selectedResolution;
     private InterpretationFormatOption? _selectedInterpretationFormat;
     private PixelFormatOption? _selectedPixelFormat;
+    private ProcessingResolutionOption? _selectedDetectionResolution, _selectedReviewResolution;
+    private ThemeOption? _selectedTheme;
     private bool _reconstructInterlacedFields;
     private InputSignalInfo? _observedSignal;
     private ObservedSignalAnalysis? _observedAnalysis;
@@ -53,7 +54,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private IReadOnlyList<double> _reviewFrameTicks = [];
     private FrameTimingAnalysis? _timelineAnalysis;
     private double _systemFraction, _otherSystemFraction, _appFraction, _availableFraction;
-    private ImageSource? _pendingPreview;
+    private VideoFrame? _pendingPreview;
     private int _previewScheduled;
     private bool _suppressInterpretationChanges;
     private bool _suppressDeviceRefresh;
@@ -72,6 +73,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<ResolutionOption> Resolutions { get; } = [];
     public ObservableCollection<InterpretationFormatOption> InterpretationFormats { get; } = [];
     public ObservableCollection<PixelFormatOption> PixelFormats { get; } = [];
+    public ObservableCollection<ProcessingResolutionOption> DetectionResolutions { get; } = [];
+    public ObservableCollection<ProcessingResolutionOption> ReviewResolutions { get; } = [];
+    public ObservableCollection<ThemeOption> Themes { get; } = [];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -82,10 +86,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand MarkVisualCommand { get; }
     public ICommand JumpAutoCommand { get; }
     public ICommand CoffeeCommand { get; }
+    public ICommand ToggleSettingsCommand { get; }
 
     public MainViewModel()
     {
         _settings = _settingsService.Load(); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
+        foreach (var theme in ThemeManager.Themes) Themes.Add(theme);
+        _selectedTheme = Themes.First(theme => theme.Name == ThemeManager.Normalize(_settings.Theme)); ThemeManager.Apply(_selectedTheme.Name);
         RefreshCommand = new AsyncRelayCommand(RefreshDevicesAsync);
         ReconnectCommand = new AsyncRelayCommand(ReconnectAsync);
         ManualClapCommand = new RelayCommand(_ => BeginManualClap());
@@ -95,6 +102,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         MarkVisualCommand = new RelayCommand(_ => MarkVisual());
         JumpAutoCommand = new RelayCommand(_ => JumpToAuto());
         CoffeeCommand = new RelayCommand(_ => OpenCoffee(), _ => !string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl));
+        ToggleSettingsCommand = new RelayCommand(_ => IsSettingsPanelExpanded = !IsSettingsPanelExpanded);
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current.Dispatcher);
     }
 
@@ -107,7 +115,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName;
             _reconstructInterlacedFields = _settings.ReconstructFieldsByDevice.GetValueOrDefault(value.Id);
             _observedSignal = null; RefreshInterpretationDisplay();
-            SaveSettings();
+            SaveSettings(immediate: true);
             if (!_suppressDeviceRefresh) _ = RefreshCaptureFormatsAsync(value);
         }
     }
@@ -126,6 +134,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         set
         {
             if (!Set(ref _selectedInterpretationFormat, value) || _suppressInterpretationChanges) return;
+            var hideReconstructionChoices = _reconstructInterlacedFields && value?.ReconstructFields != true;
+            _reconstructInterlacedFields = value?.ReconstructFields == true; Changed(nameof(ReconstructInterlacedFields)); Changed(nameof(FieldReconstructionHelpText));
+            if (hideReconstructionChoices) RebuildInterpretationOptions();
             RebuildPixelFormats(); CommitInterpretationSelection();
         }
     }
@@ -147,11 +158,49 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             RebuildInterpretationOptions(); CommitInterpretationSelection(); Changed(nameof(FieldReconstructionHelpText));
         }
     }
+    public ProcessingResolutionOption? SelectedDetectionResolution
+    {
+        get => _selectedDetectionResolution;
+        set
+        {
+            if (!Set(ref _selectedDetectionResolution, value) || value is null || _suppressInterpretationChanges) return;
+            _settings.DetectionWidth = value.Width; _settings.DetectionHeight = value.Height; SaveSettings(); RefreshPerformanceDisplay(); _ = ReconnectAsync();
+        }
+    }
+    public ProcessingResolutionOption? SelectedReviewResolution
+    {
+        get => _selectedReviewResolution;
+        set
+        {
+            if (!Set(ref _selectedReviewResolution, value) || value is null || _suppressInterpretationChanges) return;
+            _settings.ReviewWidth = value.Width; _settings.ReviewHeight = value.Height; SaveSettings(); RefreshPerformanceDisplay(); _ = ReconnectAsync();
+        }
+    }
+    public ThemeOption? SelectedTheme
+    {
+        get => _selectedTheme;
+        set
+        {
+            if (!Set(ref _selectedTheme, value) || value is null) return;
+            _settings.Theme = value.Name; ThemeManager.Apply(value.Name); SaveSettings();
+        }
+    }
+    public bool IsSettingsPanelExpanded
+    {
+        get => _settings.SettingsPanelExpanded;
+        set
+        {
+            if (_settings.SettingsPanelExpanded == value) return;
+            _settings.SettingsPanelExpanded = value; Changed(); Changed(nameof(SettingsColumnWidth)); Changed(nameof(SettingsPanelToggleText)); SaveSettings();
+        }
+    }
+    public GridLength SettingsColumnWidth => new(IsSettingsPanelExpanded ? 270 : 54);
+    public string SettingsPanelToggleText => IsSettingsPanelExpanded ? "◀  Hide settings" : "▶";
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; Changed(); SaveSettings(); } } }
     public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; Changed(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
     public int VisualSensitivity { get => Math.Clamp(_settings.VisualSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.VisualSensitivity != clamped) { _settings.VisualSensitivity = clamped; Changed(); SaveSettings(); } } }
-    public double RollingBufferSeconds { get => _settings.RollingBufferSeconds; set { var v = Math.Clamp(value, 1, 30); if (_settings.RollingBufferSeconds != v) { _settings.RollingBufferSeconds = v; ResizeBuffers(); Changed(); SaveSettings(); } } }
+    public double RollingBufferSeconds { get => _settings.RollingBufferSeconds; set { var v = Math.Clamp(value, 1, 30); if (_settings.RollingBufferSeconds != v) { _settings.RollingBufferSeconds = v; ResizeBuffers(); Changed(); RefreshPerformanceDisplay(); SaveSettings(); } } }
     public double WorkWindowMilliseconds { get => _settings.WorkWindowMilliseconds; set { var v = Math.Clamp(value, 50, 2000); if (_settings.WorkWindowMilliseconds != v) { _settings.WorkWindowMilliseconds = v; Changed(); Changed(nameof(HalfWindow)); SaveSettings(); } } }
     public double HalfWindow => WorkWindowMilliseconds;
     public ImageSource? VideoImage { get => _videoImage; private set => Set(ref _videoImage, value); }
@@ -160,10 +209,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string FormatText { get => _formatText; private set => Set(ref _formatText, value); }
     public string DetectedCaptureText => _capture is null ? "Not negotiated" : NativeFormatDisplay(_capture.CurrentFormat);
     public string InterpretationText => SelectedResolution is null || SelectedInterpretationFormat is null || SelectedPixelFormat is null ? "Not configured" : $"{SelectedResolution} · {SelectedInterpretationFormat} · {SelectedPixelFormat}";
-    public string FieldReconstructionHelpText => ReconstructInterlacedFields
+    public string FieldReconstructionHelpText => CurrentFieldReconstruction is not null
         ? "Reconstructed field timing: selected field order. Capture timestamp is assumed to represent the second field / completed pair."
-        : "Use when a progressive capture frame contains two woven fields from an interlaced source.";
+        : ReconstructInterlacedFields ? "Choose a valid reconstructed Format option, or keep a normal native interpretation." : "Use when a progressive capture frame contains two woven fields from an interlaced source.";
     public string VisualReviewResolutionText => $"Visual review resolution: {1000d / Math.Max(1, ExpectedReviewTemporalRate):0.###} ms{(CurrentFieldReconstruction is null ? "" : " · reconstructed fields")}";
+    public string ReviewTimingText => _timelineAnalysis is null ? "REVIEW TIMING · live" : $"REVIEW TIMING · {_timelineAnalysis.Primary.ObservedRate:0.000} {(CurrentFieldReconstruction is null ? "frames" : "fields")}/sec · {_timelineAnalysis.Primary.MedianIntervalMilliseconds:0.000} ms{(CurrentFieldReconstruction is null ? "" : " · reconstructed")}";
+    public string CaptureTransportText => _timelineAnalysis is null ? $"CAPTURE TRANSPORT · {ExpectedCaptureTransportRate:0.000} samples/sec" : $"CAPTURE TRANSPORT · {_timelineAnalysis.CaptureTransport.ObservedRate:0.000} samples/sec · {_timelineAnalysis.CaptureTransport.MedianIntervalMilliseconds:0.000} ms";
+    public string TimestampPhaseText => CurrentFieldReconstruction is null ? "TIMESTAMP PHASE · direct capture" : "TIMESTAMP PHASE · assumed captured timestamp = second field";
+    public string BufferEstimateText
+    {
+        get
+        {
+            var detection = SelectedDetectionResolution ?? new(_settings.DetectionWidth, _settings.DetectionHeight);
+            var review = SelectedReviewResolution ?? new(_settings.ReviewWidth, _settings.ReviewHeight);
+            var bytes = EstimatedImageBufferBytes;
+            var size = bytes >= 1024d * 1024 * 1024 ? $"{bytes / 1024d / 1024 / 1024:0.00} GB" : $"{bytes / 1024d / 1024:0} MB";
+            return $"Detection: {detection.Width}×{detection.Height}\nReview: {review.Width}×{review.Height}\nTemporal rate: {ExpectedReviewTemporalRate:0.000}/s · Buffer: {RollingBufferSeconds:0.0} s\nImage-buffer estimate: ~{size}";
+        }
+    }
+    public string BufferEstimateWarning => EstimatedImageBufferBytes >= 1024L * 1024 * 1024 ? "VERY HIGH MEMORY REQUEST · memory grows as frames enter the buffer" : EstimatedImageBufferBytes >= 512L * 1024 * 1024 ? "HIGH MEMORY REQUEST · memory grows as frames enter the buffer" : "Memory grows as frames enter the rolling buffer.";
+    public bool IsBufferEstimateVeryHigh => EstimatedImageBufferBytes >= 1024L * 1024 * 1024;
+    public bool IsBufferEstimateHigh => EstimatedImageBufferBytes >= 512L * 1024 * 1024;
     public string ContentWarningText
     {
         get
@@ -242,7 +308,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _settings.ReconstructionFieldOrderByDevice.Remove(device.Id);
             _reconstructInterlacedFields = false;
             Changed(nameof(ReconstructInterlacedFields));
-            SaveSettings();
+            SaveSettings(immediate: true);
             _log.Write("capture.format-selection", $"device='{device.FriendlyName}' saved interpretation is unavailable; falling back to Auto");
         }
         _allCaptureFormats = options;
@@ -261,29 +327,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             Resolutions.Clear();
             foreach (var resolution in modes.Select(mode => new ResolutionOption(mode.Format!.Width, mode.Format.Height)).Distinct().OrderByDescending(value => value.Width * value.Height)) Resolutions.Add(resolution);
             SelectedResolution = Resolutions.FirstOrDefault(value => value == priorResolution) ?? Resolutions.FirstOrDefault();
+            RebuildProcessingResolutionOptions();
 
             var priorFormat = SelectedInterpretationFormat;
             InterpretationFormats.Clear();
             if (SelectedResolution is not null)
             {
                 var rates = modes.Where(mode => mode.Format!.Width == SelectedResolution.Width && mode.Format.Height == SelectedResolution.Height)
-                    .Select(mode => mode.Format!).DistinctBy(format => (format.FrameRate, format.ScanMode)).OrderByDescending(format => format.FrameRate.Value);
+                    .Select(mode => mode.Format!).DistinctBy(format => (format.FrameRate, format.ScanMode, format.InterlaceLayout)).OrderByDescending(format => format.TemporalRate);
                 foreach (var format in rates)
                 {
-                    if (!ReconstructInterlacedFields) InterpretationFormats.Add(new(format.FrameRate, format.ScanMode));
-                    else if (format.ScanMode == ScanMode.Progressive && ValidReconstructionRate(format.FrameRate))
+                    InterpretationFormats.Add(new(format.FrameRate, format.ScanMode, TransportInterlaceLayout: format.InterlaceLayout));
+                    if (ReconstructInterlacedFields && format.ScanMode == ScanMode.Progressive && ValidReconstructionRate(format.FrameRate))
                     {
                         var fieldRate = Rational.From(format.FrameRate.Numerator * 2, format.FrameRate.Denominator);
-                        InterpretationFormats.Add(new(format.FrameRate, format.ScanMode, true, fieldRate, FieldOrder.TopFirst));
-                        InterpretationFormats.Add(new(format.FrameRate, format.ScanMode, true, fieldRate, FieldOrder.BottomFirst));
+                        InterpretationFormats.Add(new(format.FrameRate, format.ScanMode, true, fieldRate, FieldOrder.TopFirst, format.InterlaceLayout));
+                        InterpretationFormats.Add(new(format.FrameRate, format.ScanMode, true, fieldRate, FieldOrder.BottomFirst, format.InterlaceLayout));
                     }
                 }
             }
             var savedOrder = SelectedDevice is { } device && _settings.ReconstructionFieldOrderByDevice.GetValueOrDefault(device.Id) == "bottom" ? FieldOrder.BottomFirst : FieldOrder.TopFirst;
-            SelectedInterpretationFormat = InterpretationFormats.FirstOrDefault(value => preferred is not null && value.TransportRate == preferred.FrameRate && value.TransportScanMode == preferred.ScanMode && (!value.ReconstructFields || value.FieldOrder == savedOrder))
-                ?? InterpretationFormats.FirstOrDefault(value => priorFormat is not null && value.TransportRate == priorFormat.TransportRate && value.TransportScanMode == priorFormat.TransportScanMode && (!value.ReconstructFields || value.FieldOrder == savedOrder))
+            SelectedInterpretationFormat = InterpretationFormats.FirstOrDefault(value => preferred is not null && value.TransportRate == preferred.FrameRate && value.TransportScanMode == preferred.ScanMode && value.TransportInterlaceLayout == preferred.InterlaceLayout && value.ReconstructFields == ReconstructInterlacedFields && (!value.ReconstructFields || value.FieldOrder == savedOrder))
+                ?? InterpretationFormats.FirstOrDefault(value => priorFormat is not null && value.TransportRate == priorFormat.TransportRate && value.TransportScanMode == priorFormat.TransportScanMode && value.TransportInterlaceLayout == priorFormat.TransportInterlaceLayout && value.ReconstructFields == ReconstructInterlacedFields && (!value.ReconstructFields || value.FieldOrder == savedOrder))
                 ?? InterpretationFormats.FirstOrDefault(value => !value.ReconstructFields || value.FieldOrder == savedOrder)
                 ?? InterpretationFormats.FirstOrDefault();
+            if (_reconstructInterlacedFields && SelectedInterpretationFormat?.ReconstructFields != true) { _reconstructInterlacedFields = false; Changed(nameof(ReconstructInterlacedFields)); }
             RebuildPixelFormats(preferred?.PixelFormat);
         }
         finally { _suppressInterpretationChanges = false; }
@@ -305,9 +373,42 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         finally { _suppressInterpretationChanges = false; }
     }
 
+    private void RebuildProcessingResolutionOptions()
+    {
+        if (SelectedResolution is not { } source) return;
+        var priorDetection = SelectedDetectionResolution;
+        var priorReview = SelectedReviewResolution;
+        DetectionResolutions.Clear(); foreach (var option in ScaleOptions(source.Width, source.Height, [180, 270, 360, 540, 720, 1080], 360)) DetectionResolutions.Add(option);
+        ReviewResolutions.Clear(); foreach (var option in ScaleOptions(source.Width, source.Height, [90, 180, 270, 360], 90)) ReviewResolutions.Add(option);
+        SelectedDetectionResolution = DetectionResolutions.FirstOrDefault(value => value.Width == _settings.DetectionWidth && value.Height == _settings.DetectionHeight)
+            ?? DetectionResolutions.FirstOrDefault(value => value.Width == priorDetection?.Width && value.Height == priorDetection?.Height)
+            ?? DetectionResolutions.MinBy(value => Math.Abs(value.Height - 360));
+        SelectedReviewResolution = ReviewResolutions.FirstOrDefault(value => value.Width == _settings.ReviewWidth && value.Height == _settings.ReviewHeight)
+            ?? ReviewResolutions.FirstOrDefault(value => value.Width == priorReview?.Width && value.Height == priorReview?.Height)
+            ?? ReviewResolutions.MinBy(value => Math.Abs(value.Height - 90));
+        if (SelectedDetectionResolution is { } detection) { _settings.DetectionWidth = detection.Width; _settings.DetectionHeight = detection.Height; }
+        if (SelectedReviewResolution is { } review) { _settings.ReviewWidth = review.Width; _settings.ReviewHeight = review.Height; }
+        RefreshPerformanceDisplay();
+    }
+
+    private static IReadOnlyList<ProcessingResolutionOption> ScaleOptions(int sourceWidth, int sourceHeight, IReadOnlyList<int> targetHeights, int balancedHeight)
+    {
+        var options = new List<ProcessingResolutionOption>();
+        foreach (var requestedHeight in targetHeights)
+        {
+            var height = Math.Min(sourceHeight, requestedHeight);
+            var width = height == sourceHeight ? sourceWidth : Math.Max(2, (int)Math.Round(sourceWidth * height / (double)sourceHeight / 2) * 2);
+            width = Math.Min(sourceWidth, width);
+            var description = requestedHeight == balancedHeight ? "Balanced" : null;
+            var option = new ProcessingResolutionOption(width, height, description);
+            if (!options.Any(existing => existing.Width == width && existing.Height == height)) options.Add(option);
+        }
+        return options.OrderBy(value => value.Width * value.Height).ToArray();
+    }
+
     private IReadOnlyList<CaptureFormatOption> NativeModes() => _allCaptureFormats.Where(option => option.Format is not null).ToArray();
     private bool MatchesSelection(CaptureFormat format) => SelectedResolution is { } resolution && SelectedInterpretationFormat is { } interpretation &&
-        format.Width == resolution.Width && format.Height == resolution.Height && format.FrameRate == interpretation.TransportRate && format.ScanMode == interpretation.TransportScanMode;
+        format.Width == resolution.Width && format.Height == resolution.Height && format.FrameRate == interpretation.TransportRate && format.ScanMode == interpretation.TransportScanMode && format.InterlaceLayout == interpretation.TransportInterlaceLayout;
     private CaptureFormatOption? ResolveSelectedNativeMode() => SelectedPixelFormat is null ? null : NativeModes().FirstOrDefault(mode => MatchesSelection(mode.Format!) && mode.Format!.PixelFormat == SelectedPixelFormat.Value);
 
     private void CommitInterpretationSelection()
@@ -317,10 +418,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (mode is null) return;
         _selectedCaptureFormat = mode; RefreshInterpretationDisplay();
         _settings.NativeFormatByDevice[SelectedDevice.Id] = mode.Id;
-        _settings.ReconstructFieldsByDevice[SelectedDevice.Id] = ReconstructInterlacedFields;
+        _settings.ReconstructFieldsByDevice[SelectedDevice.Id] = SelectedInterpretationFormat?.ReconstructFields == true;
         if (SelectedInterpretationFormat?.FieldOrder == FieldOrder.BottomFirst) _settings.ReconstructionFieldOrderByDevice[SelectedDevice.Id] = "bottom";
         else _settings.ReconstructionFieldOrderByDevice[SelectedDevice.Id] = "top";
-        SaveSettings();
+        SaveSettings(immediate: true);
         _log.Write("capture.interpretation", $"device='{SelectedDevice.FriendlyName}' native='{mode.Id}' interpretation='{InterpretationText}' reconstruction={ReconstructInterlacedFields}");
         _ = ReconnectAsync();
     }
@@ -332,13 +433,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         try
         {
         if (Volatile.Read(ref _disposing) != 0) return;
-        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _signalVideo.Clear(); _audio.Clear(); _observedSignal = null; _observedAnalysis = null; _observedDeliveredRate = null; RefreshInterpretationDisplay();
+        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _audio.Clear(); _observedSignal = null; _observedAnalysis = null; _observedDeliveredRate = null; RefreshInterpretationDisplay();
         if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
         var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
         try
         {
             var strictFormat = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id);
-            _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: _selectedCaptureFormat?.Id, RequirePreferredNativeFormat: strictFormat, FieldReconstruction: CurrentFieldReconstruction), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
+            var detection = SelectedDetectionResolution ?? new(_settings.DetectionWidth, _settings.DetectionHeight);
+            var review = SelectedReviewResolution ?? new(_settings.ReviewWidth, _settings.ReviewHeight);
+            _capture = await backend.OpenAsync(SelectedDevice, new(detection.Width, detection.Height, PreferredNativeFormatId: _selectedCaptureFormat?.Id,
+                PreferredPresentationWidth: review.Width, PreferredPresentationHeight: review.Height, RequirePreferredNativeFormat: strictFormat,
+                FieldReconstruction: CurrentFieldReconstruction), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
             await _capture.StartAsync(_lifetimeCts.Token);
             if (!strictFormat) ApplyDetectedCaptureDefaults(_capture.CurrentFormat);
             ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInterpretationDisplay(); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}; detected='{DetectedCaptureText}' interpretation='{InterpretationText}'");
@@ -357,8 +462,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private void OnVideoFrame(object? sender, VideoFrame frame)
     {
-        _video.Add(frame); _signalVideo.Add(frame); ScheduleSignalAnalysis();
-        if (!_isReview) ScheduleLatestPreview(ToBitmap(frame));
+        _video.Add(frame); ScheduleSignalAnalysis();
+        if (!_isReview) ScheduleLatestPreview(frame);
     }
 
     private void ScheduleSignalAnalysis()
@@ -366,7 +471,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var now = DateTime.UtcNow.Ticks;
         if (now - Volatile.Read(ref _lastSignalAnalysisUtcTicks) < TimeSpan.FromSeconds(5).Ticks || Interlocked.CompareExchange(ref _signalAnalysisRunning, 1, 0) != 0) return;
         Volatile.Write(ref _lastSignalAnalysisUtcTicks, now);
-        var frames = _signalVideo.Snapshot();
+        var frames = _video.Snapshot();
         if (frames.Count < 30) { Interlocked.Exchange(ref _signalAnalysisRunning, 0); return; }
         _ = Task.Run(() => _signalAnalyzer.Analyze(frames)).ContinueWith(task =>
         {
@@ -384,13 +489,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }, TaskScheduler.Default);
     }
 
-    private void ScheduleLatestPreview(ImageSource image)
+    private void ScheduleLatestPreview(VideoFrame frame)
     {
-        Interlocked.Exchange(ref _pendingPreview, image);
+        Interlocked.Exchange(ref _pendingPreview, frame);
         if (Interlocked.Exchange(ref _previewScheduled, 1) != 0) return;
         Application.Current.Dispatcher.BeginInvoke(() =>
         {
-            var latest = Interlocked.Exchange(ref _pendingPreview, null); if (latest is not null && !_isReview) VideoImage = latest;
+            var latest = Interlocked.Exchange(ref _pendingPreview, null); if (latest is not null && !_isReview) VideoImage = ToBitmap(latest);
             Interlocked.Exchange(ref _previewScheduled, 0);
             var newer = Interlocked.Exchange(ref _pendingPreview, null); if (newer is not null) ScheduleLatestPreview(newer);
             if (_capture is not null)
@@ -448,7 +553,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             {
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 var candidate = await _visualDetector.DetectAsync(_reviewFrames, review.AudioMark, _analysisCts.Token, new(VisualSensitivity));
-                stopwatch.Stop(); _log.Write("visual.analysis", $"frames={_reviewFrames.Count} resolution={_reviewFrames.FirstOrDefault()?.Width ?? 0}x{_reviewFrames.FirstOrDefault()?.Height ?? 0} sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))}");
+                stopwatch.Stop(); var analyzed = _reviewFrames.FirstOrDefault();
+                _log.Write("visual.analysis", $"frames={_reviewFrames.Count} resolution={analyzed?.Width ?? 0}x{analyzed?.Height ?? 0} detail='{MotionVisualClapDetector.DetailDescription(analyzed?.Width ?? 0, analyzed?.Height ?? 0)}' sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))}");
                 if (candidate is not null && _analysisGeneration.IsCurrent(generation) && ReferenceEquals(_review, review))
                 {
                     review.SetAutoCandidate(candidate); AutoThumbnail = ToBitmap(candidate.Frame);
@@ -484,14 +590,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var declaredRate = ExpectedReviewTemporalRate;
         var built = await Task.Run(() =>
         {
-            var timeline = ReviewTimelineIntegrity.Build(videoSnapshot, reference, half, declaredRate); var chunks = WorkWindowSelector.Around(audioSnapshot, a => a.Timestamp, reference, half + TimeSpan.FromMilliseconds(25));
+            var timeline = ReviewTimelineIntegrity.Build(videoSnapshot, reference, half, declaredRate, ExpectedCaptureTransportRate); var chunks = WorkWindowSelector.Around(audioSnapshot, a => a.Timestamp, reference, half + TimeSpan.FromMilliseconds(25));
             return (Timeline: timeline, Waveform: _waveformBuilder.Build(chunks, reference, half, 900));
         });
         if (!_analysisGeneration.IsCurrent(generation) || !ReferenceEquals(_review, review)) return;
         var priorPlayhead = review.Playhead; _reviewFrames = built.Timeline.Frames; _timelineAnalysis = built.Timeline.Analysis; _playheadIndex = _reviewFrames.Count == 0 ? 0 : FindNearest(_reviewFrames, priorPlayhead);
         if (_reviewFrames.Count > 0) review.SetInitialPlayhead(_reviewFrames[_playheadIndex].Timestamp);
         Waveform = built.Waveform; ReviewFrameTicks = _reviewFrames.Select(frame => (frame.Timestamp.Ticks100ns - reference.Ticks100ns) / 10_000d).ToArray();
-        _log.Write("timeline.integrity", $"declared={_timelineAnalysis.DeclaredTemporalRate:0.###} observed={_timelineAnalysis.Primary.ObservedRate:0.###} medianMs={_timelineAnalysis.Primary.MedianIntervalMilliseconds:0.###} rawFrames={built.Timeline.RawFrameCount} reviewFrames={_reviewFrames.Count} windowMs={half.TotalMilliseconds * 2:0.###} duplicateTimestamps={_timelineAnalysis.Primary.DuplicateCount} backwards={_timelineAnalysis.Primary.BackwardCount} gaps={_timelineAnalysis.Primary.LargeGapCount} nearIdentical={_timelineAnalysis.NearIdenticalConsecutiveImages} pairedRepeat={_timelineAnalysis.Content.PairedRepeatDetected} estimatedUniqueRate={_timelineAnalysis.Content.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} arrivalRate={_timelineAnalysis.Arrival.ObservedRate:0.###}");
+        _log.Write("timeline.integrity", $"reviewDeclared={_timelineAnalysis.DeclaredTemporalRate:0.###} reviewObserved={_timelineAnalysis.Primary.ObservedRate:0.###} reviewMedianMs={_timelineAnalysis.Primary.MedianIntervalMilliseconds:0.###} transportDeclared={_timelineAnalysis.DeclaredTransportRate:0.###} transportObserved={_timelineAnalysis.CaptureTransport.ObservedRate:0.###} transportMedianMs={_timelineAnalysis.CaptureTransport.MedianIntervalMilliseconds:0.###} nativeSamples={_timelineAnalysis.NativeSamplesAnalyzed} rawFrames={built.Timeline.RawFrameCount} reviewFrames={_reviewFrames.Count} windowMs={half.TotalMilliseconds * 2:0.###} duplicateTimestamps={_timelineAnalysis.Primary.DuplicateCount} backwards={_timelineAnalysis.Primary.BackwardCount} gaps={_timelineAnalysis.Primary.LargeGapCount} nearIdentical={_timelineAnalysis.NearIdenticalConsecutiveImages} pairedRepeat={_timelineAnalysis.Content.PairedRepeatDetected} estimatedUniqueRate={_timelineAnalysis.Content.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} arrivalRate={_timelineAnalysis.Arrival.ObservedRate:0.###}");
         ShowPlayhead(); NotifyMarkers();
     }
     private static int FindNearest(IReadOnlyList<VideoFrame> frames, MediaTimestamp mark) => ReviewTimeline.NearestFrameIndex(frames, mark, 0);
@@ -509,7 +615,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item);
     }
     private string AuthoritativeCaptureStatus() => _captureStatus switch { CaptureStatus.Running => _captureStatusText, CaptureStatus.Starting => _captureStatusText, CaptureStatus.DeviceLost => "CAPTURE DEVICE LOST", CaptureStatus.Failed => "CAPTURE FAILED", CaptureStatus.Stopping => "STOPPING", CaptureStatus.Stopped => "CAPTURE STOPPED", _ => "CAPTURE NOT READY" };
-    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(ReviewPosition)); Changed(nameof(TimelineIntegrityText)); Changed(nameof(ContentWarningText)); }
+    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(ReviewPosition)); Changed(nameof(TimelineIntegrityText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); }
     private static BitmapSource ToBitmap(VideoFrame frame)
     {
         var bitmap = frame.HasPresentation
@@ -524,10 +630,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var retainedVideoRate = Math.Clamp(negotiatedRate, 10, maximumRetainedVideoSamplesPerSecond);
         _video.Resize(Math.Max(50, (int)Math.Ceiling(RollingBufferSeconds * retainedVideoRate)));
         _audio.Resize(Math.Max(200, (int)Math.Ceiling(RollingBufferSeconds * 200))); // WASAPI packet bound; audio timing remains sample-derived.
+        RefreshPerformanceDisplay();
     }
     private void UpdateMemory() { var m = _memoryService.Get(); if (m.TotalBytes == 0) return; SystemFraction = m.SystemUsedBytes / (double)m.TotalBytes; OtherSystemFraction = m.OtherSystemUsedBytes / (double)m.TotalBytes; AppFraction = m.ProcessUsedBytes / (double)m.TotalBytes; AvailableFraction = m.AvailableBytes / (double)m.TotalBytes; MemoryText = $"System: {Gb(m.SystemUsedBytes):0.0} GB   Kairix: {Gb(m.ProcessUsedBytes):0.00} GB   Available: {Gb(m.AvailableBytes):0.0} GB"; }
     private static double Gb(ulong bytes) => bytes / 1024d / 1024 / 1024;
-    private void SaveSettings() { try { _settingsService.Save(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
+    private void SaveSettings(bool immediate = false) { try { if (immediate) _settingsService.Save(_settings); else _settingsService.ScheduleSave(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
     private static void OpenCoffee() { if (!string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppConstants.BuyMeACoffeeUrl) { UseShellExecute = true }); }
     private static string DescribeTiming(TimingQuality quality) => quality switch { TimingQuality.DeviceHardware => "DEVICE/QPC TIMESTAMPS", TimingQuality.PlatformCaptureClock => "PLATFORM CAPTURE CLOCK", TimingQuality.ClockCorrelated => "CLOCKS CORRELATED", TimingQuality.StreamTimestamp => "STREAM TIMESTAMPS", TimingQuality.ArrivalFallback => "TIMING DEGRADED · ARRIVAL", _ => "TIMING DOMAINS UNRELATED" };
     private static string PairedRepeatWarning(double timestampRate, double? uniqueRate) => $"REPEATED FRAME PAIRS DETECTED · {timestampRate:0.##} timestamped fps · ≈{uniqueRate:0.##} unique images/sec · if this is an interlaced source, try half-rate progressive capture with field reconstruction";
@@ -552,11 +659,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             return seconds > 0 ? 1 / seconds : SelectedInterpretationFormat?.ReviewTemporalRate ?? 0;
         }
     }
+    private double ExpectedCaptureTransportRate => _capture?.CurrentFormat.FrameRate.Value ?? SelectedInterpretationFormat?.TransportRate.Value ?? 0;
+    private double EstimatedImageBufferBytes
+    {
+        get
+        {
+            var detection = SelectedDetectionResolution ?? new(_settings.DetectionWidth, _settings.DetectionHeight);
+            var review = SelectedReviewResolution ?? new(_settings.ReviewWidth, _settings.ReviewHeight);
+            return (detection.Width * (double)detection.Height + review.Width * (double)review.Height * 4) * Math.Max(0, ExpectedReviewTemporalRate) * RollingBufferSeconds;
+        }
+    }
     private static bool ValidReconstructionRate(Rational rate) => rate == Rational.From(25) || rate == Rational.From(30_000, 1_001);
-    private static string NativeFormatDisplay(CaptureFormat format) => $"{format.Width}×{format.Height} · {format.FrameRate.Value:0.000}{(format.ScanMode == ScanMode.Progressive ? "p" : format.ScanMode == ScanMode.Interlaced ? "i" : " fps")} · {new PixelFormatOption(format.PixelFormat)}";
+    private static string NativeFormatDisplay(CaptureFormat format) => CaptureFormatFormatter.Format(format);
     private void ApplyDetectedCaptureDefaults(CaptureFormat format)
     {
-        var matching = NativeModes().FirstOrDefault(option => option.Format == format || option.Format is { } candidate && candidate.Width == format.Width && candidate.Height == format.Height && candidate.FrameRate == format.FrameRate && candidate.ScanMode == format.ScanMode && candidate.PixelFormat == format.PixelFormat);
+        var matching = NativeModes().FirstOrDefault(option => option.Format == format || option.Format is { } candidate && candidate.Width == format.Width && candidate.Height == format.Height && candidate.FrameRate == format.FrameRate && candidate.ScanMode == format.ScanMode && candidate.InterlaceLayout == format.InterlaceLayout && candidate.PixelFormat == format.PixelFormat);
         if (matching is null)
         {
             matching = new CaptureFormatOption("", NativeFormatDisplay(format), format);
@@ -567,17 +684,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void RefreshInterpretationDisplay()
     {
-        Changed(nameof(DetectedCaptureText)); Changed(nameof(InterpretationText)); Changed(nameof(FieldReconstructionHelpText)); Changed(nameof(VisualReviewResolutionText)); Changed(nameof(ContentWarningText));
+        Changed(nameof(DetectedCaptureText)); Changed(nameof(InterpretationText)); Changed(nameof(FieldReconstructionHelpText)); Changed(nameof(VisualReviewResolutionText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); RefreshPerformanceDisplay();
     }
+    private void RefreshPerformanceDisplay() { Changed(nameof(BufferEstimateText)); Changed(nameof(BufferEstimateWarning)); Changed(nameof(IsBufferEstimateHigh)); Changed(nameof(IsBufferEstimateVeryHigh)); }
     private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoSampleReceived -= OnVideoFrame; _capture.AudioSampleReceived -= OnAudio; _capture.StatusChanged -= OnCaptureStatus; await _capture.DisposeAsync(); _capture = null; }
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposing, 1) != 0) return;
         _log.Write("shutdown", "View model disposal started; canceling capture lifetime.");
-        _lifetimeCts.Cancel(); _memoryTimer.Stop(); _analysisCts?.Cancel(); SaveSettings();
+        _lifetimeCts.Cancel(); _memoryTimer.Stop(); _analysisCts?.Cancel(); SaveSettings(immediate: true);
         await _reconnectGate.WaitAsync();
         try { await StopCaptureAsync(); _log.Write("shutdown", "Capture disposal completed."); }
-        finally { _reconnectGate.Release(); _lifetimeCts.Dispose(); }
+        finally { _reconnectGate.Release(); _lifetimeCts.Dispose(); _settingsService.Dispose(); }
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Changed(name); return true; }
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));

@@ -44,7 +44,7 @@ public sealed class FieldReconstructionTests
     }
 
     [Fact]
-    public void DerivedFieldPreservesClockDomainAndShiftsAllTimingObservations()
+    public void DerivedFieldPreservesClockDomainAndOneFactualTransportObservation()
     {
         var observation = new VideoTimingObservation(VideoPrimaryTimestampSource.DeviceTimestamp, 5_000_000, 10_000_000, 400_000, 400_000, 400_000);
         var capture = new MediaTimestamp(400_000, TimingQuality.DeviceHardware, "windows-qpc-100ns", 400_000);
@@ -53,8 +53,8 @@ public sealed class FieldReconstructionTests
         Assert.Equal(capture.Quality, positions[0].Timestamp.Quality);
         Assert.Null(positions[0].Timestamp.RawValue);
         var derivedObservation = Assert.IsType<VideoTimingObservation>(positions[0].TimingObservation);
-        Assert.Equal(200_000, derivedObservation.DeviceTimestampTicks100ns!.Value);
-        Assert.Equal(4_800_000, derivedObservation.ArrivalStopwatchTicks);
+        Assert.Equal(400_000, derivedObservation.DeviceTimestampTicks100ns!.Value);
+        Assert.Equal(5_000_000, derivedObservation.ArrivalStopwatchTicks);
         Assert.Same(observation, positions[1].TimingObservation);
     }
 
@@ -104,6 +104,6 @@ public sealed class FieldReconstructionTests
         var capture = new MediaTimestamp(TimeSpan.FromMilliseconds(captureMilliseconds).Ticks, TimingQuality.DeviceHardware, "windows-qpc-100ns", TimeSpan.FromMilliseconds(captureMilliseconds).Ticks);
         var positions = ReconstructedFieldTimestampModel.Reconstruct(capture, null, options);
         return positions.Select((position, index) => new VideoFrame(position.Timestamp, 2, 2, [(byte)(pair * 2 + index), 0, 0, 0], pair * 2 + index,
-            TemporalImageKind: position.Kind, TimestampOrigin: position.TimestampOrigin, Stride: 2, TimingObservation: position.TimingObservation)).ToArray();
+            TemporalImageKind: position.Kind, TimestampOrigin: position.TimestampOrigin, Stride: 2, TimingObservation: position.TimingObservation, NativeSampleIndex: pair)).ToArray();
     }
 }

@@ -4,16 +4,20 @@ namespace Kairix.QuickAVSync.Services;
 
 public sealed class FrameTimingAnalyzer
 {
-    public FrameTimingAnalysis Analyze(IReadOnlyList<VideoFrame> frames, double declaredTemporalRate)
+    public FrameTimingAnalysis Analyze(IReadOnlyList<VideoFrame> frames, double declaredTemporalRate, double declaredTransportRate = 0)
     {
         var expectedMs = declaredTemporalRate > 0 ? 1000d / declaredTemporalRate : 0;
         var primary = Statistics(frames.Select(frame => (long?)frame.Timestamp.Ticks100ns), expectedMs);
-        var arrival = Statistics(frames.Select(frame => frame.TimingObservation is { StopwatchFrequency: > 0 } timing
+        var nativeFrames = CollapseNativeSamples(frames);
+        if (declaredTransportRate <= 0 && frames.Count > 0) declaredTransportRate = declaredTemporalRate * nativeFrames.Count / frames.Count;
+        var expectedTransportMs = declaredTransportRate > 0 ? 1000d / declaredTransportRate : 0;
+        var transport = Statistics(nativeFrames.Select(frame => (long?)frame.Timestamp.Ticks100ns), expectedTransportMs);
+        var arrival = Statistics(nativeFrames.Select(frame => frame.TimingObservation is { StopwatchFrequency: > 0 } timing
             ? (long?)Math.Round(timing.ArrivalStopwatchTicks * (double)TimeSpan.TicksPerSecond / timing.StopwatchFrequency)
-            : null), expectedMs);
-        var device = Statistics(frames.Select(frame => frame.TimingObservation?.DeviceTimestampTicks100ns), expectedMs);
-        var sample = Statistics(frames.Select(frame => frame.TimingObservation?.SampleTimeTicks100ns), expectedMs);
-        var reader = Statistics(frames.Select(frame => frame.TimingObservation?.ReaderTimestampTicks100ns), expectedMs);
+            : null), expectedTransportMs);
+        var device = Statistics(nativeFrames.Select(frame => frame.TimingObservation?.DeviceTimestampTicks100ns), expectedTransportMs);
+        var sample = Statistics(nativeFrames.Select(frame => frame.TimingObservation?.SampleTimeTicks100ns), expectedTransportMs);
+        var reader = Statistics(nativeFrames.Select(frame => frame.TimingObservation?.ReaderTimestampTicks100ns), expectedTransportMs);
         var error = declaredTemporalRate > 0 && primary.ObservedRate > 0
             ? Math.Abs(primary.ObservedRate - declaredTemporalRate) / declaredTemporalRate * 100
             : 0;
@@ -25,8 +29,14 @@ public sealed class FrameTimingAnalyzer
             : error >= 3 ? $"TIMELINE WARNING · DECLARED {declaredTemporalRate:0.###} · OBSERVED {primary.ObservedRate:0.###} FPS"
             : content.PairedRepeatDetected ? $"REPEATED FRAME PAIRS DETECTED · {primary.ObservedRate:0.##} TIMESTAMPED FPS · ≈{content.EstimatedUniqueImageRate:0.##} UNIQUE FPS"
             : $"TIMELINE · {primary.ObservedRate:0.##} fps · {primary.MedianIntervalMilliseconds:0.###} ms";
-        return new(declaredTemporalRate, expectedMs, primary, arrival, device, sample, reader, frames.Count, content, error, valid, status);
+        return new(declaredTemporalRate, expectedMs, declaredTransportRate, transport, primary, arrival, device, sample, reader, frames.Count, nativeFrames.Count, content, error, valid, status);
     }
+
+    private static IReadOnlyList<VideoFrame> CollapseNativeSamples(IReadOnlyList<VideoFrame> frames) => frames
+        .Select((frame, index) => (Frame: frame, Key: (HasNative: frame.NativeSampleIndex >= 0, Value: frame.NativeSampleIndex >= 0 ? frame.NativeSampleIndex : index)))
+        .GroupBy(item => item.Key)
+        .Select(group => group.Last().Frame)
+        .ToArray();
 
     private static CadenceStatistics Statistics(IEnumerable<long?> source, double expectedMs)
     {
@@ -57,10 +67,10 @@ public sealed record ReviewTimelineSnapshot(IReadOnlyList<VideoFrame> Frames, Fr
 
 public static class ReviewTimelineIntegrity
 {
-    public static ReviewTimelineSnapshot Build(IReadOnlyList<VideoFrame> captureOrderFrames, MediaTimestamp center, TimeSpan halfWindow, double declaredTemporalRate)
+    public static ReviewTimelineSnapshot Build(IReadOnlyList<VideoFrame> captureOrderFrames, MediaTimestamp center, TimeSpan halfWindow, double declaredTemporalRate, double declaredTransportRate = 0)
     {
         var raw = captureOrderFrames.Where(frame => Math.Abs(frame.Timestamp.Ticks100ns - center.Ticks100ns) <= halfWindow.Ticks).ToArray();
-        var analysis = new FrameTimingAnalyzer().Analyze(raw, declaredTemporalRate);
+        var analysis = new FrameTimingAnalyzer().Analyze(raw, declaredTemporalRate, declaredTransportRate);
         var seen = new HashSet<long>();
         var review = raw.Where(frame => seen.Add(frame.Timestamp.Ticks100ns)).OrderBy(frame => frame.Timestamp.Ticks100ns).ToArray();
         return new(review, analysis, raw.Length);

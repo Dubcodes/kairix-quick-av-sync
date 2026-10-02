@@ -14,19 +14,21 @@ public sealed class MemoryBar : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         var bounds = new Rect(0, 0, Math.Max(0, ActualWidth), Math.Max(0, ActualHeight));
-        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(21, 32, 43)), null, bounds, 3, 3);
+        dc.DrawRoundedRectangle(ResourceBrush("ControlBackgroundBrush", Brushes.DimGray), null, bounds, 3, 3);
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
         var other = Math.Clamp(OtherUsedFraction, 0, 1);
         var process = Math.Clamp(ProcessFraction, 0, Math.Max(0, 1 - other));
         var otherWidth = bounds.Width * other; var processWidth = bounds.Width * process;
         dc.PushClip(new RectangleGeometry(bounds, 3, 3));
-        dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(83, 101, 121)), null, new Rect(0, 0, otherWidth, bounds.Height));
+        dc.DrawRectangle(ResourceBrush("MemoryOtherBrush", Brushes.Gray), null, new Rect(0, 0, otherWidth, bounds.Height));
         if (processWidth > 0)
         {
-            dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(91, 209, 191)), null, new Rect(otherWidth, 0, processWidth, bounds.Height));
-            if (processWidth < 1) dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(91, 209, 191)), null, new Rect(Math.Clamp(otherWidth, 0, Math.Max(0, bounds.Width - 1)), 0, 1, bounds.Height));
+            var processBrush = ResourceBrush("MemoryProcessBrush", Brushes.Cyan);
+            dc.DrawRectangle(processBrush, null, new Rect(otherWidth, 0, processWidth, bounds.Height));
+            if (processWidth < 1) dc.DrawRectangle(processBrush, null, new Rect(Math.Clamp(otherWidth, 0, Math.Max(0, bounds.Width - 1)), 0, 1, bounds.Height));
         }
         dc.Pop();
     }
+    private Brush ResourceBrush(string key, Brush fallback) => TryFindResource(key) as Brush ?? fallback;
 }

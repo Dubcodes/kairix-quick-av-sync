@@ -67,8 +67,8 @@ public sealed class WaveformView : FrameworkElement
     private double XToMs(double x) => (x / Math.Max(1, ActualWidth) - .5) * HalfWindowMs * 2;
     protected override void OnRender(DrawingContext dc)
     {
-        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(13, 19, 27)), null, new Rect(0, 0, ActualWidth, ActualHeight), 6, 6);
-        var grid = new Pen(new SolidColorBrush(Color.FromRgb(44, 57, 72)), 1); var minorGrid = new Pen(new SolidColorBrush(Color.FromArgb(95, 44, 57, 72)), .6); var foreground = new SolidColorBrush(Color.FromRgb(151, 166, 183));
+        dc.DrawRoundedRectangle(ResourceBrush("PanelSecondaryBrush", Brushes.Black), null, new Rect(0, 0, ActualWidth, ActualHeight), 6, 6);
+        var gridBrush = ResourceBrush("GridBrush", Brushes.Gray); var grid = new Pen(gridBrush, 1); var minorGrid = new Pen(gridBrush, .6); var foreground = ResourceBrush("SecondaryTextBrush", Brushes.LightGray);
         for (var i = -10; i <= 10; i++)
         {
             if (i % 2 == 0) continue; var x = MsToX(HalfWindowMs * i / 10); dc.DrawLine(minorGrid, new(x, 42), new(x, ActualHeight - 18));
@@ -81,12 +81,12 @@ public sealed class WaveformView : FrameworkElement
         }
         if (FrameTicksMs is { Count: > 0 })
         {
-            var framePen = new Pen(new SolidColorBrush(Color.FromArgb(125, 151, 166, 183)), 1);
+            var framePen = new Pen(foreground, 1);
             foreach (var milliseconds in FrameTicksMs) { var x = MsToX(milliseconds); if (x >= 0 && x <= ActualWidth) dc.DrawLine(framePen, new(x, ActualHeight - 24), new(x, ActualHeight - 18)); }
         }
         if (Samples is { Count: > 1 })
         {
-            var baseline = new Pen(new SolidColorBrush(Color.FromRgb(57, 77, 96)), 1); var pen = new Pen(new SolidColorBrush(Color.FromRgb(91, 209, 191)), 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47);
+            var baseline = new Pen(gridBrush, 1); var pen = new Pen(ResourceBrush("WaveformBrush", Brushes.Cyan), 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47);
             dc.DrawLine(baseline, new(0, mid), new(ActualWidth, mid));
             for (var i = 0; i < Samples.Count; i++)
             {
@@ -94,14 +94,15 @@ public sealed class WaveformView : FrameworkElement
                 dc.DrawLine(pen, new(x, mid - display * amplitude), new(x, mid + display * amplitude));
             }
         }
-        Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, Color.FromRgb(250, 204, 74), 2.5, "AUDIO", 2);
-        if (AutoVisualMs is { } auto) Marker(dc, auto, Color.FromRgb(105, 164, 255), 1.5, "AUTO", 12);
-        if (VisualMarkerMs is { } visual) Marker(dc, visual, Color.FromRgb(255, 111, 107), 2.5, "VISUAL", 22);
-        Marker(dc, PlayheadMs, Colors.White, 1, "PLAYHEAD", 32);
+        Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, ResourceBrush("AudioMarkerBrush", Brushes.Gold), 2.5, "AUDIO", 2);
+        if (AutoVisualMs is { } auto) Marker(dc, auto, ResourceBrush("AutoMarkerBrush", Brushes.DodgerBlue), 1.5, "AUTO", 12);
+        if (VisualMarkerMs is { } visual) Marker(dc, visual, ResourceBrush("VisualMarkerBrush", Brushes.Red), 2.5, "VISUAL", 22);
+        Marker(dc, PlayheadMs, ResourceBrush("PlayheadBrush", Brushes.White), 1, "PLAYHEAD", 32);
     }
-    private void Marker(DrawingContext dc, double ms, Color color, double width, string label, double labelTop)
+    private void Marker(DrawingContext dc, double ms, Brush brush, double width, string label, double labelTop)
     {
-        var x = Math.Clamp(MsToX(ms), 0, ActualWidth); var brush = new SolidColorBrush(color); dc.DrawLine(new(brush, width), new(x, 42), new(x, ActualHeight - 18));
+        var x = Math.Clamp(MsToX(ms), 0, ActualWidth); dc.DrawLine(new(brush, width), new(x, 42), new(x, ActualHeight - 18));
         var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 9, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip); dc.DrawText(text, new(Math.Clamp(x + 3, 1, Math.Max(1, ActualWidth - text.Width - 2)), labelTop));
     }
+    private Brush ResourceBrush(string key, Brush fallback) => TryFindResource(key) as Brush ?? fallback;
 }

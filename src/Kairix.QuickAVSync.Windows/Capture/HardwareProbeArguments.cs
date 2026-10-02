@@ -12,11 +12,16 @@ public sealed record HardwareProbeArguments(
     bool ListFormats = false,
     bool AnalyzeSignal = false,
     bool TimingDetail = false,
+    int DetectionWidth = 640,
+    int DetectionHeight = 360,
+    int ReviewWidth = 160,
+    int ReviewHeight = 90,
     bool Help = false)
 {
     public static HardwareProbeArguments Parse(IReadOnlyList<string> arguments)
     {
         string? device = null, deviceId = null, mode = null, source = null, fieldOrder = null, positionalDevice = null;
+        string? detectionResolution = null, reviewResolution = null;
         var list = false; var analyze = false; var timing = false; var reconstruct = false; var help = false;
         for (var index = 0; index < arguments.Count; index++)
         {
@@ -32,6 +37,8 @@ public sealed record HardwareProbeArguments(
                 case "--list-formats": SetFlag(ref list, argument); break;
                 case "--analyze-signal": SetFlag(ref analyze, argument); break;
                 case "--timing-detail": SetFlag(ref timing, argument); break;
+                case "--detection-resolution": detectionResolution = ReadValue(arguments, ref index, argument, detectionResolution); break;
+                case "--review-resolution": reviewResolution = ReadValue(arguments, ref index, argument, reviewResolution); break;
                 case "--help" or "-h" or "/?": SetFlag(ref help, argument); break;
                 default:
                     if (argument.StartsWith('-')) throw new ArgumentException($"Unknown argument '{argument}'. Use --help for supported syntax.");
@@ -44,7 +51,10 @@ public sealed record HardwareProbeArguments(
         if (deviceId is not null && (device is not null || positionalDevice is not null)) throw new ArgumentException("Specify either --device/positional name or --device-id, not both.");
         fieldOrder ??= "top";
         if (fieldOrder is not ("top" or "bottom")) throw new ArgumentException("--field-order must be 'top' or 'bottom'.");
-        return new(device ?? positionalDevice, deviceId, mode, source, reconstruct, fieldOrder, list, analyze, timing, help);
+        var detection = ParseResolution(detectionResolution ?? "640x360", "--detection-resolution");
+        var review = ParseResolution(reviewResolution ?? "160x90", "--review-resolution");
+        return new(device ?? positionalDevice, deviceId, mode, source, reconstruct, fieldOrder, list, analyze, timing,
+            detection.Width, detection.Height, review.Width, review.Height, help);
     }
 
     public CaptureDeviceDescriptor ResolveDevice(IReadOnlyList<CaptureDeviceDescriptor> devices)
@@ -83,5 +93,14 @@ public sealed record HardwareProbeArguments(
     {
         if (field) throw new ArgumentException($"Argument '{option}' was specified more than once.");
         field = true;
+    }
+
+    private static (int Width, int Height) ParseResolution(string value, string option)
+    {
+        var parts = value.Split('x', 'X');
+        if (parts.Length != 2 || !int.TryParse(parts[0], out var width) || !int.TryParse(parts[1], out var height)
+            || width is < 16 or > 7680 || height is < 16 or > 4320)
+            throw new ArgumentException($"{option} must be a WxH raster between 16x16 and 7680x4320.");
+        return (width, height);
     }
 }

@@ -11,7 +11,21 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Light", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Light", loaded.Theme); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact] public void DebouncedSaveWritesOnlyTheLatestPendingSnapshotWhenFlushed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try { using var service = new SettingsService(path); service.ScheduleSave(new() { VisualSensitivity = 20 }, TimeSpan.FromSeconds(30)); service.ScheduleSave(new() { VisualSensitivity = 81 }, TimeSpan.FromSeconds(30)); Assert.False(File.Exists(path)); service.FlushPending(); Assert.Equal(81, service.Load().VisualSensitivity); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact] public void CorruptOrStaleProcessingSettingsFallBackSafely()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try { File.WriteAllText(path, "{ definitely-not-json"); using (var corrupt = new SettingsService(path)) Assert.Equal(640, corrupt.Load().DetectionWidth); File.WriteAllText(path, "{\"DetectionWidth\":-1,\"DetectionHeight\":0,\"ReviewWidth\":99999,\"ReviewHeight\":0,\"Theme\":\"Missing\"}"); using var stale = new SettingsService(path); var loaded = stale.Load(); Assert.Equal((640, 360), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((160, 90), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Graphite", loaded.Theme); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 }
@@ -39,6 +53,27 @@ public sealed class WindowsEnumerationTests
 
 public sealed class NativeFieldFrameConverterTests
 {
+    [Theory]
+    [InlineData(VideoPixelFormat.Nv12)] [InlineData(VideoPixelFormat.Yuy2)] [InlineData(VideoPixelFormat.Uyvy)] [InlineData(VideoPixelFormat.Bgr24)] [InlineData(VideoPixelFormat.Bgra32)]
+    public void FastLumaIsByteExactForProgressiveTopAndBottom(VideoPixelFormat format)
+    {
+        var (bytes, layout) = KnownRows(format, 10, 20, 30, 40);
+        foreach (var kind in new[] { TemporalImageKind.ProgressiveFrame, TemporalImageKind.TopField, TemporalImageKind.BottomField })
+        {
+            var converted = NativeVideoFrameConverter.Convert(bytes, layout, 4, 4, 2, 2, kind);
+            var expectedRows = kind switch { TemporalImageKind.TopField => new byte[] { 10, 10, 30, 30 }, TemporalImageKind.BottomField => [20, 20, 40, 40], _ => [10, 20, 30, 40] };
+            Assert.Equal(expectedRows.SelectMany(value => Enumerable.Repeat(value, 4)), converted.Luma);
+        }
+    }
+
+    [Theory] [InlineData(320, 180)] [InlineData(640, 360)] [InlineData(960, 540)]
+    public void ReusablePlanPropagatesConfiguredAnalysisDimensions(int width, int height)
+    {
+        var source = new byte[960 * 540 * 2]; for (var index = 0; index < source.Length; index += 2) source[index] = 90;
+        var plan = NativeVideoFrameConverter.CreatePlan(new(960, 540, 1920, VideoPixelFormat.Yuy2), width, height, 160, 90);
+        var first = NativeVideoFrameConverter.Convert(source, plan); var second = NativeVideoFrameConverter.Convert(source, plan);
+        Assert.Equal(width * height, first.Luma.Length); Assert.Equal(first.Luma, second.Luma); Assert.Equal(160 * 90 * 4, first.Bgra.Length);
+    }
     [Fact]
     public void Yuy2WovenRowsBecomeDistinctBobbedTopAndBottomImages()
     {
@@ -71,6 +106,17 @@ public sealed class NativeFieldFrameConverterTests
     }
 
     private static byte[] Yuy2Rows(params byte[] rows) => rows.SelectMany(y => new byte[] { y, 128, y, 128, y, 128, y, 128 }).ToArray();
+    private static (byte[] Bytes, NativeFrameLayout Layout) KnownRows(VideoPixelFormat format, params byte[] rows)
+    {
+        return format switch
+        {
+            VideoPixelFormat.Nv12 => ([.. rows.SelectMany(value => Enumerable.Repeat(value, 4)), .. Enumerable.Repeat((byte)128, 8)], new(4, 4, 4, format)),
+            VideoPixelFormat.Yuy2 => (rows.SelectMany(value => new byte[] { value, 128, value, 128, value, 128, value, 128 }).ToArray(), new(4, 4, 8, format)),
+            VideoPixelFormat.Uyvy => (rows.SelectMany(value => new byte[] { 128, value, 128, value, 128, value, 128, value }).ToArray(), new(4, 4, 8, format)),
+            VideoPixelFormat.Bgr24 => (rows.SelectMany(value => Enumerable.Range(0, 4).SelectMany(_ => new[] { value, value, value })).ToArray(), new(4, 4, 12, format)),
+            _ => (rows.SelectMany(value => Enumerable.Range(0, 4).SelectMany(_ => new[] { value, value, value, (byte)255 })).ToArray(), new(4, 4, 16, format))
+        };
+    }
 }
 
 public sealed class NativeFormatRankingTests
@@ -250,6 +296,9 @@ public sealed class HardwareProbeArgumentTests
     [Fact] public void UnknownOptionFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--wat"]));
     [Fact] public void MissingValueFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--device"]));
     [Fact] public void MissingModeValueFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--device", "USB Capture SDI", "--mode", "--analyze-signal"]));
+    [Fact] public void ProcessingResolutionsParse() { var parsed = HardwareProbeArguments.Parse(["--detection-resolution", "960x540", "--review-resolution", "320X180"]); Assert.Equal((960, 540, 320, 180), (parsed.DetectionWidth, parsed.DetectionHeight, parsed.ReviewWidth, parsed.ReviewHeight)); }
+    [Fact] public void ProcessingResolutionDefaultsAreStable() { var parsed = HardwareProbeArguments.Parse([]); Assert.Equal((640, 360, 160, 90), (parsed.DetectionWidth, parsed.DetectionHeight, parsed.ReviewWidth, parsed.ReviewHeight)); }
+    [Theory] [InlineData("640")] [InlineData("0x360")] [InlineData("640x0")] [InlineData("99999x360")] public void InvalidProcessingResolutionFails(string value) => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--detection-resolution", value]));
 
     [Fact]
     public void DuplicateFriendlyNameRequiresDeviceId()

@@ -130,6 +130,8 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     private static readonly TimeSpan ValidationTimeout = TimeSpan.FromSeconds(3);
     private readonly CaptureDeviceDescriptor _device; private readonly CaptureOpenOptions _options; private readonly DevicePairing _pairing; private readonly IDiagnosticSink _log;
     private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _nativeSampleCount; private int _validationStreak; private int _emptySampleCount; private int _audioState; private SourceFormat _sourceFormat;
+    private Dictionary<TemporalImageKind, NativeVideoConversionPlan> _conversionPlans = [];
+    private long _conversionTicks; private long _conversionMaximumTicks; private int _conversionSamples;
     private TaskCompletionSource _firstVideoSample = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public CaptureFormat CurrentFormat { get; private set; }
     public TimingQuality TimingQuality { get; private set; } = TimingQuality.StreamTimestamp;
@@ -138,7 +140,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     public event EventHandler<CaptureStatusChangedEventArgs>? StatusChanged;
 
     private MediaFoundationCaptureSession(CaptureDeviceDescriptor device, CaptureOpenOptions options, DevicePairing pairing, IDiagnosticSink log, IMFSourceReader reader, CaptureFormat format, SourceFormat sourceFormat)
-    { _device = device; _options = options; _pairing = pairing; _log = log; _reader = reader; CurrentFormat = format; _sourceFormat = sourceFormat; }
+    { _device = device; _options = options; _pairing = pairing; _log = log; _reader = reader; CurrentFormat = format; _sourceFormat = sourceFormat; BuildConversionPlans(); }
 
     internal static MediaFoundationCaptureSession Open(CaptureDeviceDescriptor device, CaptureOpenOptions options, DevicePairing pairing, IDiagnosticSink log, CancellationToken cancellationToken)
     {
@@ -197,7 +199,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                 try
                 {
                     var parsed = ParseFormat(type); var candidate = new WindowsNativeFormatCandidate(index, parsed.Format, parsed.Source.PixelFormat); log.Write("capture.format-list", $"index={index} supported=true {Describe(parsed.Format, parsed.Source)}");
-                    unique.TryAdd(WindowsNativeFormatRanker.ModeId(candidate), new(WindowsNativeFormatRanker.ModeId(candidate), $"{parsed.Format.Display} · {parsed.Source.PixelFormat}", parsed.Format));
+                    unique.TryAdd(WindowsNativeFormatRanker.ModeId(candidate), new(WindowsNativeFormatRanker.ModeId(candidate), CaptureFormatFormatter.Format(parsed.Format), parsed.Format));
                 }
                 catch (Exception ex) { log.Write("capture.format-list", $"Skipped native format index={index}: {ex.Message}"); }
                 finally { Marshal.ReleaseComObject(type); }
@@ -310,14 +312,14 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                         if (_options.FieldReconstruction is { } reconstruction)
                         {
                             var positions = ReconstructedFieldTimestampModel.Reconstruct(timestamp, timingObservation, reconstruction);
-                            var converted = ExtractFrames(buffer, _sourceFormat, positions.Select(position => position.Kind));
-                            for (var index = 0; index < positions.Count; index++) PublishFrame(converted[index], positions[index]);
+                            var converted = ExtractFrames(buffer, positions.Select(position => position.Kind));
+                            for (var index = 0; index < positions.Count; index++) PublishFrame(converted[index], positions[index], nativeSampleNumber);
                             if (nativeSampleNumber <= 3) _log.Write("field.reconstruction", $"sample={nativeSampleNumber} assumption='capture timestamp represents second field/completed pair' intervalMs={reconstruction.FieldIntervalTicks100ns / 10_000d:0.###} first={positions[0].Kind}@{positions[0].Timestamp.Ticks100ns} second={positions[1].Kind}@{positions[1].Timestamp.Ticks100ns}");
                         }
                         else
                         {
-                            var converted = ExtractFrames(buffer, _sourceFormat, [TemporalImageKind.ProgressiveFrame])[0];
-                            PublishFrame(converted, new(TemporalImageKind.ProgressiveFrame, timestamp, TimestampOrigin.DirectCapture, timingObservation));
+                            var converted = ExtractFrames(buffer, [TemporalImageKind.ProgressiveFrame])[0];
+                            PublishFrame(converted, new(TemporalImageKind.ProgressiveFrame, timestamp, TimestampOrigin.DirectCapture, timingObservation), nativeSampleNumber);
                         }
                         if (nativeSampleNumber == 1)
                         {
@@ -330,7 +332,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                             _log.Write("capture.coordinator", $"Media Foundation accepted for '{_device.FriendlyName}'");
                             StatusChanged?.Invoke(this, new(CaptureStatus.Running, LiveStatus()));
                         }
-                        else if (nativeSampleNumber % 250 == 0) _log.Write("capture.samples", $"native={nativeSampleNumber} temporal={Volatile.Read(ref _temporalIndex)} latestTimestamp={timestamp.Ticks100ns}");
+                        else if (nativeSampleNumber % 250 == 0) { _log.Write("capture.samples", $"native={nativeSampleNumber} temporal={Volatile.Read(ref _temporalIndex)} latestTimestamp={timestamp.Ticks100ns}"); LogConversionSummary("periodic", reset: true); }
                     }
                     finally { Marshal.ReleaseComObject(buffer); }
                 }
@@ -347,7 +349,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     private void RefreshCurrentFormat()
     {
         if (_reader is null) return; _reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var type).ThrowIfFailed();
-        try { var parsed = ParseFormat(type); CurrentFormat = parsed.Format with { AudioSampleRate = CurrentFormat.AudioSampleRate }; _sourceFormat = parsed.Source; _log.Write("capture.format", $"Dynamic capture-mode change: {CurrentFormat.Display}"); }
+        try { var parsed = ParseFormat(type); CurrentFormat = parsed.Format with { AudioSampleRate = CurrentFormat.AudioSampleRate }; _sourceFormat = parsed.Source; BuildConversionPlans(); _log.Write("capture.format", $"Dynamic capture-mode change: {CurrentFormat.Display}"); }
         finally { Marshal.ReleaseComObject(type); }
     }
 
@@ -372,7 +374,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
 
     public async ValueTask DisposeAsync()
     {
-        await StopAsync(CancellationToken.None).ConfigureAwait(false); if (_reader is not null) { Marshal.ReleaseComObject(_reader); _reader = null; }
+        await StopAsync(CancellationToken.None).ConfigureAwait(false); LogConversionSummary("final", reset: false); if (_reader is not null) { Marshal.ReleaseComObject(_reader); _reader = null; }
         if (_mfStarted) { MediaFoundationNative.MFShutdown(); _mfStarted = false; }
     }
 
@@ -473,27 +475,48 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         return (new(width, height, Rational.From(numerator, Math.Max(1, denominator)), interlace.ScanMode, interlace.FieldOrder, PixelFormat: pixel, InterlaceLayout: interlace.Layout), new(width, height, stride, pixel, interlace.AttributePresent, interlace.RawValue));
     }
 
-    private void PublishFrame(ConvertedVideoFrame converted, ReconstructedFieldPosition position)
+    private void PublishFrame(ConvertedVideoFrame converted, ReconstructedFieldPosition position, long nativeSampleIndex)
     {
         var temporalIndex = Interlocked.Increment(ref _temporalIndex);
         VideoSampleReceived?.Invoke(this, new(position.Timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, converted.Luma, temporalIndex,
             TemporalImageKind: position.Kind, TimestampOrigin: position.TimestampOrigin, Stride: _options.PreferredAnalysisWidth,
             PresentationBgra: converted.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight,
-            PresentationStride: _options.PreferredPresentationWidth * 4, TimingObservation: position.TimingObservation));
+            PresentationStride: _options.PreferredPresentationWidth * 4, TimingObservation: position.TimingObservation, NativeSampleIndex: nativeSampleIndex));
     }
 
-    private unsafe IReadOnlyList<ConvertedVideoFrame> ExtractFrames(IMFMediaBuffer buffer, SourceFormat source, IEnumerable<TemporalImageKind> kinds)
+    private unsafe IReadOnlyList<ConvertedVideoFrame> ExtractFrames(IMFMediaBuffer buffer, IEnumerable<TemporalImageKind> kinds)
     {
         buffer.Lock(out var data, out _, out var length).ThrowIfFailed();
         try
         {
+            var started = Stopwatch.GetTimestamp();
             var bytes = new ReadOnlySpan<byte>((void*)data, length);
-            var layout = new NativeFrameLayout(source.Width, source.Height, source.Stride, source.PixelFormat);
             var converted = new List<ConvertedVideoFrame>();
-            foreach (var kind in kinds) converted.Add(NativeVideoFrameConverter.Convert(bytes, layout, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, _options.PreferredPresentationWidth, _options.PreferredPresentationHeight, kind));
+            foreach (var kind in kinds) converted.Add(NativeVideoFrameConverter.Convert(bytes, _conversionPlans[kind]));
+            var elapsed = Stopwatch.GetTimestamp() - started;
+            _conversionTicks += elapsed; _conversionMaximumTicks = Math.Max(_conversionMaximumTicks, elapsed); _conversionSamples++;
             return converted;
         }
         finally { buffer.Unlock(); }
+    }
+
+    private void BuildConversionPlans()
+    {
+        var layout = new NativeFrameLayout(_sourceFormat.Width, _sourceFormat.Height, _sourceFormat.Stride, _sourceFormat.PixelFormat);
+        var kinds = _options.FieldReconstruction is null
+            ? new[] { TemporalImageKind.ProgressiveFrame }
+            : new[] { TemporalImageKind.TopField, TemporalImageKind.BottomField };
+        _conversionPlans = kinds.ToDictionary(kind => kind, kind => NativeVideoFrameConverter.CreatePlan(layout,
+            _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, _options.PreferredPresentationWidth, _options.PreferredPresentationHeight, kind));
+    }
+
+    private void LogConversionSummary(string reason, bool reset)
+    {
+        if (_conversionSamples == 0) return;
+        var averageMs = _conversionTicks * 1000d / Stopwatch.Frequency / _conversionSamples;
+        var maximumMs = _conversionMaximumTicks * 1000d / Stopwatch.Frequency;
+        _log.Write("capture.conversion", $"reason={reason} samples={_conversionSamples} analysis={_options.PreferredAnalysisWidth}x{_options.PreferredAnalysisHeight} presentation={_options.PreferredPresentationWidth}x{_options.PreferredPresentationHeight} reconstruction={_options.FieldReconstruction is not null} averageMs={averageMs:0.###} maximumMs={maximumMs:0.###}");
+        if (reset) { _conversionTicks = 0; _conversionMaximumTicks = 0; _conversionSamples = 0; }
     }
 
     private static void ValidateFieldReconstruction(CaptureFormat format, FieldReconstructionOptions? reconstruction)

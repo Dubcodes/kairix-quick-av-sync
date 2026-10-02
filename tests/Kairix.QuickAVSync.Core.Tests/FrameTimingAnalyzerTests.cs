@@ -93,6 +93,31 @@ public sealed class FrameTimingAnalyzerTests
     }
 
     [Fact]
+    public void ReconstructedFieldsSeparateFiftyHertzReviewFromTwentyFiveHertzTransport()
+    {
+        var frames = Enumerable.Range(1, 6).SelectMany(native =>
+        {
+            var capturedMs = native * 40d; var ticks = (long)(capturedMs * TimeSpan.TicksPerMillisecond);
+            var arrival = (long)(capturedMs * Stopwatch.Frequency / 1000d);
+            var observation = new VideoTimingObservation(VideoPrimaryTimestampSource.DeviceTimestamp, arrival, Stopwatch.Frequency, ticks, ticks, ticks);
+            return new[]
+            {
+                new VideoFrame(Timestamp(capturedMs - 20), 2, 2, [10, 10, 10, 10], native * 2, TemporalImageKind: TemporalImageKind.TopField, TimestampOrigin: TimestampOrigin.ReconstructedFirstField, Stride: 2, TimingObservation: observation, NativeSampleIndex: native),
+                new VideoFrame(Timestamp(capturedMs), 2, 2, [20, 20, 20, 20], native * 2 + 1, TemporalImageKind: TemporalImageKind.BottomField, TimestampOrigin: TimestampOrigin.CaptureTimestampAssumedSecondField, Stride: 2, TimingObservation: observation, NativeSampleIndex: native)
+            };
+        }).ToArray();
+        var analysis = new FrameTimingAnalyzer().Analyze(frames, 50, 25);
+        Assert.Equal(50, analysis.Primary.ObservedRate, .001);
+        Assert.Equal(20, analysis.Primary.MedianIntervalMilliseconds, .001);
+        Assert.Equal(25, analysis.CaptureTransport.ObservedRate, .001);
+        Assert.Equal(40, analysis.CaptureTransport.MedianIntervalMilliseconds, .001);
+        Assert.Equal(25, analysis.Arrival.ObservedRate, .001);
+        Assert.Equal(6, analysis.NativeSamplesAnalyzed);
+        Assert.Equal(0, analysis.Arrival.DuplicateCount);
+        Assert.Equal(0, analysis.DeviceTimestamp.DuplicateCount);
+    }
+
+    [Fact]
     public void RateConversionLikeRepeatsRemainAtTheirValidTimelinePositions()
     {
         byte[] pattern = [10, 20, 20, 30, 40, 40];

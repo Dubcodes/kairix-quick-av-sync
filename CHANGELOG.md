@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added independent, aspect-preserving detection and review resolution settings, live image-buffer memory estimates/warnings, resolution-aware detector detail, and matching HardwareProbe controls.
+- Optimized conversion with direct NV12/YUY2/UYVY luma reads and reusable scaling/parity maps; coalesced preview frames before bitmap creation; removed the duplicate 600-frame passive-analysis store; replaced detector hot-path list/LINQ churn with bounded pooled scratch arrays; and debounced interactive settings writes.
+- Corrected reconstructed timing diagnostics: paired fields now share a native-sample identity and factual transport observations, only the first visual timestamp is derived, and reports distinguish 50 Hz review timing from 25 Hz transport timing.
+- Reorganized WPF into collapsible Settings, Operation, Video, and Result columns. Toggles are self-describing, controls use contrast-safe semantic resources, and Graphite (default), Midnight, Light, and High Contrast switch immediately across standard and custom-drawn controls.
+- Centralized native/interpreted format display so progressive, full-frame interlaced, single-field, and fractional rates use one formatter. Reconstruction adds only valid 25p→50i and 29.97p→59.94i choices while retaining normal native choices.
 - Replaced the Physical Input, Interlaced Handling, monolithic Capture Format, and Show All workflow with an authoritative read-only Detected Capture line plus per-device Resolution, Format, Reconstruct interlaced fields, and Pixel format interpretation controls. Valid control combinations resolve to one strict native Media Foundation mode.
 - Added true native-buffer woven-field reconstruction for 25p→50i and 29.97p→59.94i, with top-first/bottom-first temporal ordering, independent even/odd-row conversion, nearest-line bob, per-field 640×360 luma and 160×90 BGRA images, field metadata, and analysis/review/buffer cadence at the interpreted rate.
 - Added centralized exact-rational reconstructed timestamps. The current explicit, uncalibrated assumption treats captured `T` as the second field/completed pair and derives the first field at `T - field interval`, preserving timing quality and clock domain while recording timestamp origin.

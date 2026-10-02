@@ -6,17 +6,67 @@ using Kairix.QuickAVSync.Models;
 
 namespace Kairix.QuickAVSync.Windows.Infrastructure;
 
-public sealed class SettingsService(string? path = null)
+public sealed class SettingsService(string? path = null) : IDisposable
 {
+    private readonly object _settingsGate = new();
+    private Timer? _saveTimer;
+    private AppSettings? _pending;
     public string Path { get; } = path ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairix", "QuickAVSync", "settings.json");
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
-    public AppSettings Load() { try { return File.Exists(Path) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(Path), Options) ?? new() : new(); } catch { return new(); } }
+    public AppSettings Load() { try { return Sanitize(File.Exists(Path) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(Path), Options) ?? new() : new()); } catch { return new(); } }
     public void Save(AppSettings value)
     {
+        lock (_settingsGate) { _pending = null; _saveTimer?.Change(Timeout.Infinite, Timeout.Infinite); Write(Sanitize(value)); }
+    }
+    public void ScheduleSave(AppSettings value, TimeSpan? delay = null)
+    {
+        lock (_settingsGate)
+        {
+            _pending = Sanitize(value);
+            _saveTimer ??= new Timer(_ => TryFlushPending(), null, Timeout.Infinite, Timeout.Infinite);
+            _saveTimer.Change(delay ?? TimeSpan.FromMilliseconds(300), Timeout.InfiniteTimeSpan);
+        }
+    }
+    public void FlushPending()
+    {
+        lock (_settingsGate)
+        {
+            if (_pending is null) return;
+            var value = _pending; _saveTimer?.Change(Timeout.Infinite, Timeout.Infinite); Write(value); _pending = null;
+        }
+    }
+    private void TryFlushPending()
+    {
+        try { FlushPending(); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+    private void Write(AppSettings clean)
+    {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        var clean = new AppSettings { LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName, AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual, VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30), WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000), NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal), ReconstructFieldsByDevice = new(value.ReconstructFieldsByDevice ?? new(), StringComparer.Ordinal), ReconstructionFieldOrderByDevice = new(value.ReconstructionFieldOrderByDevice ?? new(), StringComparer.Ordinal) };
         File.WriteAllText(Path, JsonSerializer.Serialize(clean, Options));
     }
+    private static AppSettings Sanitize(AppSettings value)
+    {
+        var themes = new HashSet<string>(["Graphite", "Midnight", "Light", "High Contrast"], StringComparer.Ordinal);
+        return new AppSettings
+        {
+            LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName,
+            AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual,
+            VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30),
+            WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000),
+            DetectionWidth = value.DetectionWidth is > 0 and <= 8192 ? value.DetectionWidth : 640,
+            DetectionHeight = value.DetectionHeight is > 0 and <= 4320 ? value.DetectionHeight : 360,
+            ReviewWidth = value.ReviewWidth is > 0 and <= 8192 ? value.ReviewWidth : 160,
+            ReviewHeight = value.ReviewHeight is > 0 and <= 4320 ? value.ReviewHeight : 90,
+            Theme = themes.Contains(value.Theme ?? "") ? value.Theme! : "Graphite",
+            SettingsPanelExpanded = value.SettingsPanelExpanded,
+            NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal),
+            ReconstructFieldsByDevice = new(value.ReconstructFieldsByDevice ?? new(), StringComparer.Ordinal),
+            ReconstructionFieldOrderByDevice = new(value.ReconstructionFieldOrderByDevice ?? new(), StringComparer.Ordinal)
+        };
+    }
+    public void Dispose() { FlushPending(); lock (_settingsGate) { _saveTimer?.Dispose(); _saveTimer = null; } }
 }
 
 public sealed record MemoryStatus(ulong TotalBytes, ulong AvailableBytes, long ProcessBytes)

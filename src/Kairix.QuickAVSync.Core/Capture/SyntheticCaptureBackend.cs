@@ -15,11 +15,11 @@ public sealed class SyntheticCaptureBackend(TimeSpan? audioToVideoOffset = null)
     public Task<ICaptureSession> OpenAsync(CaptureDeviceDescriptor device, CaptureOpenOptions options, CancellationToken cancellationToken)
     {
         if (device.BackendId != BackendName) throw new ArgumentException("Descriptor does not belong to the synthetic backend.", nameof(device));
-        return Task.FromResult<ICaptureSession>(new SyntheticCaptureSession(_offset));
+        return Task.FromResult<ICaptureSession>(new SyntheticCaptureSession(_offset, options));
     }
 }
 
-public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICaptureSession
+public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset, CaptureOpenOptions? options = null) : ICaptureSession
 {
     private CancellationTokenSource? _cts; private Task? _task; private readonly Random _random = new(31415);
     public CaptureFormat CurrentFormat { get; } = new(640, 360, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown, 48000, VideoPixelFormat.Luma8);
@@ -42,7 +42,10 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICapt
             while (!ct.IsCancellationRequested)
             {
                 var now = clock.Elapsed; var visualClap = nextAudioClap + audioToVideoOffset.TotalSeconds;
-                VideoSampleReceived?.Invoke(this, CreateFrame(now, visualClap, frame++));
+                var index = frame++;
+                VideoSampleReceived?.Invoke(this, CreateFrame(now, visualClap, index,
+                    options?.PreferredAnalysisWidth ?? 640, options?.PreferredAnalysisHeight ?? 360,
+                    options?.PreferredPresentationWidth ?? 160, options?.PreferredPresentationHeight ?? 90));
                 AudioSampleReceived?.Invoke(this, CreateAudio(now, nextAudioClap, _random));
                 if (now.TotalSeconds > nextAudioClap + Math.Max(2, audioToVideoOffset.TotalSeconds + 1)) nextAudioClap += 5;
                 await Task.Delay(20, ct).ConfigureAwait(false);
@@ -51,9 +54,9 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICapt
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         finally { StatusChanged?.Invoke(this, new(CaptureStatus.Stopped, "Synthetic source stopped")); }
     }
-    public static VideoFrame CreateFrame(TimeSpan now, double visualClapSeconds, int frame)
+    public static VideoFrame CreateFrame(TimeSpan now, double visualClapSeconds, int frame, int width = 640, int height = 360, int presentationWidth = 160, int presentationHeight = 90)
     {
-        const int width = 640, height = 360, presentationWidth = 160, presentationHeight = 90; var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var distance = Math.Abs(now.TotalSeconds - visualClapSeconds);
+        var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var distance = Math.Abs(now.TotalSeconds - visualClapSeconds);
         for (var y = 0; y < height; y++) for (var x = 0; x < width; x++)
         {
             var background = 22 + x * 22 / width + y * 12 / height;
@@ -69,7 +72,7 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset) : ICapt
             bgra[offset + 2] = hands ? (byte)224 : (byte)(24 + x * 26 / presentationWidth);
             bgra[offset + 3] = 255;
         }
-        return new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, luma, frame, Stride: width, PresentationBgra: bgra, PresentationWidth: presentationWidth, PresentationHeight: presentationHeight, PresentationStride: presentationWidth * 4);
+        return new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, luma, frame, Stride: width, PresentationBgra: bgra, PresentationWidth: presentationWidth, PresentationHeight: presentationHeight, PresentationStride: presentationWidth * 4, NativeSampleIndex: frame);
     }
     internal static AudioChunk CreateAudio(TimeSpan now, double audioClapSeconds, Random random)
     {

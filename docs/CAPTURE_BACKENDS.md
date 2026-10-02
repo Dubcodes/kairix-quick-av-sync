@@ -26,9 +26,13 @@ Explicit capture-format requests are strict: unavailable, rejected, unverifiable
 
 ### Woven-field reconstruction
 
-When reconstruction is enabled, each Media Foundation sample is locked once and its native rows are mapped twice before any downscale. Top selects even source rows and Bottom selects odd source rows. The converter supports NV12, YUY2, UYVY, BGRA32, and RGB24; both the 640×360 luma analysis image and 160×90 BGRA presentation image are generated independently for each parity. Nearest-line bob fills the full output height without blending fields.
+When reconstruction is enabled, each Media Foundation sample is locked once and its native rows are mapped twice before any downscale. Top selects even source rows and Bottom selects odd source rows. The converter supports NV12, YUY2, UYVY, BGRA32, and RGB24; configurable luma analysis and BGRA presentation images are generated independently for each parity. Nearest-line bob fills the full output height without blending fields.
 
-One native sample therefore emits two `VideoFrame` positions with distinct image arrays and field identity. The target field rate is exactly twice the progressive transport rate. Validation rejects other relationships rather than creating conversions such as 25p to 60i. The session's `CurrentFormat` remains the negotiated progressive transport.
+One native sample therefore emits two `VideoFrame` positions with distinct image arrays and field identity but the same native-sample ID and factual transport observations. Only the first review timestamp is derived as `T - field interval`; device/sample/reader/arrival values are never shifted. The target field rate is exactly twice the progressive transport rate. Validation rejects other relationships rather than creating conversions such as 25p to 60i. The session's `CurrentFormat` remains the negotiated progressive transport.
+
+### Processing rasters and conversion diagnostics
+
+Native capture, detector processing, and review presentation are independent. Defaults are 640×360 luma and 160×90 BGRA. Settings are aspect-preserving and never upscale above the selected native raster. Conversion plans precompute X/Y maps for progressive and both field parities, while YUV analysis reads the native luma component directly. Every 250 native samples, and once when a session closes, bounded `capture.conversion` diagnostics report both processing rasters, reconstruction state, average milliseconds, and maximum milliseconds.
 
 The timestamp calculation is centralized in `ReconstructedFieldTimestampModel`. Under the current `CaptureTimestampRepresentsSecondField` assumption, the configured first field is timestamped `T - one exact rational field interval` and the second field is timestamped `T`. Both keep the original timing quality and clock domain. Metadata distinguishes the derived first timestamp from the captured timestamp being treated as the second field. The assumption is diagnostic and replaceable; it has not been physically phase-calibrated.
 

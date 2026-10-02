@@ -11,14 +11,15 @@ public sealed class SyncBar : FrameworkElement
     public double Range { get => (double)GetValue(RangeProperty); set => SetValue(RangeProperty, value); }
     protected override void OnRender(DrawingContext dc)
     {
-        var middle = ActualWidth / 2; var y = ActualHeight / 2; var label = new SolidColorBrush(Color.FromRgb(162, 176, 193));
-        dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromRgb(32, 43, 56)), null, new(0, y - 7, ActualWidth, 14), 7, 7);
+        var middle = ActualWidth / 2; var y = ActualHeight / 2; var label = ResourceBrush("SecondaryTextBrush", Brushes.LightGray);
+        dc.DrawRoundedRectangle(ResourceBrush("ControlBackgroundBrush", Brushes.DimGray), null, new(0, y - 7, ActualWidth, 14), 7, 7);
         var extent = Math.Min(middle, Math.Abs(Value) / Math.Max(1, Range) * middle);
-        var brush = new SolidColorBrush(Value >= 0 ? Color.FromRgb(53, 127, 235) : Color.FromRgb(226, 70, 70));
+        var brush = Value >= 0 ? ResourceBrush("PositiveBrush", Brushes.DodgerBlue) : ResourceBrush("DangerBrush", Brushes.Red);
         dc.DrawRectangle(brush, null, Value >= 0 ? new(middle - extent, y - 7, extent, 14) : new(middle, y - 7, extent, 14));
-        dc.DrawLine(new Pen(Brushes.White, 2), new(middle, y - 12), new(middle, y + 12));
+        dc.DrawLine(new Pen(ResourceBrush("PlayheadBrush", Brushes.White), 2), new(middle, y - 12), new(middle, y + 12));
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
-        dc.DrawText(new("AUDIO LEADS", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 10, new SolidColorBrush(Color.FromRgb(98, 158, 255)), dpi), new(0, 0));
-        var lag = new FormattedText("AUDIO LAGS", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 10, new SolidColorBrush(Color.FromRgb(255, 102, 102)), dpi); dc.DrawText(lag, new(ActualWidth - lag.Width, 0));
+        dc.DrawText(new("AUDIO LEADS", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 10, ResourceBrush("PositiveBrush", Brushes.DodgerBlue), dpi), new(0, 0));
+        var lag = new FormattedText("AUDIO LAGS", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 10, ResourceBrush("DangerBrush", Brushes.Red), dpi); dc.DrawText(lag, new(ActualWidth - lag.Width, 0));
     }
+    private Brush ResourceBrush(string key, Brush fallback) => TryFindResource(key) as Brush ?? fallback;
 }

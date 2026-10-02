@@ -33,7 +33,7 @@ Portable engine with no Windows Desktop dependency:
 - platform-neutral input-signal provenance/authority/lock models, provider coordination, passive cadence analysis, and source-aware format recommendations.
 - platform-neutral capture-format classification that keeps common HD and conventional SD modes concise while retaining every driver mode for advanced access.
 
-Core samples safely own their small arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts 640×360 analysis luma plus a separate 160×90 BGRA presentation image before crossing the boundary, avoiding a five-second buffer of full uncompressed 1080 frames. Luma alone is consumed by automatic visual analysis. Every `VideoFrame` identifies a progressive frame, top field, or bottom field and whether its timestamp is direct, reconstructed, or the capture timestamp currently assumed to represent the second field.
+Core samples safely own their arrays. Backends must not mutate arrays after publishing them. The Windows backend extracts independently configurable analysis luma and BGRA presentation rasters (defaults 640×360 and 160×90) before crossing the boundary. Luma alone feeds automatic visual analysis. Every `VideoFrame` identifies its native source sample, temporal position, progressive/field kind, and whether its review timestamp is direct or reconstructed.
 
 ### `Kairix.QuickAVSync.Windows` (`net10.0-windows`)
 
@@ -86,7 +86,15 @@ For explicit woven-field reconstruction, the authoritative capture mode remains 
 
 Every Windows video frame carries platform-neutral observations for DeviceTimestamp, sample time, Source Reader time, and monotonic host arrival. Core analyzes original capture order before review sorting, collapses exact duplicate primary timestamps to one navigation position, invalidates backwards/duplicate timestamp measurements and gross declared/observed cadence mismatch, and retains distinct-time near-identical images as diagnostic evidence. `FrameContentAnalyzer` is shared by passive and frozen-timeline paths; it may report repeated pairs and estimated unique-image rate but never synthesizes fields or deletes samples.
 
-In reconstruction mode the capture worker emits two field frames per native sample. Rolling-buffer capacity, `FrameTimingAnalyzer`, review navigation, and visual clap detection use the interpreted field rate, while audio remains unchanged on the WASAPI QPC timeline.
+In reconstruction mode the capture worker emits two field frames sharing one `NativeSampleIndex`. Review navigation and visual detection use the interpreted field rate. `FrameTimingAnalyzer` analyzes derived media timestamps at that review cadence, but groups arrival/device/sample/reader observations by native identity and reports the factual transport cadence separately. Audio remains unchanged on the WASAPI QPC timeline.
+
+## Processing and presentation performance
+
+`CaptureOpenOptions` keeps three rasters distinct: the native capture raster selected from Media Foundation, the detection raster stored as `VideoFrame.Luma`, and the review raster stored as `PresentationBgra`. Changing either processing raster reconnects the same exact native mode and interpretation. A reusable conversion plan precomputes progressive/top/bottom source maps. NV12, YUY2, and UYVY use direct luma-byte reads for analysis; only presentation performs YUV-to-BGR conversion.
+
+The live path queues the newest `VideoFrame` and creates a WPF bitmap only when that frame reaches the dispatcher. Periodic passive analysis snapshots the rolling buffer rather than retaining a second full-frame queue. Detector cell density scales with input resolution and rents a bounded set of scratch arrays. Rolling buffers retain references and grow as captured frames arrive; the UI estimates analysis plus presentation image bytes from raster, temporal rate, and requested duration.
+
+WPF colors are semantic `DynamicResource` values supplied by Graphite, Midnight, Light, or High Contrast dictionaries. Runtime replacement of the active dictionary updates standard and custom-drawn controls. Settings writes are debounced for interactive controls and synchronously flushed at shutdown.
 
 The signed calculation remains `visual - audio`: positive is audio leads, negative is audio lags. Core returns `TIMING DOMAINS NOT CORRELATED` instead of a number when domains differ.
 
