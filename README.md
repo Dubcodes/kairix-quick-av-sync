@@ -46,6 +46,8 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 
 **Manual Clap** (Space) freezes a work window around the latest rolling-buffer position. Capture and rolling buffers continue while reviewing. Press H once to toggle Hold for new automatic detections; press it again to resume. Hold never stops capture or buffering and resets off at launch.
 
+An explicitly selected capture format is strict: Kairix either captures that exact negotiated size, rational rate, scan/layout, and pixel format or displays **REQUESTED CAPTURE FORMAT NOT ACCEPTED**. Only Auto may try another supported mode.
+
 ## Keyboard shortcuts
 
 | Key | Action |
@@ -89,6 +91,7 @@ Self-contained is the simplest public download but includes the runtime. Framewo
 
 - `Kairix.QuickAVSync.Core` targets plain `net10.0` and contains no WPF, Win32, Media Foundation, or WASAPI references. The WPF application composes that portable domain/analysis layer with `Kairix.QuickAVSync.Windows`.
 - Timing models preserve 100 ns media time, clock domains, raw values, and device/QPC, stream timestamp, and arrival-fallback quality separately. Results are refused when clocks are not demonstrably comparable.
+- Each video sample retains bounded diagnostic observations for device timestamp, sample time, Source Reader timestamp, and monotonic host arrival. Review positions come only from captured primary timestamps; duplicate timestamps collapse to one position and backwards timestamps invalidate precision reporting. Near-identical images at distinct valid timestamps remain visible and are reported without being treated as a timing fault.
 - Frame rates are rational. Progressive, interlaced, and unknown scan metadata remain distinct; known interlaced modes preserve full-frame/single-field layout and field order instead of silently assuming progressive timing.
 - Visual analysis is deterministic multi-scale downscaled-luma motion analysis. Coarse evidence rejects broad camera/exposure changes, fine cells retain small localized motion, and temporal rise/peak/drop evidence distinguishes likely contact from final approach. A persisted 0–100 sensitivity control changes acceptance thresholds without inflating confidence or bypassing the broad-motion/flash/noise rejection gates. It remains advisory and manually overridable.
 - The Windows backend uses Media Foundation source readers for video and shared-mode WASAPI for audio. Pairing prefers exact device Container IDs, then hardware parents, and uses a unique-name fallback only when unambiguous; it never silently substitutes the default microphone.

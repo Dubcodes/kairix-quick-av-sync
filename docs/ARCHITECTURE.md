@@ -78,6 +78,10 @@ Fixed event reference + independently movable Audio/Auto/Manual/Playhead marks â
 
 Windows video prefers `MFSampleExtension_DeviceTimestamp`, which Microsoft defines as the QPC-epoch MFTIME domain in 100 ns units. WASAPI capture's QPC position is also delivered in 100 ns units. Those observations are comparable. `IMFSample::GetSampleTime` is retained as a stream-relative fallback but is not silently compared with endpoint QPC. See [capture backends](CAPTURE_BACKENDS.md).
 
+Explicit native-mode selection is strict. The Windows backend attempts only the exact stable mode ID and reads the active media type back after `SetCurrentMediaType`; disagreement in dimensions, rational rate, scan/layout/field order, or pixel format fails the open. Auto remains the only fallback path.
+
+Every Windows video frame carries platform-neutral observations for DeviceTimestamp, sample time, Source Reader time, and monotonic host arrival. Core analyzes original capture order before review sorting, collapses exact duplicate primary timestamps to one navigation position, invalidates backwards/duplicate timestamp measurements, and retains distinct-time near-identical images as diagnostic evidence.
+
 The signed calculation remains `visual - audio`: positive is audio leads, negative is audio lags. Core returns `TIMING DOMAINS NOT CORRELATED` instead of a number when domains differ.
 
 `EventReviewState` owns the current event reference and keeps it fixed for the event lifetime. Audio correction, playhead preview, automatic visual selection, and committed manual visual selection are independent state transitions. Only a genuinely new event or Resume Live finalizes the current result for session history, and finalization is idempotent.

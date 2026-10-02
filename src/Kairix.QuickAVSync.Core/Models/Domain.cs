@@ -90,12 +90,49 @@ public sealed record VideoFrame(
     byte[]? PresentationBgra = null,
     int PresentationWidth = 0,
     int PresentationHeight = 0,
-    int PresentationStride = 0)
+    int PresentationStride = 0,
+    VideoTimingObservation? TimingObservation = null)
 {
     public int EffectiveStride => Stride > 0 ? Stride : Width;
     public bool HasPresentation => PresentationBgra is { Length: > 0 } && PresentationWidth > 0 && PresentationHeight > 0;
     public int EffectivePresentationStride => PresentationStride > 0 ? PresentationStride : PresentationWidth * 4;
 }
+
+public enum VideoPrimaryTimestampSource { Unknown, DeviceTimestamp, SampleTime, ReaderTimestamp, ArrivalFallback }
+
+public sealed record VideoTimingObservation(
+    VideoPrimaryTimestampSource PrimarySource,
+    long ArrivalStopwatchTicks,
+    long StopwatchFrequency,
+    long? DeviceTimestampTicks100ns = null,
+    long? SampleTimeTicks100ns = null,
+    long? ReaderTimestampTicks100ns = null);
+
+public sealed record CadenceStatistics(
+    int Samples,
+    int Intervals,
+    double ObservedRate,
+    double MedianIntervalMilliseconds,
+    double MinimumIntervalMilliseconds,
+    double MaximumIntervalMilliseconds,
+    double JitterPercent,
+    int DuplicateCount,
+    int BackwardCount,
+    int LargeGapCount);
+
+public sealed record FrameTimingAnalysis(
+    double DeclaredTemporalRate,
+    double ExpectedIntervalMilliseconds,
+    CadenceStatistics Primary,
+    CadenceStatistics Arrival,
+    CadenceStatistics DeviceTimestamp,
+    CadenceStatistics SampleTime,
+    CadenceStatistics ReaderTimestamp,
+    int FramesAnalyzed,
+    int NearIdenticalConsecutiveImages,
+    double DeclaredVsObservedErrorPercent,
+    bool TimingValid,
+    string Status);
 
 public sealed record AudioChunk(
     MediaTimestamp Timestamp,
@@ -191,7 +228,8 @@ public sealed record CaptureOpenOptions(
     string? PreferredNativeFormatId = null,
     int PreferredPresentationWidth = 160,
     int PreferredPresentationHeight = 90,
-    InputSignalInfo? PreferredSourceSignal = null);
+    InputSignalInfo? PreferredSourceSignal = null,
+    bool RequirePreferredNativeFormat = false);
 public sealed record CaptureStatusChangedEventArgs(CaptureStatus Status, string Message, Exception? Error = null);
 
 public sealed record SyncResult(double SignedMilliseconds, string Wording, bool TimingComparable = true)

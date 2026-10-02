@@ -95,6 +95,30 @@ public sealed class NativeFormatRankingTests
     }
 
     [Fact]
+    public void StrictManualModeReturnsOnlyExactCandidate()
+    {
+        var modes = new[] { Candidate(0, 1920, 1080, 30, VideoPixelFormat.Nv12), Candidate(1, 1920, 1080, 50, VideoPixelFormat.Yuy2) };
+        var exact = WindowsNativeFormatRanker.Rank(modes, WindowsNativeFormatRanker.ModeId(modes[1]), null, true);
+        Assert.Single(exact); Assert.Equal(1, exact[0].NativeIndex);
+    }
+
+    [Fact]
+    public void StrictManualModeDoesNotFallBackWhenUnavailable()
+    {
+        var modes = new[] { Candidate(0, 1920, 1080, 30, VideoPixelFormat.Nv12) };
+        Assert.Throws<InvalidOperationException>(() => WindowsNativeFormatRanker.Rank(modes, "1920x1080|50/1|p|Yuy2", null, true));
+    }
+
+    [Fact]
+    public void StrictPostNegotiationVerificationChecksRateAndPixelFormat()
+    {
+        var requested = Candidate(0, 1920, 1080, 50, VideoPixelFormat.Yuy2);
+        Assert.True(WindowsNativeFormatVerifier.Matches(requested, requested.Format, VideoPixelFormat.Yuy2));
+        Assert.False(WindowsNativeFormatVerifier.Matches(requested, requested.Format with { FrameRate = Rational.From(60) }, VideoPixelFormat.Yuy2));
+        Assert.False(WindowsNativeFormatVerifier.Matches(requested, requested.Format, VideoPixelFormat.Nv12));
+    }
+
+    [Fact]
     public void StableModeIdKeepsTheNativeRationalRate()
     {
         var candidate = new WindowsNativeFormatCandidate(12, new(1920, 1080, Rational.From(30_000, 1_001), ScanMode.Progressive, FieldOrder.Unknown, PixelFormat: VideoPixelFormat.Nv12), VideoPixelFormat.Nv12);
@@ -166,6 +190,47 @@ public sealed class NativeFormatRankingTests
 
     private static WindowsNativeFormatCandidate Candidate(int index, int width, int height, int rate, VideoPixelFormat pixel) =>
         new(index, new(width, height, Rational.From(rate), ScanMode.Progressive, FieldOrder.Unknown, PixelFormat: pixel), pixel);
+}
+
+public sealed class HardwareProbeArgumentTests
+{
+    [Fact]
+    public void PreviouslyFailingPositionalShapeRetainsDeviceWithoutSource()
+    {
+        var parsed = HardwareProbeArguments.Parse(["USB Capture SDI", "--mode", "1920x1080|50/1|p|Yuy2", "--analyze-signal"]);
+        Assert.Equal("USB Capture SDI", parsed.DeviceName); Assert.Equal("1920x1080|50/1|p|Yuy2", parsed.ModeId); Assert.Null(parsed.SourceId); Assert.True(parsed.AnalyzeSignal);
+    }
+
+    [Fact]
+    public void CanonicalShapeRetainsDeviceWithoutSource()
+    {
+        var parsed = HardwareProbeArguments.Parse(["--device", "USB Capture SDI", "--mode", "1920x1080|50/1|p|Yuy2", "--analyze-signal"]);
+        Assert.Equal("USB Capture SDI", parsed.DeviceName); Assert.Equal("1920x1080|50/1|p|Yuy2", parsed.ModeId); Assert.Null(parsed.SourceId);
+    }
+
+    [Fact] public void SourceAndTimingFlagsParse() { var parsed = HardwareProbeArguments.Parse(["--device", "USB Capture SDI", "--source", "1920x1080-50i", "--timing-detail"]); Assert.Equal("1920x1080-50i", parsed.SourceId); Assert.Null(parsed.ModeId); Assert.True(parsed.TimingDetail); }
+    [Fact] public void DeviceWithoutModeParses() { var parsed = HardwareProbeArguments.Parse(["--device", "A quoted friendly name"]); Assert.Equal("A quoted friendly name", parsed.DeviceName); Assert.Null(parsed.ModeId); }
+    [Fact] public void UnknownOptionFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--wat"]));
+    [Fact] public void MissingValueFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--device"]));
+    [Fact] public void MissingModeValueFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--device", "USB Capture SDI", "--mode", "--analyze-signal"]));
+
+    [Fact]
+    public void DuplicateFriendlyNameRequiresDeviceId()
+    {
+        var devices = new[] { Device("id-one", "USB Capture SDI"), Device("id-two", "USB Capture SDI") };
+        var parsed = HardwareProbeArguments.Parse(["--device", "USB Capture SDI"]);
+        Assert.Contains("ambiguous", Assert.Throws<InvalidOperationException>(() => parsed.ResolveDevice(devices)).Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("id-two", HardwareProbeArguments.Parse(["--device-id", "id-two"]).ResolveDevice(devices).Id);
+    }
+
+    [Fact]
+    public void NoRequestedDeviceNeverChoosesArbitraryFirstDevice()
+    {
+        var devices = new[] { Device("one", "One"), Device("two", "Two") };
+        Assert.Throws<InvalidOperationException>(() => HardwareProbeArguments.Parse([]).ResolveDevice(devices));
+    }
+
+    private static CaptureDeviceDescriptor Device(string id, string name) => new(id, name, CaptureDeviceKind.ExternalCapture, WindowsCaptureBackend.BackendName);
 }
 
 public sealed class InterlaceMetadataTests

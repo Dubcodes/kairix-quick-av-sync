@@ -17,13 +17,44 @@ if (-not ('KairixWindowProbe' -as [type])) {
     Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class KairixWindowProbe
 {
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+
     [DllImport("user32.dll")]
     public static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     public static extern bool IsZoomed(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    public static IntPtr FindWindow(uint processId, string title)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((hWnd, _) =>
+        {
+            GetWindowThreadProcessId(hWnd, out var owner);
+            if (owner != processId || !IsWindowVisible(hWnd) || !IsZoomed(hWnd)) return true;
+            var text = new StringBuilder(256);
+            GetWindowText(hWnd, text, text.Capacity);
+            if (!string.Equals(text.ToString(), title, StringComparison.Ordinal)) return true;
+            found = hWnd;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
 }
 '@
 }
@@ -38,11 +69,11 @@ try {
             throw "Application exited before presenting a window (exit code $($process.ExitCode))."
         }
 
-        $handle = $process.MainWindowHandle
-        $title = $process.MainWindowTitle
-        $visible = $handle -ne [IntPtr]::Zero -and [KairixWindowProbe]::IsWindowVisible($handle)
-        $maximized = $visible -and [KairixWindowProbe]::IsZoomed($handle)
-        $mainWindowReady = $visible -and $maximized -and $title -eq 'Kairix Quick A/V Sync'
+        $handle = [KairixWindowProbe]::FindWindow([uint32]$process.Id, 'Kairix Quick A/V Sync')
+        $title = if ($handle -ne [IntPtr]::Zero) { 'Kairix Quick A/V Sync' } else { '' }
+        $visible = $handle -ne [IntPtr]::Zero
+        $maximized = $visible
+        $mainWindowReady = $visible
     } while (-not $mainWindowReady -and [DateTime]::UtcNow -lt $deadline)
 
     if (-not $mainWindowReady) {
@@ -59,10 +90,17 @@ try {
 }
 finally {
     if (-not $process.HasExited) {
-        $null = $process.CloseMainWindow()
-        if (-not $process.WaitForExit(10000)) {
+        if ($handle -eq [IntPtr]::Zero) {
             Stop-Process -Id $process.Id -Force
-            throw "Application did not close after its main window was closed."
+        } else {
+            if (-not [KairixWindowProbe]::PostMessage($handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) {
+                Stop-Process -Id $process.Id -Force
+                throw "Could not send WM_CLOSE to the verified Kairix main window (Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))."
+            }
+            if (-not $process.WaitForExit(10000)) {
+                Stop-Process -Id $process.Id -Force
+                throw "Application did not close after its main window was closed."
+            }
         }
     }
 }

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed HardwareProbe argument parsing so positional and `--device` targets cannot be discarded when optional flags are absent. Device resolution is now exact and ambiguity/no-selection fails instead of opening an arbitrary camera.
+- Made explicit native capture modes strict in both HardwareProbe and the WPF application. Manual requests no longer fall through to another mode, and the post-`SetCurrentMediaType` format is read back and verified for size, rational rate, scan/layout/field order, and pixel format.
+- Added platform-neutral frame-timing integrity analysis across primary, device, sample, reader, and monotonic arrival clocks. Review windows analyze original capture order, expose gaps/cadence mismatch/near-identical content, reject duplicate or backwards timestamps as trusted measurements, and retain only one navigation position per exact timestamp.
+- Removed the implicit 60 fps review-capacity calculation in favor of negotiated-rate sizing with the existing 60-sample/s RAM safety ceiling, and expanded the audio packet buffer independently so video capacity never defines timeline timing.
+- Hardened the publish smoke harness to find and close the exact verified WPF window even when a capture driver creates another top-level helper window in the same process.
+
 ## v0.1.0-alpha - 2026-10-01
 
 - Added hardware-agnostic physical-input/source modelling with explicit provenance, authority, lock status, layered provider precedence, a per-device user declaration that never changes capture, source-aware supported-mode recommendations, and a generic passive timestamp/luma cadence analyzer. The UI now separates estimated/user-declared input from authoritative Media Foundation capture output, and HardwareProbe supports bounded `--analyze-signal` reports without saving media.

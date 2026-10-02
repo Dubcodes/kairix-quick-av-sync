@@ -37,6 +37,19 @@ public static class WindowsNativeFormatRanker
             : Rank(list, preferredModeId);
     }
 
+    public static IReadOnlyList<WindowsNativeFormatCandidate> Rank(
+        IEnumerable<WindowsNativeFormatCandidate> candidates,
+        string? preferredModeId,
+        InputSignalInfo? preferredSourceSignal,
+        bool requirePreferredMode)
+    {
+        var list = candidates.ToArray();
+        if (!requirePreferredMode) return Rank(list, preferredModeId, preferredSourceSignal);
+        if (string.IsNullOrWhiteSpace(preferredModeId)) throw new InvalidOperationException("Strict native-format selection requires a preferred mode ID.");
+        var exact = list.Where(candidate => string.Equals(ModeId(candidate), preferredModeId, StringComparison.Ordinal)).ToArray();
+        return exact.Length == 1 ? exact : throw new InvalidOperationException($"REQUESTED CAPTURE FORMAT NOT ACCEPTED: native mode '{preferredModeId}' is not exposed by this device.");
+    }
+
     public static IReadOnlyList<WindowsNativeFormatCandidate> RankForSource(IEnumerable<WindowsNativeFormatCandidate> candidates, InputSignalInfo? source)
     {
         var autoRanked = Rank(candidates);
@@ -75,4 +88,13 @@ public static class WindowsNativeFormatRanker
     private static int ConversionCost(VideoPixelFormat format) => format == VideoPixelFormat.Unknown ? 100 : 0;
 
     private static bool IsSensibleSize(CaptureFormat format) => format.Width <= 1920 && format.Height <= 1080;
+}
+
+public static class WindowsNativeFormatVerifier
+{
+    public static bool Matches(WindowsNativeFormatCandidate requested, CaptureFormat negotiated, VideoPixelFormat negotiatedPixelFormat) =>
+        requested.Format.Width == negotiated.Width && requested.Format.Height == negotiated.Height &&
+        requested.Format.FrameRate == negotiated.FrameRate && requested.Format.ScanMode == negotiated.ScanMode &&
+        requested.Format.InterlaceLayout == negotiated.InterlaceLayout && requested.Format.FieldOrder == negotiated.FieldOrder &&
+        requested.PixelFormat == negotiatedPixelFormat;
 }

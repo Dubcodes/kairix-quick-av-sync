@@ -64,6 +64,12 @@ Exercise source-aware Auto negotiation with a user-declared source (still withou
 dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release -- --source 1920x1080-50i "USB Capture SDI"
 ```
 
+Canonical strict device/mode validation with bounded clock and content detail:
+
+```powershell
+dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release --no-build -- --device "USB Capture SDI" --mode "1920x1080|50/1|p|Yuy2" --analyze-signal --timing-detail
+```
+
 The report keeps declared/observed capture output separate from estimated unique cadence, repeat pattern, interlace evidence, authority, and provenance. Compare an operator-known source only after recording the blind result.
 
 Passing enumeration tests or seeing a picture is not enough to claim calibrated A/V timing.

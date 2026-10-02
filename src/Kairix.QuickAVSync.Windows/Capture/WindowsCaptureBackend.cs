@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Kairix.QuickAVSync.Capture;
 using Kairix.QuickAVSync.Models;
@@ -258,16 +259,22 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         {
             while (!cancellationToken.IsCancellationRequested && _reader is not null)
             {
-                var hr = _reader.ReadSample(MediaFoundationNative.SourceReaderFirstVideoStream, 0, out _, out var flags, out var readerTimestamp, out var sample); hr.ThrowIfFailed();
+                var hr = _reader.ReadSample(MediaFoundationNative.SourceReaderFirstVideoStream, 0, out _, out var flags, out var readerTimestamp, out var sample); var arrivalStopwatchTicks = Stopwatch.GetTimestamp(); hr.ThrowIfFailed();
                 if ((flags & MediaFoundationNative.EndOfStream) != 0) throw new InvalidOperationException("Capture device ended the video stream.");
                 if ((flags & MediaFoundationNative.MediaTypeChanged) != 0) RefreshCurrentFormat();
                 if (sample is null) continue;
                 try
                 {
-                    sample.GetSampleTime(out var sampleTime); var deviceTime = sample.TryGetUInt64(MfGuids.DeviceTimestamp);
+                    var sampleTimeHr = sample.GetSampleTime(out var sampleTime); var deviceTime = sample.TryGetUInt64(MfGuids.DeviceTimestamp);
+                    var hasSampleTime = sampleTimeHr >= 0;
+                    var primarySource = deviceTime is not null ? VideoPrimaryTimestampSource.DeviceTimestamp
+                        : hasSampleTime ? VideoPrimaryTimestampSource.SampleTime
+                        : VideoPrimaryTimestampSource.ReaderTimestamp;
                     var timestamp = deviceTime is { } qpc
-                        ? new MediaTimestamp(qpc, TimingQuality.DeviceHardware, "windows-qpc-100ns", qpc)
-                        : new MediaTimestamp(sampleTime != 0 ? sampleTime : readerTimestamp, TimingQuality.StreamTimestamp, $"mf-stream:{_device.Id}", sampleTime);
+                        ? new MediaTimestamp((long)qpc, TimingQuality.DeviceHardware, "windows-qpc-100ns", (long)qpc)
+                        : new MediaTimestamp(hasSampleTime ? sampleTime : readerTimestamp, TimingQuality.StreamTimestamp, $"mf-stream:{_device.Id}", hasSampleTime ? sampleTime : readerTimestamp);
+                    var timingObservation = new VideoTimingObservation(primarySource, arrivalStopwatchTicks, Stopwatch.Frequency,
+                        deviceTime is { } device ? (long)device : null, hasSampleTime ? sampleTime : null, readerTimestamp);
                     if (timestamp.Quality != TimingQuality) { TimingQuality = timestamp.Quality; _log.Write("capture.timing", $"source={timestamp.Quality} domain='{timestamp.ClockDomain}' raw={timestamp.RawValue}"); }
                     var bufferCountHr = sample.GetBufferCount(out var bufferCount);
                     if (_temporalIndex == 0 && Volatile.Read(ref _emptySampleCount) == 0) _log.Write("capture.sample", $"first sample timestamp={timestamp.Ticks100ns} quality={timestamp.Quality} raw={timestamp.RawValue?.ToString() ?? "unavailable"}; GetBufferCount {DescribeHr(bufferCountHr)} count={bufferCount}");
@@ -300,7 +307,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                         var presentation = ExtractPresentationFrame(buffer, _sourceFormat, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, _options.PreferredPresentationWidth, _options.PreferredPresentationHeight);
                         var sampleNumber = Interlocked.Increment(ref _temporalIndex);
                         var validationStreak = Interlocked.Increment(ref _validationStreak);
-                        VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, presentation.Luma, sampleNumber, Stride: _options.PreferredAnalysisWidth, PresentationBgra: presentation.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight, PresentationStride: _options.PreferredPresentationWidth * 4));
+                        VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, presentation.Luma, sampleNumber, Stride: _options.PreferredAnalysisWidth, PresentationBgra: presentation.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight, PresentationStride: _options.PreferredPresentationWidth * 4, TimingObservation: timingObservation));
                         if (sampleNumber == 1)
                         {
                             _log.Write("capture.first-sample", $"Video payload received timestamp={timestamp.Ticks100ns} raw={timestamp.RawValue?.ToString() ?? "unavailable"} deviceTimestamp={(deviceTime is null ? "unavailable" : "available")} format='{CurrentFormat.Display}'");
@@ -397,11 +404,9 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         (int Index, IMFMediaType Type, CaptureFormat Format, SourceFormat Source)? chosen = null;
         try
         {
-            var ranked = WindowsNativeFormatRanker.Rank(
-                candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))),
-                options.PreferredNativeFormatId,
-                options.PreferredSourceSignal);
-            log.Write("capture.negotiation", $"ranking={(string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) ? SourceAwareFormatMatcher.CanAutomaticallyApply(options.PreferredSourceSignal) ? "source-aware-auto" : "generic-auto" : "explicit-mode")} sourceProvenance={options.PreferredSourceSignal?.Provenance.ToString() ?? "none"}");
+            var rankable = candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))).ToArray();
+            var ranked = WindowsNativeFormatRanker.Rank(rankable, options.PreferredNativeFormatId, options.PreferredSourceSignal, options.RequirePreferredNativeFormat);
+            log.Write("capture.negotiation", $"ranking={(options.RequirePreferredNativeFormat ? "strict-explicit-mode" : string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) ? SourceAwareFormatMatcher.CanAutomaticallyApply(options.PreferredSourceSignal) ? "source-aware-auto" : "generic-auto" : "preferred-mode-with-fallback")} sourceProvenance={options.PreferredSourceSignal?.Provenance.ToString() ?? "none"}");
             foreach (var rankedCandidate in ranked)
             {
                 var candidate = candidates.First(item => item.Index == rankedCandidate.NativeIndex);
@@ -410,15 +415,25 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                 log.Write("capture.negotiation", $"attempt index={candidate.Index} requested={requested} candidate='{Describe(candidate.Format, candidate.Source)}' {DescribeHr(setTypeHr)}");
                 if (setTypeHr >= 0) { chosen = candidate; break; }
             }
-            if (chosen is null) throw new InvalidOperationException($"Media Foundation rejected all {candidates.Count} supported native video formats.");
+            if (chosen is null) throw new InvalidOperationException(options.RequirePreferredNativeFormat
+                ? $"REQUESTED CAPTURE FORMAT NOT ACCEPTED: Media Foundation rejected '{options.PreferredNativeFormatId}'."
+                : $"Media Foundation rejected all {candidates.Count} supported native video formats.");
             var negotiatedFormat = chosen.Value.Format; var negotiatedSource = chosen.Value.Source;
             var negotiatedHr = reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var negotiatedType);
             if (negotiatedHr >= 0)
             {
-                try { var parsed = ParseFormat(negotiatedType); negotiatedFormat = parsed.Format; negotiatedSource = parsed.Source; log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} {Describe(negotiatedFormat, negotiatedSource)}"); }
-                catch (Exception ex) { log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} current type unsupported after negotiation: {ex.Message}"); }
+                try
+                {
+                    var parsed = ParseFormat(negotiatedType); negotiatedFormat = parsed.Format; negotiatedSource = parsed.Source;
+                    log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} {Describe(negotiatedFormat, negotiatedSource)}");
+                    var requestedCandidate = new WindowsNativeFormatCandidate(chosen.Value.Index, chosen.Value.Format, chosen.Value.Source.PixelFormat);
+                    if (options.RequirePreferredNativeFormat && !WindowsNativeFormatVerifier.Matches(requestedCandidate, negotiatedFormat, negotiatedSource.PixelFormat))
+                        throw new InvalidOperationException($"REQUESTED CAPTURE FORMAT NOT ACCEPTED: requested '{Describe(chosen.Value.Format, chosen.Value.Source)}' but the driver negotiated '{Describe(negotiatedFormat, negotiatedSource)}'.");
+                }
+                catch (Exception ex) when (!options.RequirePreferredNativeFormat) { log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} current type unsupported after negotiation: {ex.Message}"); }
                 finally { Marshal.ReleaseComObject(negotiatedType); }
             }
+            else if (options.RequirePreferredNativeFormat) throw new InvalidOperationException($"REQUESTED CAPTURE FORMAT NOT ACCEPTED: unable to verify the negotiated media type ({DescribeHr(negotiatedHr)}).");
             else log.Write("capture.negotiated-format", $"selectedIndex={chosen.Value.Index} GetCurrentMediaType {DescribeHr(negotiatedHr)}; using requested metadata {Describe(negotiatedFormat, negotiatedSource)}");
             log.Write("capture.open", $"Selected native media type index={chosen.Value.Index} candidate='{Describe(negotiatedFormat, negotiatedSource)}'");
             return (chosen.Value.Type, negotiatedFormat, negotiatedSource);
