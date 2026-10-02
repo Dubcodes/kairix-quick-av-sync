@@ -10,9 +10,9 @@ dotnet test tests/Kairix.QuickAVSync.Core.Tests -c Release
 dotnet test tests/Kairix.QuickAVSync.Windows.Tests -c Release
 ```
 
-The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/progressive/full-frame/single-field timing, transient detection, fixed-reference event review, timeline-to-nearest-frame mapping, manual preview/commit modes, idempotent history finalization, Hold gating, waveform placement, bounded 640×360 synthetic luma and 160×90 colour presentation, multi-scale localized visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. Detector fixtures include close and distant claps, low/high contrast, varied positions and cadences, approach/contact/drop, steady movement, whole-frame movement, flashes, sparse noise, and no motion. Source-signal fixtures cover native 25/50/59.94, repeated A-A/B-B/C-C content, all-fresh progressive 50, woven 25, gross 50-vs-60 mismatch, static and sensor-noise restraint, alternating-line interlace evidence, and handling-aware 50i/59.94i recommendations. Capture-format catalog fixtures cover common 720/1080 rates, conventional SD exceptions, low rates, PC rasters, complete Show All retention, and hidden saved selections. Sensitivity tests prove that weak-clap acceptance changes while confidence remains evidence-derived and global/noise rejection remains active. An architecture test rejects Windows Desktop assembly references.
+The Core tests target plain `net10.0`. They cover rolling buffers, sync convention/wording, incomparable clocks, rational/progressive/full-frame/single-field timing, reconstructed 50i/59.94i ordering and exact interval math, timing-origin/clock-domain preservation, field-level clap selection, transient detection, fixed-reference event review, timeline-to-nearest-frame mapping, manual preview/commit modes, idempotent history finalization, Hold gating, waveform placement, bounded 640×360 synthetic luma and 160×90 colour presentation, multi-scale localized visual analysis, startup device ranking, physical pairing, clock mapping/discontinuities, supersession, and complete synthetic audio-to-measurement paths for signed 5–120 ms offsets at multiple frame cadences. Detector fixtures include close and distant claps, low/high contrast, varied positions and cadences, approach/contact/drop, steady movement, whole-frame movement, flashes, sparse noise, and no motion. Source-signal fixtures cover native 25/50/59.94, repeated A-A/B-B/C-C content, all-fresh progressive 50, woven 25, gross 50-vs-60 mismatch, static and sensor-noise restraint, and alternating-line interlace evidence. Sensitivity tests prove that weak-clap acceptance changes while confidence remains evidence-derived and global/noise rejection remains active. An architecture test rejects Windows Desktop assembly references.
 
-Windows tests cover settings allow-list/per-device-format/sensitivity/interlaced-handling persistence, generic and handling-aware Auto/manual native-format ranking and fallback, explicit-mode precedence, Unknown/estimated non-application, raw Media Foundation interlace mapping and distinct mode identities, exact memory-segment accounting, deterministic YUV-to-BGR colour conversion, and execute real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
+Windows tests cover settings allow-list/per-device native-format/reconstruction/order persistence, generic Auto/manual native-format ranking, explicit-mode precedence, raw Media Foundation interlace mapping and distinct mode identities, exact memory-segment accounting, deterministic YUV-to-BGR colour conversion, YUY2/BGRA known-row field extraction, unchanged progressive conversion, HardwareProbe reconstruction arguments, and real read-only MMDevice and Media Foundation enumeration on the test host. They do not open hardware or prove capture functionality.
 
 On this mapped workspace drive, `dotnet` project graph operations can intermittently fail without diagnostics under parallel MSBuild. Use `-m:1` for a deterministic local full-solution build; GitHub Actions uses a normal local runner filesystem.
 
@@ -58,18 +58,25 @@ Run a bounded blind source analysis without saving media:
 dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release -- --analyze-signal "USB Capture SDI"
 ```
 
-Exercise source-aware Auto negotiation with a user-declared source (still without saving media):
+Exercise strict woven-field reconstruction (still without saving media):
 
 ```powershell
-dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release -- --source 1920x1080-50i --interlaced-handling preserve "USB Capture SDI"
+dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release -- --device "USB Capture SDI" --mode "1920x1080|25/1|p|Yuy2" --reconstruct-fields --field-order top --analyze-signal --timing-detail
 ```
 
 Canonical strict device/mode validation with bounded clock and content detail:
 
 ```powershell
-dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release --no-build -- --device "USB Capture SDI" --mode "1920x1080|50/1|p|Yuy2" --source 1920x1080-50i --interlaced-handling preserve --analyze-signal --timing-detail
+dotnet run --project tools/Kairix.QuickAVSync.HardwareProbe -c Release --no-build -- --device "USB Capture SDI" --mode "1920x1080|50/1|p|Yuy2" --analyze-signal --timing-detail
 ```
 
-The report keeps declared/observed capture output separate from estimated unique cadence, repeat pattern, interlace evidence, authority, and provenance. Compare an operator-known source only after recording the blind result. Verify both a handling-compatible Auto/pair-rate path and a strict field-rate path; the latter should warn before content evidence is available and report paired repeats only when the scene is active and the pattern is stable.
+The reconstruction report keeps the authoritative 25p capture mode separate from the interpreted 50i review cadence, prints field identity/timestamp origin/phase assumption, and reports native-sample versus temporal-position counts. The 50p comparison keeps declared/observed capture output separate from estimated unique cadence and repeat pattern. Paired repeats require an active scene and stable evidence.
+
+Current Magewell evidence with a 1080i50 camera and card Weave mode:
+
+- strict 1080p25 YUY2 reconstruction: 183 native samples produced 366 temporal field positions; 50 positions/s, 20 ms median spacing, zero duplicate/backwards/gap faults, 25 positions per 500 ms, and distinct content on parity transitions;
+- strict 1080p50 YUY2 comparison: 50.001 fps and 20 ms timestamps, stable A-A/B-B content, and approximately 25 unique images/s.
+
+These results validate extraction and cadence, not phase. Native UI inspection must still confirm visible Top/Bottom motion stepping, and an external reference must calibrate whether the hardware capture timestamp truly corresponds to the second field.
 
 Passing enumeration tests or seeing a picture is not enough to claim calibrated A/V timing.

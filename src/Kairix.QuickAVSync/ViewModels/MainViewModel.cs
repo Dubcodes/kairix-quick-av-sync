@@ -27,7 +27,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly AnalysisGeneration _analysisGeneration = new();
     private readonly SessionHistoryService _history = new();
     private readonly ObservedSignalAnalyzer _signalAnalyzer = new();
-    private readonly InputSignalCoordinator _signalCoordinator;
     private RollingBuffer<VideoFrame> _video = new(300, f => f.Timestamp.Ticks100ns);
     private readonly RollingBuffer<VideoFrame> _signalVideo = new(600, f => f.Timestamp.Ticks100ns);
     private RollingBuffer<AudioChunk> _audio = new(300, a => a.Timestamp.Ticks100ns);
@@ -37,9 +36,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private AppSettings _settings;
     private CaptureDeviceDescriptor? _selectedDevice;
     private CaptureFormatOption? _selectedCaptureFormat;
-    private InputSignalOption? _selectedInputSignal;
-    private InterlacedHandlingOption? _selectedInterlacedHandling;
-    private InputSignalInfo? _providerSignal, _observedSignal;
+    private ResolutionOption? _selectedResolution;
+    private InterpretationFormatOption? _selectedInterpretationFormat;
+    private PixelFormatOption? _selectedPixelFormat;
+    private bool _reconstructInterlacedFields;
+    private InputSignalInfo? _observedSignal;
     private ObservedSignalAnalysis? _observedAnalysis;
     private double? _observedDeliveredRate;
     private ImageSource? _videoImage, _autoThumbnail;
@@ -54,9 +55,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private double _systemFraction, _otherSystemFraction, _appFraction, _availableFraction;
     private ImageSource? _pendingPreview;
     private int _previewScheduled;
-    private bool _suppressFormatReconnect;
-    private bool _suppressInputSignalSave;
-    private bool _suppressInterlacedHandlingSave;
+    private bool _suppressInterpretationChanges;
     private bool _suppressDeviceRefresh;
     private int _signalAnalysisRunning;
     private long _lastSignalAnalysisUtcTicks;
@@ -65,15 +64,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly CancellationTokenSource _lifetimeCts = new();
     private int _disposing;
     private IReadOnlyList<CaptureFormatOption> _allCaptureFormats = [CaptureFormatOption.Auto];
-    private bool _showAllFormats;
     private CaptureStatus _captureStatus = CaptureStatus.Created;
     private string _captureStatusText = "CAPTURE NOT STARTED";
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public ObservableCollection<CaptureDeviceDescriptor> Devices { get; } = [];
-    public ObservableCollection<CaptureFormatOption> CaptureFormats { get; } = [];
-    public ObservableCollection<InputSignalOption> InputSignals { get; } = [];
-    public ObservableCollection<InterlacedHandlingOption> InterlacedHandlings { get; } = [];
+    public ObservableCollection<ResolutionOption> Resolutions { get; } = [];
+    public ObservableCollection<InterpretationFormatOption> InterpretationFormats { get; } = [];
+    public ObservableCollection<PixelFormatOption> PixelFormats { get; } = [];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -88,10 +86,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public MainViewModel()
     {
         _settings = _settingsService.Load(); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
-        _signalCoordinator = new([new GenericWindowsInputSignalProvider()], _log);
-        foreach (var option in InputSignalOptions.Common) InputSignals.Add(option);
-        foreach (var option in InterlacedHandlingOptions.Common) InterlacedHandlings.Add(option);
-        _selectedInterlacedHandling = InterlacedHandlings[0];
         RefreshCommand = new AsyncRelayCommand(RefreshDevicesAsync);
         ReconnectCommand = new AsyncRelayCommand(ReconnectAsync);
         ManualClapCommand = new RelayCommand(_ => BeginManualClap());
@@ -111,73 +105,48 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             if (!Set(ref _selectedDevice, value) || value is null) return;
             _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName;
-            _suppressInputSignalSave = true;
-            try { SelectedInputSignal = InputSignalOptions.Find(_settings.InputSignalByDevice.GetValueOrDefault(value.Id)); }
-            finally { _suppressInputSignalSave = false; }
-            _suppressInterlacedHandlingSave = true;
-            try { SelectedInterlacedHandling = InterlacedHandlingOptions.Find(_settings.InterlacedHandlingByDevice.GetValueOrDefault(value.Id)); }
-            finally { _suppressInterlacedHandlingSave = false; }
-            _providerSignal = null; _observedSignal = null; RefreshInputSignalDisplay();
+            _reconstructInterlacedFields = _settings.ReconstructFieldsByDevice.GetValueOrDefault(value.Id);
+            _observedSignal = null; RefreshInterpretationDisplay();
             SaveSettings();
-            if (!_suppressDeviceRefresh) { _ = RefreshCaptureFormatsAsync(value); _ = RefreshInputSignalAsync(value); }
+            if (!_suppressDeviceRefresh) _ = RefreshCaptureFormatsAsync(value);
         }
     }
-    public CaptureFormatOption? SelectedCaptureFormat
+    public ResolutionOption? SelectedResolution
     {
-        get => _selectedCaptureFormat;
+        get => _selectedResolution;
         set
         {
-            if (!Set(ref _selectedCaptureFormat, value) || _suppressFormatReconnect || SelectedDevice is null) return;
-            if (string.IsNullOrWhiteSpace(value?.Id)) _settings.NativeFormatByDevice.Remove(SelectedDevice.Id);
-            else _settings.NativeFormatByDevice[SelectedDevice.Id] = value.Id;
-            SaveSettings(); _log.Write("capture.format-selection", $"device='{SelectedDevice.FriendlyName}' selection='{value?.Display ?? CaptureFormatOption.Auto.Display}'");
-            RefreshInputSignalDisplay();
-            _ = ReconnectAsync();
+            if (!Set(ref _selectedResolution, value) || _suppressInterpretationChanges) return;
+            RebuildInterpretationOptions(); CommitInterpretationSelection();
         }
     }
-    public InputSignalOption? SelectedInputSignal
+    public InterpretationFormatOption? SelectedInterpretationFormat
     {
-        get => _selectedInputSignal;
+        get => _selectedInterpretationFormat;
         set
         {
-            if (!Set(ref _selectedInputSignal, value)) return;
-            if (!_suppressInputSignalSave && SelectedDevice is not null)
-            {
-                if (string.IsNullOrWhiteSpace(value?.Id)) _settings.InputSignalByDevice.Remove(SelectedDevice.Id);
-                else _settings.InputSignalByDevice[SelectedDevice.Id] = value.Id;
-                SaveSettings();
-                _log.Write("input-signal.selection", $"device='{SelectedDevice.FriendlyName}' selection='{value?.Display ?? InputSignalOption.Auto.Display}' (capture unchanged)");
-            }
-            RefreshInputSignalDisplay();
+            if (!Set(ref _selectedInterpretationFormat, value) || _suppressInterpretationChanges) return;
+            RebuildPixelFormats(); CommitInterpretationSelection();
         }
     }
-    public InterlacedHandlingOption? SelectedInterlacedHandling
+    public PixelFormatOption? SelectedPixelFormat
     {
-        get => _selectedInterlacedHandling;
+        get => _selectedPixelFormat;
         set
         {
-            if (!Set(ref _selectedInterlacedHandling, value)) return;
-            if (!_suppressInterlacedHandlingSave && SelectedDevice is not null)
-            {
-                if (string.IsNullOrWhiteSpace(value?.Id)) _settings.InterlacedHandlingByDevice.Remove(SelectedDevice.Id);
-                else _settings.InterlacedHandlingByDevice[SelectedDevice.Id] = value.Id;
-                SaveSettings();
-                _log.Write("input-signal.interlaced-handling", $"device='{SelectedDevice.FriendlyName}' handling='{value?.Display ?? InterlacedHandlingOptions.Common[0].Display}' (describes hardware; capture unchanged until reconnect)");
-            }
-            RefreshInputSignalDisplay();
+            if (!Set(ref _selectedPixelFormat, value) || _suppressInterpretationChanges) return;
+            CommitInterpretationSelection();
         }
     }
-    public bool ShowAllFormats
+    public bool ReconstructInterlacedFields
     {
-        get => _showAllFormats;
+        get => _reconstructInterlacedFields;
         set
         {
-            if (!Set(ref _showAllFormats, value)) return;
-            RebuildVisibleCaptureFormats(SelectedCaptureFormat ?? CaptureFormatOption.Auto);
-            Changed(nameof(ShowAllFormatsText));
+            if (!Set(ref _reconstructInterlacedFields, value) || _suppressInterpretationChanges) return;
+            RebuildInterpretationOptions(); CommitInterpretationSelection(); Changed(nameof(FieldReconstructionHelpText));
         }
     }
-    public string ShowAllFormatsText => $"Show all formats ({Math.Max(0, _allCaptureFormats.Count - 1)})";
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; Changed(); SaveSettings(); } } }
     public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; Changed(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
@@ -189,24 +158,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ImageSource? AutoThumbnail { get => _autoThumbnail; private set => Set(ref _autoThumbnail, value); }
     public string Status { get => _status; private set => Set(ref _status, value); }
     public string FormatText { get => _formatText; private set => Set(ref _formatText, value); }
-    public string InputSignalText => InputSignalFormatter.Format(EffectiveInputSignal());
-    public string InputSignalDetailText
-    {
-        get
-        {
-            var signal = EffectiveInputSignal();
-            var recommendation = SourceAwareFormatMatcher.Recommend(_allCaptureFormats.Where(option => option.Format is not null).Select(option => option.Format!), signal, CurrentInterlacedHandling);
-            var suffix = recommendation is null || signal?.Provenance != InputSignalProvenance.ObservedAnalysis ? "" : $" Suggested capture: {recommendation.Display}; operator selection required.";
-            return InputSignalFormatter.Detail(signal) + suffix;
-        }
-    }
-    public bool IsInterlacedHandlingEnabled => EffectiveInputSignal()?.ScanMode == ScanMode.Interlaced;
-    public string InterlacedHandlingHelpText => IsInterlacedHandlingEnabled
-        ? (SelectedInterlacedHandling?.Help ?? InterlacedHandlingOptions.Common[0].Help) + " This describes the capture device; Kairix does not change its hardware setting. Reconnect to apply the Auto preference."
-        : "Ignored because the declared physical input is not interlaced.";
-    public string InterlacedHandlingStateText => CurrentInterlaceCompatibility().HandlingText;
-    public string InterlaceWarningText => CurrentInterlaceCompatibility().Warning;
-    public string VisualReviewResolutionText => CurrentInterlaceCompatibility().TemporalResolution;
+    public string DetectedCaptureText => _capture is null ? "Not negotiated" : NativeFormatDisplay(_capture.CurrentFormat);
+    public string InterpretationText => SelectedResolution is null || SelectedInterpretationFormat is null || SelectedPixelFormat is null ? "Not configured" : $"{SelectedResolution} · {SelectedInterpretationFormat} · {SelectedPixelFormat}";
+    public string FieldReconstructionHelpText => ReconstructInterlacedFields
+        ? "Reconstructed field timing: selected field order. Capture timestamp is assumed to represent the second field / completed pair."
+        : "Use when a progressive capture frame contains two woven fields from an interlaced source.";
+    public string VisualReviewResolutionText => $"Visual review resolution: {1000d / Math.Max(1, ExpectedReviewTemporalRate):0.###} ms{(CurrentFieldReconstruction is null ? "" : " · reconstructed fields")}";
     public string ContentWarningText
     {
         get
@@ -235,7 +192,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public double SyncValue => _timelineAnalysis is not { TimingValid: false } && CurrentResult is { TimingComparable: true } result ? result.SignedMilliseconds : 0;
     public string TimelineIntegrityText => _timelineAnalysis?.Status ?? "TIMELINE · LIVE";
     public string ConfidenceText => _review?.AutoCandidate is not { } candidate ? "No visual candidate" : $"{candidate.Confidence:P0} confidence · {SyncResult.Calculate(_review.AudioMark, candidate.Timestamp).SignedMilliseconds:+0;-0;0} ms";
-    public string ReviewPosition => !_isReview || _reviewFrames.Count == 0 ? "LIVE" : $"{_playheadIndex + 1} / {_reviewFrames.Count} · {PlayheadMs:+0.0;-0.0;0} ms";
+    public string ReviewPosition => !_isReview || _reviewFrames.Count == 0 ? "LIVE" : $"{_playheadIndex + 1} / {_reviewFrames.Count} · {FieldLabel(_reviewFrames[_playheadIndex])} · {PlayheadMs:+0.0;-0.0;0} ms";
     // Hold is session-only and must never overwrite the capture readiness state.
     public bool IsHold { get => _isHold; set => Set(ref _isHold, value); }
     public string LogPath => _log.Path;
@@ -260,7 +217,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _suppressDeviceRefresh = true;
         try { SelectedDevice = Devices.FirstOrDefault(d => d.Id == selected) ?? _deviceRanker.SelectBest(found, _settings.LastDeviceId, _settings.LastDeviceName) ?? Devices.FirstOrDefault(); }
         finally { _suppressDeviceRefresh = false; }
-        if (SelectedDevice is not null) { await RefreshCaptureFormatsAsync(SelectedDevice); await RefreshInputSignalAsync(SelectedDevice); }
+        if (SelectedDevice is not null) await RefreshCaptureFormatsAsync(SelectedDevice);
         _log.Write("device.selection", $"selected='{SelectedDevice?.FriendlyName ?? "none"}' id='{SelectedDevice?.Id ?? "none"}'");
         var hardwareCount = found.Count(d => d.Kind != CaptureDeviceKind.Synthetic); Status = hardwareCount == 0 ? "NO HARDWARE CAPTURE DEVICE — SYNTHETIC MODE" : $"{hardwareCount} CAPTURE DEVICE(S) FOUND";
     }
@@ -278,37 +235,94 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (request != Volatile.Read(ref _formatRequest) || SelectedDevice?.Id != device.Id) return;
         var saved = _settings.NativeFormatByDevice.TryGetValue(device.Id, out var modeId) ? modeId : null;
         var selected = options.FirstOrDefault(option => string.Equals(option.Id, saved, StringComparison.Ordinal)) ?? CaptureFormatOption.Auto;
-        if (!string.IsNullOrWhiteSpace(saved) && selected == CaptureFormatOption.Auto) { _settings.NativeFormatByDevice.Remove(device.Id); SaveSettings(); _log.Write("capture.format-selection", $"device='{device.FriendlyName}' saved native mode is unavailable; falling back to Auto"); }
+        if (selected == CaptureFormatOption.Auto && (!string.IsNullOrWhiteSpace(saved) || _reconstructInterlacedFields))
+        {
+            _settings.NativeFormatByDevice.Remove(device.Id);
+            _settings.ReconstructFieldsByDevice.Remove(device.Id);
+            _settings.ReconstructionFieldOrderByDevice.Remove(device.Id);
+            _reconstructInterlacedFields = false;
+            Changed(nameof(ReconstructInterlacedFields));
+            SaveSettings();
+            _log.Write("capture.format-selection", $"device='{device.FriendlyName}' saved interpretation is unavailable; falling back to Auto");
+        }
         _allCaptureFormats = options;
-        RebuildVisibleCaptureFormats(selected);
-        Changed(nameof(ShowAllFormatsText));
-        RefreshInputSignalDisplay();
+        _selectedCaptureFormat = selected;
+        RebuildInterpretationOptions(selected.Format);
+        RefreshInterpretationDisplay();
     }
 
-    private void RebuildVisibleCaptureFormats(CaptureFormatOption selected)
+    private void RebuildInterpretationOptions(CaptureFormat? preferred = null)
     {
-        _suppressFormatReconnect = true;
+        _suppressInterpretationChanges = true;
         try
         {
-            var visible = CaptureFormatCatalog.VisibleOptions(_allCaptureFormats, ShowAllFormats, selected.Id);
-            CaptureFormats.Clear();
-            foreach (var option in visible) CaptureFormats.Add(option);
-            SelectedCaptureFormat = selected;
+            var modes = NativeModes();
+            var priorResolution = preferred is null ? SelectedResolution : new ResolutionOption(preferred.Width, preferred.Height);
+            Resolutions.Clear();
+            foreach (var resolution in modes.Select(mode => new ResolutionOption(mode.Format!.Width, mode.Format.Height)).Distinct().OrderByDescending(value => value.Width * value.Height)) Resolutions.Add(resolution);
+            SelectedResolution = Resolutions.FirstOrDefault(value => value == priorResolution) ?? Resolutions.FirstOrDefault();
+
+            var priorFormat = SelectedInterpretationFormat;
+            InterpretationFormats.Clear();
+            if (SelectedResolution is not null)
+            {
+                var rates = modes.Where(mode => mode.Format!.Width == SelectedResolution.Width && mode.Format.Height == SelectedResolution.Height)
+                    .Select(mode => mode.Format!).DistinctBy(format => (format.FrameRate, format.ScanMode)).OrderByDescending(format => format.FrameRate.Value);
+                foreach (var format in rates)
+                {
+                    if (!ReconstructInterlacedFields) InterpretationFormats.Add(new(format.FrameRate, format.ScanMode));
+                    else if (format.ScanMode == ScanMode.Progressive && ValidReconstructionRate(format.FrameRate))
+                    {
+                        var fieldRate = Rational.From(format.FrameRate.Numerator * 2, format.FrameRate.Denominator);
+                        InterpretationFormats.Add(new(format.FrameRate, format.ScanMode, true, fieldRate, FieldOrder.TopFirst));
+                        InterpretationFormats.Add(new(format.FrameRate, format.ScanMode, true, fieldRate, FieldOrder.BottomFirst));
+                    }
+                }
+            }
+            var savedOrder = SelectedDevice is { } device && _settings.ReconstructionFieldOrderByDevice.GetValueOrDefault(device.Id) == "bottom" ? FieldOrder.BottomFirst : FieldOrder.TopFirst;
+            SelectedInterpretationFormat = InterpretationFormats.FirstOrDefault(value => preferred is not null && value.TransportRate == preferred.FrameRate && value.TransportScanMode == preferred.ScanMode && (!value.ReconstructFields || value.FieldOrder == savedOrder))
+                ?? InterpretationFormats.FirstOrDefault(value => priorFormat is not null && value.TransportRate == priorFormat.TransportRate && value.TransportScanMode == priorFormat.TransportScanMode && (!value.ReconstructFields || value.FieldOrder == savedOrder))
+                ?? InterpretationFormats.FirstOrDefault(value => !value.ReconstructFields || value.FieldOrder == savedOrder)
+                ?? InterpretationFormats.FirstOrDefault();
+            RebuildPixelFormats(preferred?.PixelFormat);
         }
-        finally { _suppressFormatReconnect = false; }
+        finally { _suppressInterpretationChanges = false; }
     }
 
-    private async Task RefreshInputSignalAsync(CaptureDeviceDescriptor device)
+    private void RebuildPixelFormats(VideoPixelFormat? preferred = null)
     {
-        InputSignalInfo? result;
-        try { result = await _signalCoordinator.QueryAsync(device, _lifetimeCts.Token); }
-        catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { return; }
-        if (SelectedDevice?.Id != device.Id) return;
-        _providerSignal = result;
-        _log.Write("input-signal.provider", result is null
-            ? $"device='{device.FriendlyName}' standard source metadata unavailable"
-            : $"device='{device.FriendlyName}' provider='{result.ProviderName}' provenance={result.Provenance} authority={result.Authority}");
-        RefreshInputSignalDisplay();
+        var prior = preferred ?? SelectedPixelFormat?.Value;
+        _suppressInterpretationChanges = true;
+        try
+        {
+            PixelFormats.Clear();
+            if (SelectedResolution is not null && SelectedInterpretationFormat is not null)
+            {
+                foreach (var pixel in NativeModes().Where(mode => MatchesSelection(mode.Format!)).Select(mode => mode.Format!.PixelFormat).Distinct()) PixelFormats.Add(new(pixel));
+            }
+            SelectedPixelFormat = PixelFormats.FirstOrDefault(value => value.Value == prior) ?? PixelFormats.FirstOrDefault();
+        }
+        finally { _suppressInterpretationChanges = false; }
+    }
+
+    private IReadOnlyList<CaptureFormatOption> NativeModes() => _allCaptureFormats.Where(option => option.Format is not null).ToArray();
+    private bool MatchesSelection(CaptureFormat format) => SelectedResolution is { } resolution && SelectedInterpretationFormat is { } interpretation &&
+        format.Width == resolution.Width && format.Height == resolution.Height && format.FrameRate == interpretation.TransportRate && format.ScanMode == interpretation.TransportScanMode;
+    private CaptureFormatOption? ResolveSelectedNativeMode() => SelectedPixelFormat is null ? null : NativeModes().FirstOrDefault(mode => MatchesSelection(mode.Format!) && mode.Format!.PixelFormat == SelectedPixelFormat.Value);
+
+    private void CommitInterpretationSelection()
+    {
+        if (_suppressInterpretationChanges || SelectedDevice is null) return;
+        var mode = ResolveSelectedNativeMode();
+        if (mode is null) return;
+        _selectedCaptureFormat = mode; RefreshInterpretationDisplay();
+        _settings.NativeFormatByDevice[SelectedDevice.Id] = mode.Id;
+        _settings.ReconstructFieldsByDevice[SelectedDevice.Id] = ReconstructInterlacedFields;
+        if (SelectedInterpretationFormat?.FieldOrder == FieldOrder.BottomFirst) _settings.ReconstructionFieldOrderByDevice[SelectedDevice.Id] = "bottom";
+        else _settings.ReconstructionFieldOrderByDevice[SelectedDevice.Id] = "top";
+        SaveSettings();
+        _log.Write("capture.interpretation", $"device='{SelectedDevice.FriendlyName}' native='{mode.Id}' interpretation='{InterpretationText}' reconstruction={ReconstructInterlacedFields}");
+        _ = ReconnectAsync();
     }
 
     public async Task ReconnectAsync()
@@ -318,18 +332,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         try
         {
         if (Volatile.Read(ref _disposing) != 0) return;
-        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _signalVideo.Clear(); _audio.Clear(); _observedSignal = null; _observedAnalysis = null; _observedDeliveredRate = null; RefreshInputSignalDisplay();
+        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _signalVideo.Clear(); _audio.Clear(); _observedSignal = null; _observedAnalysis = null; _observedDeliveredRate = null; RefreshInterpretationDisplay();
         if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
         var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
         try
         {
-            var sourcePreference = string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? EffectiveInputSignal() : null;
-            var strictFormat = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id);
-            _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: SelectedCaptureFormat?.Id, PreferredSourceSignal: sourcePreference, RequirePreferredNativeFormat: strictFormat, InterlacedInputHandling: CurrentInterlacedHandling), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
-            await _capture.StartAsync(_lifetimeCts.Token); ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInputSignalDisplay(); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
+            var strictFormat = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id);
+            _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: _selectedCaptureFormat?.Id, RequirePreferredNativeFormat: strictFormat, FieldReconstruction: CurrentFieldReconstruction), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
+            await _capture.StartAsync(_lifetimeCts.Token);
+            if (!strictFormat) ApplyDetectedCaptureDefaults(_capture.CurrentFormat);
+            ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInterpretationDisplay(); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}; detected='{DetectedCaptureText}' interpretation='{InterpretationText}'");
         }
         catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { await StopCaptureAsync(); }
-        catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? "REQUESTED CAPTURE FORMAT NOT ACCEPTED" : "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; FormatText = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? $"Requested: {SelectedCaptureFormat.Display}" : "Capture: Not negotiated"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); }
+        catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? "REQUESTED CAPTURE FORMAT NOT ACCEPTED" : "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; FormatText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? $"Requested: {_selectedCaptureFormat.Display}" : "Capture: Not negotiated"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); RefreshInterpretationDisplay(); }
         }
         finally { _reconnectGate.Release(); }
     }
@@ -363,7 +378,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 _observedAnalysis = task.Result;
                 _observedDeliveredRate = task.Result.ObservedFrameRate > 0 ? task.Result.ObservedFrameRate : null;
                 FormatText = BuildCaptureText();
-                RefreshInputSignalDisplay();
+                RefreshInterpretationDisplay();
                 _log.Write("input-signal.analysis", $"frames={task.Result.FramesAnalyzed} duration={task.Result.DurationSeconds:0.00}s output={task.Result.ObservedFrameRate:0.###}Hz cadence={task.Result.Signal.EffectiveTemporalRate?.ToString("0.###") ?? "unknown"} nearIdentical={task.Result.NearIdenticalFraction:P1} sceneActivity={task.Result.SceneActivitySufficient} pairedRepeat={task.Result.PairedRepeatDetected} uniqueRate={task.Result.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} pattern='{task.Result.RepeatPattern}' interlace={task.Result.InterlaceEvidence:0.000} authority={task.Result.Signal.Authority}");
             });
         }, TaskScheduler.Default);
@@ -466,7 +481,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private async Task BuildEventSnapshotAsync(long generation)
     {
         if (_review is null) return; var review = _review; var reference = review.EventReference; var half = TimeSpan.FromMilliseconds(WorkWindowMilliseconds); var videoSnapshot = _video.Snapshot(); var audioSnapshot = _audio.Snapshot();
-        var declaredRate = _capture is null || _capture.CurrentFormat.TemporalImageDuration.TotalMilliseconds <= 0 ? 0 : 1000d / _capture.CurrentFormat.TemporalImageDuration.TotalMilliseconds;
+        var declaredRate = ExpectedReviewTemporalRate;
         var built = await Task.Run(() =>
         {
             var timeline = ReviewTimelineIntegrity.Build(videoSnapshot, reference, half, declaredRate); var chunks = WorkWindowSelector.Around(audioSnapshot, a => a.Timestamp, reference, half + TimeSpan.FromMilliseconds(25));
@@ -498,14 +513,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private static BitmapSource ToBitmap(VideoFrame frame)
     {
         var bitmap = frame.HasPresentation
-            ? BitmapSource.Create(frame.PresentationWidth, frame.PresentationHeight, 96, 96, PixelFormats.Bgra32, null, frame.PresentationBgra!, frame.EffectivePresentationStride)
-            : BitmapSource.Create(frame.Width, frame.Height, 96, 96, PixelFormats.Gray8, null, frame.Luma, frame.Width);
+            ? BitmapSource.Create(frame.PresentationWidth, frame.PresentationHeight, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null, frame.PresentationBgra!, frame.EffectivePresentationStride)
+            : BitmapSource.Create(frame.Width, frame.Height, 96, 96, System.Windows.Media.PixelFormats.Gray8, null, frame.Luma, frame.Width);
         bitmap.Freeze(); return bitmap;
     }
     private void ResizeBuffers()
     {
         const double maximumRetainedVideoSamplesPerSecond = 60; // RAM safety bound; timestamps, never this capacity, define timeline positions.
-        var negotiatedRate = _capture is null || _capture.CurrentFormat.TemporalImageDuration.TotalSeconds <= 0 ? maximumRetainedVideoSamplesPerSecond : 1 / _capture.CurrentFormat.TemporalImageDuration.TotalSeconds;
+        var negotiatedRate = _capture is null ? maximumRetainedVideoSamplesPerSecond : ExpectedReviewTemporalRate;
         var retainedVideoRate = Math.Clamp(negotiatedRate, 10, maximumRetainedVideoSamplesPerSecond);
         _video.Resize(Math.Max(50, (int)Math.Ceiling(RollingBufferSeconds * retainedVideoRate)));
         _audio.Resize(Math.Max(200, (int)Math.Ceiling(RollingBufferSeconds * 200))); // WASAPI packet bound; audio timing remains sample-derived.
@@ -515,7 +530,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void SaveSettings() { try { _settingsService.Save(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
     private static void OpenCoffee() { if (!string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppConstants.BuyMeACoffeeUrl) { UseShellExecute = true }); }
     private static string DescribeTiming(TimingQuality quality) => quality switch { TimingQuality.DeviceHardware => "DEVICE/QPC TIMESTAMPS", TimingQuality.PlatformCaptureClock => "PLATFORM CAPTURE CLOCK", TimingQuality.ClockCorrelated => "CLOCKS CORRELATED", TimingQuality.StreamTimestamp => "STREAM TIMESTAMPS", TimingQuality.ArrivalFallback => "TIMING DEGRADED · ARRIVAL", _ => "TIMING DOMAINS UNRELATED" };
-    private static string PairedRepeatWarning(double timestampRate, double? uniqueRate) => $"REPEATED FRAME PAIRS DETECTED · {timestampRate:0.##} timestamped fps · ≈{uniqueRate:0.##} unique images/sec · capture device may be converting the source";
+    private static string PairedRepeatWarning(double timestampRate, double? uniqueRate) => $"REPEATED FRAME PAIRS DETECTED · {timestampRate:0.##} timestamped fps · ≈{uniqueRate:0.##} unique images/sec · if this is an interlaced source, try half-rate progressive capture with field reconstruction";
+    private static string FieldLabel(VideoFrame frame) => frame.TemporalImageKind switch { TemporalImageKind.TopField => "TOP FIELD", TemporalImageKind.BottomField => "BOTTOM FIELD", _ => "FRAME" };
     private string BuildCaptureText()
     {
         if (_capture is null) return "Capture: Not negotiated";
@@ -524,22 +540,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var difference = observed.HasValue && declared > 0 ? Math.Abs(observed.Value - declared) / declared : 0;
         return difference >= .03 ? $"Capture: {_capture.CurrentFormat.Display} · observed {observed:0.###} fps" : $"Capture: {_capture.CurrentFormat.Display}";
     }
-    private InputSignalInfo? EffectiveInputSignal()
+    private FieldReconstructionOptions? CurrentFieldReconstruction => ReconstructInterlacedFields && SelectedInterpretationFormat is { ReconstructFields: true, InterpretedFieldRate: { } fieldRate } interpretation
+        ? new(interpretation.TransportRate, fieldRate, interpretation.FieldOrder)
+        : null;
+    private double ExpectedReviewTemporalRate
     {
-        if (SelectedInputSignal?.Signal is { } manual && SelectedDevice is { } device) return manual with { DeviceIdentity = device.Id };
-        return InputSignalCoordinator.SelectStrongest([_providerSignal, _observedSignal]);
+        get
+        {
+            if (CurrentFieldReconstruction is { } reconstruction) return reconstruction.ReviewTemporalRate;
+            var seconds = _capture?.CurrentFormat.TemporalImageDuration.TotalSeconds ?? 0;
+            return seconds > 0 ? 1 / seconds : SelectedInterpretationFormat?.ReviewTemporalRate ?? 0;
+        }
     }
-    private InterlacedInputHandling CurrentInterlacedHandling => SelectedInterlacedHandling?.Value ?? InterlacedInputHandling.Unknown;
-    private InterlaceCompatibilityInfo CurrentInterlaceCompatibility()
+    private static bool ValidReconstructionRate(Rational rate) => rate == Rational.From(25) || rate == Rational.From(30_000, 1_001);
+    private static string NativeFormatDisplay(CaptureFormat format) => $"{format.Width}×{format.Height} · {format.FrameRate.Value:0.000}{(format.ScanMode == ScanMode.Progressive ? "p" : format.ScanMode == ScanMode.Interlaced ? "i" : " fps")} · {new PixelFormatOption(format.PixelFormat)}";
+    private void ApplyDetectedCaptureDefaults(CaptureFormat format)
     {
-        var format = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? SelectedCaptureFormat.Format : _capture?.CurrentFormat;
-        return InterlaceCompatibility.Evaluate(EffectiveInputSignal(), CurrentInterlacedHandling, format);
+        var matching = NativeModes().FirstOrDefault(option => option.Format == format || option.Format is { } candidate && candidate.Width == format.Width && candidate.Height == format.Height && candidate.FrameRate == format.FrameRate && candidate.ScanMode == format.ScanMode && candidate.PixelFormat == format.PixelFormat);
+        if (matching is null)
+        {
+            matching = new CaptureFormatOption("", NativeFormatDisplay(format), format);
+            _allCaptureFormats = [.. _allCaptureFormats, matching];
+        }
+        _selectedCaptureFormat = matching;
+        RebuildInterpretationOptions(format);
     }
-    private void RefreshInputSignalDisplay()
+    private void RefreshInterpretationDisplay()
     {
-        Changed(nameof(InputSignalText)); Changed(nameof(InputSignalDetailText)); Changed(nameof(IsInterlacedHandlingEnabled));
-        Changed(nameof(InterlacedHandlingHelpText)); Changed(nameof(InterlacedHandlingStateText)); Changed(nameof(InterlaceWarningText)); Changed(nameof(VisualReviewResolutionText));
-        Changed(nameof(ContentWarningText));
+        Changed(nameof(DetectedCaptureText)); Changed(nameof(InterpretationText)); Changed(nameof(FieldReconstructionHelpText)); Changed(nameof(VisualReviewResolutionText)); Changed(nameof(ContentWarningText));
     }
     private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoSampleReceived -= OnVideoFrame; _capture.AudioSampleReceived -= OnAudio; _capture.StatusChanged -= OnCaptureStatus; await _capture.DisposeAsync(); _capture = null; }
     public async ValueTask DisposeAsync()

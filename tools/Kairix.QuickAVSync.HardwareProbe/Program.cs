@@ -36,13 +36,20 @@ if (options.SourceId is not null)
     if (sourceOption?.Signal is null) { Console.Error.WriteLine($"SOURCE ERROR: Unknown manual source option '{options.SourceId}'."); return 4; }
     preferredSource = sourceOption.Signal;
 }
-var handlingOption = InterlacedHandlingOptions.Find(options.InterlacedHandlingId);
-if (options.InterlacedHandlingId is not null && string.IsNullOrWhiteSpace(handlingOption.Id)) { Console.Error.WriteLine($"SOURCE ERROR: Unknown interlaced handling '{options.InterlacedHandlingId}'. Use preserve, field-rate, or frame-rate."); return 4; }
+FieldReconstructionOptions? reconstruction = null;
+if (options.ReconstructFields)
+{
+    if (options.ModeId is null) { Console.Error.WriteLine("INTERPRETATION ERROR: --reconstruct-fields requires an explicit progressive --mode."); return 4; }
+    var ratePart = options.ModeId.Split('|');
+    if (ratePart.Length < 4 || ratePart[2] != "p" || !TryRate(ratePart[1], out var transportRate) || transportRate is null || (transportRate != Rational.From(25) && transportRate != Rational.From(30_000, 1_001)))
+    { Console.Error.WriteLine("INTERPRETATION ERROR: reconstruction currently supports strict 25p or 30000/1001p transport modes."); return 4; }
+    reconstruction = new(transportRate.Value, Rational.From(transportRate.Value.Numerator * 2, transportRate.Value.Denominator), options.FieldOrder == "bottom" ? FieldOrder.BottomFirst : FieldOrder.TopFirst);
+}
 
 Console.WriteLine("REQUESTED MODE:"); Console.WriteLine(options.ModeId ?? "Auto");
-Console.WriteLine("INTERLACED HANDLING:"); Console.WriteLine(handlingOption.Display);
+Console.WriteLine("INPUT INTERPRETATION:"); Console.WriteLine(reconstruction is null ? "Native progressive frames" : $"{reconstruction.CapturedProgressiveRate.Value:0.000}p -> {reconstruction.TargetFieldRate.Value:0.000}i · {reconstruction.FieldOrder}");
 ICaptureSession session;
-try { session = await backend.OpenAsync(device, new(PreferredNativeFormatId: options.ModeId, PreferredSourceSignal: preferredSource, RequirePreferredNativeFormat: options.ModeId is not null, InterlacedInputHandling: handlingOption.Value), default); }
+try { session = await backend.OpenAsync(device, new(PreferredNativeFormatId: options.ModeId, PreferredSourceSignal: preferredSource, RequirePreferredNativeFormat: options.ModeId is not null, FieldReconstruction: reconstruction), default); }
 catch (Exception ex) { Console.Error.WriteLine("FORMAT NEGOTIATION FAILED"); Console.Error.WriteLine($"Requested: {options.ModeId ?? "Auto"}"); Console.Error.WriteLine(ex.Message); return 5; }
 await using var ownedSession = session;
 Console.WriteLine("NEGOTIATED MODE:"); Console.WriteLine($"{session.CurrentFormat.Display} {session.CurrentFormat.PixelFormat}");
@@ -54,7 +61,7 @@ session.StatusChanged += (_, status) => Console.WriteLine($"STATUS {status.Statu
 session.VideoSampleReceived += (_, frame) =>
 {
     var count = Interlocked.Increment(ref samples); frames.Enqueue(frame);
-    if (count <= 5) Console.WriteLine($"FRAME {count}: {frame.Width}x{frame.Height} timestamp={frame.Timestamp.Ticks100ns} quality={frame.Timestamp.Quality} source={frame.TimingObservation?.PrimarySource} bytes={frame.Luma.Length}");
+    if (count <= 6) Console.WriteLine($"FRAME {count}: {frame.Width}x{frame.Height} kind={frame.TemporalImageKind} timestampOrigin={frame.TimestampOrigin} timestamp={frame.Timestamp.Ticks100ns} quality={frame.Timestamp.Quality} source={frame.TimingObservation?.PrimarySource} bytes={frame.Luma.Length}");
     if (count == 5) fiveFrames.TrySetResult();
 };
 session.AudioSampleReceived += (_, chunk) => { if (Interlocked.Increment(ref audioBlocks) == 1) Console.WriteLine($"AUDIO rate={chunk.SampleRate} channels={chunk.Channels} frames={chunk.FrameCount} quality={chunk.Timestamp.Quality} domain={chunk.Timestamp.ClockDomain}"); };
@@ -62,17 +69,15 @@ var stopwatch = Stopwatch.StartNew(); await session.StartAsync(default); await f
 await Task.Delay(options.AnalyzeSignal || options.TimingDetail ? TimeSpan.FromSeconds(7) : TimeSpan.FromSeconds(1)); stopwatch.Stop();
 
 var captured = frames.ToArray();
-var declaredRate = session.CurrentFormat.TemporalImageDuration.TotalSeconds > 0 ? 1 / session.CurrentFormat.TemporalImageDuration.TotalSeconds : 0;
+var declaredRate = reconstruction?.ReviewTemporalRate ?? (session.CurrentFormat.TemporalImageDuration.TotalSeconds > 0 ? 1 / session.CurrentFormat.TemporalImageDuration.TotalSeconds : 0);
 var timing = new FrameTimingAnalyzer().Analyze(captured, declaredRate);
 var review = captured.Length == 0 ? null : ReviewTimelineIntegrity.Build(captured, captured[captured.Length / 2].Timestamp, TimeSpan.FromMilliseconds(250), declaredRate);
 if (options.TimingDetail) PrintTimingDetail(captured, 100);
 
 Console.WriteLine("DEVICE"); Console.WriteLine($"Requested: {options.DeviceId ?? options.DeviceName ?? "<only available device>"}"); Console.WriteLine($"Resolved: {device.FriendlyName} [{device.Id}]");
 Console.WriteLine("FORMAT"); Console.WriteLine($"Requested: {options.ModeId ?? "Auto"}"); Console.WriteLine($"Negotiated: {session.CurrentFormat.Display} {session.CurrentFormat.PixelFormat}");
-Console.WriteLine($"Interlaced handling declaration: {handlingOption.Display}");
-var compatibility = InterlaceCompatibility.Evaluate(preferredSource, handlingOption.Value, session.CurrentFormat);
-if (!string.IsNullOrWhiteSpace(compatibility.Warning)) Console.WriteLine(compatibility.Warning);
-if (!string.IsNullOrWhiteSpace(compatibility.TemporalResolution)) Console.WriteLine(compatibility.TemporalResolution);
+Console.WriteLine($"Interpretation: {(reconstruction is null ? "native capture cadence" : $"{reconstruction.CapturedProgressiveRate.Value:0.000}p -> {reconstruction.TargetFieldRate.Value:0.000}i {reconstruction.FieldOrder}")}");
+if (reconstruction is not null) Console.WriteLine($"Reconstructed field timing: {reconstruction.FieldOrder}; captured sample assumed to represent second field / completed pair; interval={reconstruction.FieldIntervalTicks100ns / 10_000d:0.###} ms");
 Console.WriteLine("TIMESTAMPS");
 Console.WriteLine($"Primary source: {captured.FirstOrDefault()?.TimingObservation?.PrimarySource.ToString() ?? captured.FirstOrDefault()?.Timestamp.Quality.ToString() ?? "unknown"}");
 Console.WriteLine($"Declared rate: {timing.DeclaredTemporalRate:0.###} fps"); Console.WriteLine($"Observed primary rate: {timing.Primary.ObservedRate:0.###} fps"); Console.WriteLine($"Observed arrival rate: {timing.Arrival.ObservedRate:0.###} fps");
@@ -125,19 +130,26 @@ static double ImageMeanAbsoluteDifference(VideoFrame first, VideoFrame second)
     }
     return count == 0 ? 0 : total / (double)count;
 }
+static bool TryRate(string text, out Rational? rate)
+{
+    rate = null; var parts = text.Split('/');
+    if (!int.TryParse(parts[0], out var numerator) || (parts.Length > 1 && !int.TryParse(parts[1], out _))) return false;
+    var denominator = parts.Length > 1 ? int.Parse(parts[1]) : 1;
+    rate = Rational.From(numerator, denominator); return true;
+}
 static string Usage() => """
 Kairix Quick A/V Sync HardwareProbe
 
 Canonical usage:
-  --device "<friendly name>" [--mode "<native mode id>"] [--source "<source option id>"] [--interlaced-handling <mode>] [--analyze-signal] [--timing-detail]
+  --device "<friendly name>" [--mode "<native mode id>"] [--reconstruct-fields] [--field-order top|bottom] [--analyze-signal] [--timing-detail]
 
 Options:
   --device <name>       Exact friendly-name match; ambiguity requires --device-id.
   --device-id <id>      Exact stable device ID.
   --mode <id>           Strict native mode; unavailable/rejected/mismatched negotiation fails.
   --source <id>         Manual physical-source option used only by Auto mode.
-  --interlaced-handling <mode>
-                        Describes device processing: preserve, field-rate, or frame-rate. Does not configure hardware.
+  --reconstruct-fields  Split each supported progressive transport frame into two bobbed temporal fields.
+  --field-order <order> Field order for reconstruction: top (default) or bottom.
   --list-formats        List native modes without starting capture.
   --analyze-signal      Run bounded passive signal analysis.
   --timing-detail       Print at most the first 100 timing rows.

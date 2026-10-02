@@ -129,7 +129,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     private const int ValidationFrameCount = 3;
     private static readonly TimeSpan ValidationTimeout = TimeSpan.FromSeconds(3);
     private readonly CaptureDeviceDescriptor _device; private readonly CaptureOpenOptions _options; private readonly DevicePairing _pairing; private readonly IDiagnosticSink _log;
-    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _validationStreak; private int _emptySampleCount; private int _audioState; private SourceFormat _sourceFormat;
+    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _nativeSampleCount; private int _validationStreak; private int _emptySampleCount; private int _audioState; private SourceFormat _sourceFormat;
     private TaskCompletionSource _firstVideoSample = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public CaptureFormat CurrentFormat { get; private set; }
     public TimingQuality TimingQuality { get; private set; } = TimingQuality.StreamTimestamp;
@@ -161,6 +161,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
             Marshal.ReleaseComObject(selection.MediaType); reader.SetStreamSelection(MediaFoundationNative.SourceReaderFirstVideoStream, 1).ThrowIfFailed();
             log.Write("capture.format", $"device='{device.FriendlyName}' format={selection.Format.Display} pixel={selection.Source.PixelFormat} stride={selection.Source.Stride} fields={selection.Format.FieldOrder}");
             var format = pairing.Endpoint is null ? selection.Format with { AudioSampleRate = 0 } : selection.Format;
+            ValidateFieldReconstruction(format, options.FieldReconstruction);
             var session = new MediaFoundationCaptureSession(device, options, pairing, log, reader, format, selection.Source) { _mfStarted = true }; reader = null; return session;
         }
         catch (Exception ex) { log.Write("capture.open.failure", ex.ToString()); if (source != IntPtr.Zero) Marshal.Release(source); if (reader is not null) Marshal.ReleaseComObject(reader); MediaFoundationNative.MFShutdown(); throw; }
@@ -225,7 +226,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         }
         catch (TimeoutException)
         {
-            var message = $"Fewer than {ValidationFrameCount} video frames with pixel data arrived within {ValidationTimeout.TotalSeconds:0} seconds ({Volatile.Read(ref _temporalIndex)} payload, {Volatile.Read(ref _emptySampleCount)} timestamp-only).";
+            var message = $"Fewer than {ValidationFrameCount} video frames with pixel data arrived within {ValidationTimeout.TotalSeconds:0} seconds ({Volatile.Read(ref _nativeSampleCount)} payload, {Volatile.Read(ref _emptySampleCount)} timestamp-only).";
             _log.Write("capture.first-sample", message); _log.Write("capture.coordinator", $"Media Foundation rejected for '{_device.FriendlyName}': {message}"); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, message)); throw new TimeoutException(message);
         }
     }
@@ -304,11 +305,21 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                             buffer.GetMaxLength(out var maximumLength).ThrowIfFailed();
                             _log.Write("capture.sample", $"first buffer currentLength={currentLength} maximumLength={maximumLength} expectedMinimum={Math.Abs(_sourceFormat.Stride) * _sourceFormat.Height}");
                         }
-                        var presentation = ExtractPresentationFrame(buffer, _sourceFormat, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, _options.PreferredPresentationWidth, _options.PreferredPresentationHeight);
-                        var sampleNumber = Interlocked.Increment(ref _temporalIndex);
+                        var nativeSampleNumber = Interlocked.Increment(ref _nativeSampleCount);
                         var validationStreak = Interlocked.Increment(ref _validationStreak);
-                        VideoSampleReceived?.Invoke(this, new(timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, presentation.Luma, sampleNumber, Stride: _options.PreferredAnalysisWidth, PresentationBgra: presentation.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight, PresentationStride: _options.PreferredPresentationWidth * 4, TimingObservation: timingObservation));
-                        if (sampleNumber == 1)
+                        if (_options.FieldReconstruction is { } reconstruction)
+                        {
+                            var positions = ReconstructedFieldTimestampModel.Reconstruct(timestamp, timingObservation, reconstruction);
+                            var converted = ExtractFrames(buffer, _sourceFormat, positions.Select(position => position.Kind));
+                            for (var index = 0; index < positions.Count; index++) PublishFrame(converted[index], positions[index]);
+                            if (nativeSampleNumber <= 3) _log.Write("field.reconstruction", $"sample={nativeSampleNumber} assumption='capture timestamp represents second field/completed pair' intervalMs={reconstruction.FieldIntervalTicks100ns / 10_000d:0.###} first={positions[0].Kind}@{positions[0].Timestamp.Ticks100ns} second={positions[1].Kind}@{positions[1].Timestamp.Ticks100ns}");
+                        }
+                        else
+                        {
+                            var converted = ExtractFrames(buffer, _sourceFormat, [TemporalImageKind.ProgressiveFrame])[0];
+                            PublishFrame(converted, new(TemporalImageKind.ProgressiveFrame, timestamp, TimestampOrigin.DirectCapture, timingObservation));
+                        }
+                        if (nativeSampleNumber == 1)
                         {
                             _log.Write("capture.first-sample", $"Video payload received timestamp={timestamp.Ticks100ns} raw={timestamp.RawValue?.ToString() ?? "unavailable"} deviceTimestamp={(deviceTime is null ? "unavailable" : "available")} format='{CurrentFormat.Display}'");
                         }
@@ -319,7 +330,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
                             _log.Write("capture.coordinator", $"Media Foundation accepted for '{_device.FriendlyName}'");
                             StatusChanged?.Invoke(this, new(CaptureStatus.Running, LiveStatus()));
                         }
-                        else if (sampleNumber % 250 == 0) _log.Write("capture.samples", $"delivered={sampleNumber} latestTimestamp={timestamp.Ticks100ns}");
+                        else if (nativeSampleNumber % 250 == 0) _log.Write("capture.samples", $"native={nativeSampleNumber} temporal={Volatile.Read(ref _temporalIndex)} latestTimestamp={timestamp.Ticks100ns}");
                     }
                     finally { Marshal.ReleaseComObject(buffer); }
                 }
@@ -405,10 +416,8 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         try
         {
             var rankable = candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))).ToArray();
-            var ranked = options.RequirePreferredNativeFormat
-                ? WindowsNativeFormatRanker.Rank(rankable, options.PreferredNativeFormatId, options.PreferredSourceSignal, true)
-                : WindowsNativeFormatRanker.Rank(rankable, options.PreferredNativeFormatId, options.PreferredSourceSignal, options.InterlacedInputHandling);
-            log.Write("capture.negotiation", $"ranking={(options.RequirePreferredNativeFormat ? "strict-explicit-mode" : string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) ? SourceAwareFormatMatcher.CanAutomaticallyApply(options.PreferredSourceSignal, options.InterlacedInputHandling) ? "source-aware-auto" : "generic-auto" : "preferred-mode-with-fallback")} sourceProvenance={options.PreferredSourceSignal?.Provenance.ToString() ?? "none"} interlacedHandling={options.InterlacedInputHandling}");
+            var ranked = WindowsNativeFormatRanker.Rank(rankable, options.PreferredNativeFormatId, options.PreferredSourceSignal, options.RequirePreferredNativeFormat);
+            log.Write("capture.negotiation", $"ranking={(options.RequirePreferredNativeFormat ? "strict-explicit-mode" : string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) ? SourceAwareFormatMatcher.CanAutomaticallyApply(options.PreferredSourceSignal) ? "source-aware-auto" : "generic-auto" : "preferred-mode-with-fallback")} sourceProvenance={options.PreferredSourceSignal?.Provenance.ToString() ?? "none"} fieldReconstruction={options.FieldReconstruction is not null}");
             foreach (var rankedCandidate in ranked)
             {
                 var candidate = candidates.First(item => item.Index == rankedCandidate.NativeIndex);
@@ -464,54 +473,39 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         return (new(width, height, Rational.From(numerator, Math.Max(1, denominator)), interlace.ScanMode, interlace.FieldOrder, PixelFormat: pixel, InterlaceLayout: interlace.Layout), new(width, height, stride, pixel, interlace.AttributePresent, interlace.RawValue));
     }
 
-    private static unsafe (byte[] Luma, byte[] Bgra) ExtractPresentationFrame(IMFMediaBuffer buffer, SourceFormat source, int analysisWidth, int analysisHeight, int presentationWidth, int presentationHeight)
+    private void PublishFrame(ConvertedVideoFrame converted, ReconstructedFieldPosition position)
+    {
+        var temporalIndex = Interlocked.Increment(ref _temporalIndex);
+        VideoSampleReceived?.Invoke(this, new(position.Timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, converted.Luma, temporalIndex,
+            TemporalImageKind: position.Kind, TimestampOrigin: position.TimestampOrigin, Stride: _options.PreferredAnalysisWidth,
+            PresentationBgra: converted.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight,
+            PresentationStride: _options.PreferredPresentationWidth * 4, TimingObservation: position.TimingObservation));
+    }
+
+    private unsafe IReadOnlyList<ConvertedVideoFrame> ExtractFrames(IMFMediaBuffer buffer, SourceFormat source, IEnumerable<TemporalImageKind> kinds)
     {
         buffer.Lock(out var data, out _, out var length).ThrowIfFailed();
         try
         {
-            var luma = new byte[analysisWidth * analysisHeight]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var pointer = (byte*)data;
-            for (var y = 0; y < analysisHeight; y++)
-            {
-                var sy = Math.Min(source.Height - 1, y * source.Height / analysisHeight);
-                for (var x = 0; x < analysisWidth; x++)
-                {
-                    var sx = Math.Min(source.Width - 1, x * source.Width / analysisWidth); ReadPixel(pointer, length, source, sx, sy, out var b, out var g, out var r, out var yValue);
-                    luma[y * analysisWidth + x] = yValue;
-                }
-            }
-            for (var y = 0; y < presentationHeight; y++)
-            {
-                var sy = Math.Min(source.Height - 1, y * source.Height / presentationHeight);
-                for (var x = 0; x < presentationWidth; x++)
-                {
-                    var sx = Math.Min(source.Width - 1, x * source.Width / presentationWidth); ReadPixel(pointer, length, source, sx, sy, out var b, out var g, out var r, out _);
-                    var offset = (y * presentationWidth + x) * 4; bgra[offset] = b; bgra[offset + 1] = g; bgra[offset + 2] = r; bgra[offset + 3] = 255;
-                }
-            }
-            return (luma, bgra);
+            var bytes = new ReadOnlySpan<byte>((void*)data, length);
+            var layout = new NativeFrameLayout(source.Width, source.Height, source.Stride, source.PixelFormat);
+            var converted = new List<ConvertedVideoFrame>();
+            foreach (var kind in kinds) converted.Add(NativeVideoFrameConverter.Convert(bytes, layout, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, _options.PreferredPresentationWidth, _options.PreferredPresentationHeight, kind));
+            return converted;
         }
         finally { buffer.Unlock(); }
     }
 
-    private static unsafe void ReadPixel(byte* pointer, int length, SourceFormat source, int x, int y, out byte blue, out byte green, out byte red, out byte luma)
+    private static void ValidateFieldReconstruction(CaptureFormat format, FieldReconstructionOptions? reconstruction)
     {
-        blue = green = red = luma = 0; var stride = Math.Abs(source.Stride); var sourceRow = source.Stride < 0 ? source.Height - 1 - y : y; var baseOffset = sourceRow * stride;
-        bool Has(int offset, int bytes) => offset >= 0 && offset + bytes <= length;
-        if (source.PixelFormat == VideoPixelFormat.Nv12)
-        {
-            var yOffset = baseOffset + x; if (!Has(yOffset, 1)) return; luma = pointer[yOffset]; var uvOffset = stride * source.Height + y / 2 * stride + x / 2 * 2;
-            if (!Has(uvOffset, 2)) { blue = green = red = luma; return; } WindowsColorConversion.YuvToBgr(luma, pointer[uvOffset], pointer[uvOffset + 1], out blue, out green, out red); return;
-        }
-        if (source.PixelFormat is VideoPixelFormat.Yuy2 or VideoPixelFormat.Uyvy)
-        {
-            var pair = baseOffset + (x & ~1) * 2; if (!Has(pair, 4)) return;
-            byte u, v;
-            if (source.PixelFormat == VideoPixelFormat.Yuy2) { luma = pointer[pair + (x & 1) * 2]; u = pointer[pair + 1]; v = pointer[pair + 3]; }
-            else { luma = pointer[pair + 1 + (x & 1) * 2]; u = pointer[pair]; v = pointer[pair + 2]; }
-            WindowsColorConversion.YuvToBgr(luma, u, v, out blue, out green, out red); return;
-        }
-        var bytes = source.PixelFormat == VideoPixelFormat.Bgra32 ? 4 : 3; var offset = baseOffset + x * bytes; if (!Has(offset, bytes)) return;
-        blue = pointer[offset]; green = pointer[offset + 1]; red = pointer[offset + 2]; luma = (byte)Math.Clamp((red * 54 + green * 183 + blue * 19) >> 8, 0, 255);
+        if (reconstruction is null) return;
+        if (format.ScanMode != ScanMode.Progressive || format.FrameRate != reconstruction.CapturedProgressiveRate)
+            throw new InvalidOperationException("FIELD RECONSTRUCTION NOT ACCEPTED: negotiated transport must be the selected progressive frame rate.");
+        var exactDoubledRate = Rational.From(format.FrameRate.Numerator * 2, format.FrameRate.Denominator);
+        if (reconstruction.TargetFieldRate != exactDoubledRate)
+            throw new InvalidOperationException("FIELD RECONSTRUCTION NOT ACCEPTED: target field rate must be exactly twice the captured progressive rate.");
+        if (reconstruction.FieldOrder is not (FieldOrder.TopFirst or FieldOrder.BottomFirst))
+            throw new InvalidOperationException("FIELD RECONSTRUCTION NOT ACCEPTED: field order must be Top first or Bottom first.");
     }
 
     private readonly record struct SourceFormat(int Width, int Height, int Stride, VideoPixelFormat PixelFormat, bool InterlaceAttributePresent, int? RawInterlaceMode);

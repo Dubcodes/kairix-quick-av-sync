@@ -13,9 +13,10 @@ The self-contained EXE needs no separate .NET installation or installer. Adminis
 First run:
 
 1. Download and run the self-contained EXE.
-2. Select the capture device and leave **Capture Format** on **Auto** initially.
-3. If the physical source is known but cannot be identified automatically, declare it under **Physical Input**. For an interlaced source, also declare whether the device preserves fields or deinterlaces to field/frame rate, then press **Reconnect** to let Auto prefer a compatible capture output.
-4. Clap and review the sync result. Manual timeline scrubbing and Audio/Visual corrections remain available.
+2. Select the capture device and confirm that **Detected Capture** matches the Media Foundation mode actually delivered.
+3. Choose **Resolution**, **Format**, and **Pixel format** under **Input Interpretation**. These controls resolve to one exact native capture mode and are remembered per device.
+4. If a progressive capture frame contains two woven fields, enable **Reconstruct interlaced fields** and select the matching top-first or bottom-first interpretation.
+5. Clap and review the sync result. Manual timeline scrubbing and Audio/Visual corrections remain available.
 
 ## Platform support
 
@@ -35,18 +36,19 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 
 ## Workflow
 
-1. Select a video source, then choose **Auto — best native format** or one of its recommended native capture modes. **Show all formats** reveals uncommon driver modes without reconnecting. A manual capture-format choice reconnects immediately and is remembered for that device.
-2. Leave **Physical Input** at **Auto / Detect**, or declare a known source standard. For an interlaced declaration choose **Auto / Unknown**, **Preserve fields (Weave)**, **Deinterlace to field rate**, or **Deinterlace to frame rate**. These declarations are remembered per device and tell Kairix how to rank Auto; they do not configure the capture hardware. Press **Reconnect** to apply a changed Auto preference.
-3. With all three automatic modes enabled, clap in front of the camera.
-4. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
-5. Click or drag the timeline to scrub to the nearest real temporal image. Mouse wheel and Left/Right step one image, while Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
-6. Drag the yellow **AUDIO** marker (or press A at the playhead) to correct Audio Zero inside the fixed event window. The result updates live without clearing the waveform, playhead, automatic candidate, or thumbnail.
-7. Press Enter to commit the playhead as **MANUAL RESULT**. The automatic candidate remains available from its thumbnail for comparison.
-8. Clap again; the previous event moves into the three-item session history once.
+1. Select a video source. **Detected Capture** is read-only and always describes the authoritative Media Foundation output using the real raster, numeric rate/scan, and pixel format.
+2. Choose the interpretation **Resolution**, **Format**, and **Pixel format**. A valid combination reconnects to the matching exact native mode; unavailable combinations are not offered and explicit selection never silently falls back.
+3. For woven capture such as `1920×1080 · 25.000p · YUY2` containing a 50i source, enable **Reconstruct interlaced fields** and select `25.000p → 50.000i · Top first` or `Bottom first`. This changes review cadence, not the authoritative detected capture metadata.
+4. With all three automatic modes enabled, clap in front of the camera.
+5. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
+6. Click or drag the timeline to scrub to the nearest real temporal image. Mouse wheel and Left/Right step one frame or field, while Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
+7. Drag the yellow **AUDIO** marker (or press A at the playhead) to correct Audio Zero inside the fixed event window. The result updates live without clearing the waveform, playhead, automatic candidate, or thumbnail.
+8. Press Enter to commit the playhead as **MANUAL RESULT**. The automatic candidate remains available from its thumbnail for comparison.
+9. Clap again; the previous event moves into the three-item session history once.
 
 **Manual Clap** (Space) freezes a work window around the latest rolling-buffer position. Capture and rolling buffers continue while reviewing. Press H once to toggle Hold for new automatic detections; press it again to resume. Hold never stops capture or buffering and resets off at launch.
 
-An explicitly selected capture format is strict: Kairix either captures that exact negotiated size, rational rate, scan/layout, and pixel format or displays **REQUESTED CAPTURE FORMAT NOT ACCEPTED**. Only Auto may try another supported mode.
+An explicitly selected resolution/rate/pixel-format combination is strict: Kairix either captures that exact negotiated size, rational rate, scan/layout, and pixel format or displays **REQUESTED CAPTURE FORMAT NOT ACCEPTED**. Initial unsaved detection may use Auto to discover a mode.
 
 ## Keyboard shortcuts
 
@@ -93,13 +95,13 @@ Self-contained is the simplest public download but includes the runtime. Framewo
 - Timing models preserve 100 ns media time, clock domains, raw values, and device/QPC, stream timestamp, and arrival-fallback quality separately. Results are refused when clocks are not demonstrably comparable.
 - Each video sample retains bounded diagnostic observations for device timestamp, sample time, Source Reader timestamp, and monotonic host arrival. Review positions come only from captured primary timestamps; duplicate timestamps collapse to one position and backwards timestamps invalidate precision reporting. Near-identical images at distinct valid timestamps remain visible and are reported without being treated as a timing fault.
 - Frame rates are rational. Progressive, interlaced, and unknown scan metadata remain distinct; known interlaced modes preserve full-frame/single-field layout and field order instead of silently assuming progressive timing.
-- Interlaced source handling is explicit and generic. Unknown handling never silently assumes field-rate output; weave/frame-rate handling maps 1080i50 to a 25 fps full-image review stream, while field-rate deinterlacing maps it to 50 fps. A strict manual capture selection always wins.
+- Native capture and temporal interpretation are separate. Enabling reconstruction on a valid 25p or 29.97p progressive transport produces 50i or 59.94i field positions while **Detected Capture** remains the real progressive Media Foundation mode.
 - Visual analysis is deterministic multi-scale downscaled-luma motion analysis. Coarse evidence rejects broad camera/exposure changes, fine cells retain small localized motion, and temporal rise/peak/drop evidence distinguishes likely contact from final approach. A persisted 0–100 sensitivity control changes acceptance thresholds without inflating confidence or bypassing the broad-motion/flash/noise rejection gates. It remains advisory and manually overridable.
 - The Windows backend uses Media Foundation source readers for video and shared-mode WASAPI for audio. Pairing prefers exact device Container IDs, then hardware parents, and uses a unique-name fallback only when unambiguous; it never silently substitutes the default microphone.
 - Native capture has been physically validated on an XI100DUSB HDMI capture device and Logitech C920 UVC webcam. It is designed for standard Windows Media Foundation/UVC capture devices; hardware and driver compatibility may vary.
-- Native video is reduced directly from locked NV12, YUY2, UYVY, RGB32, or RGB24 buffers to bounded 640×360 luma frames plus a separate bounded 160×90 BGRA presentation buffer. Luma remains the detector input; colour is used only for preview/review/thumbnail presentation. Audio is normalized from float32 or PCM16 to owned float samples.
-- **Input / Source** and **Capture** are separate. Capture is the authoritative negotiated Media Foundation output. Source information comes from the strongest available provider, a visibly user-declared override, or passive luma/timestamp analysis labelled as an estimate. Kairix never claims universal discovery of the physical connector format.
-- Physical hardware behavior remains driver-dependent and is not yet certified. Field extraction is not fabricated when a driver reports progressive output. Kairix instead reports content evidence separately: a physically tested 1080i50-to-50p path produced repeated image pairs at valid 20 ms timestamps and was reported as approximately 25 unique images/sec without deleting frames. Broader native formats, reconnect after hot-unplug, and broad capture-card compatibility validation remain V1 work.
+- Native video is reduced directly from locked NV12, YUY2, UYVY, BGRA32, or RGB24 buffers to bounded 640×360 luma frames plus a separate bounded 160×90 BGRA presentation buffer. For woven reconstruction, even/odd source rows are selected from the native buffer before either downscale, then each field is expanded independently by deterministic nearest-line bob. Luma remains the detector input; colour is used only for preview/review/thumbnail presentation. Audio is normalized from float32 or PCM16 to owned float samples.
+- Reconstructed timestamps use exact rational field intervals and preserve the captured clock domain and timing quality. The current, deliberately explicit phase assumption is that the capture timestamp represents the second field/completed woven pair, so the first field is `T - one field interval` and the second is `T`. This phase has **not** been physically calibrated.
+- Physical hardware behavior remains driver-dependent and is not yet certified. A Magewell 1080p25 Weave run produced two genuinely different parity-derived images per native sample at a measured 50-position/s, 20 ms review cadence. A comparison 1080p50 run retained its valid timestamps and exposed the expected A-A/B-B repeated pairs at about 25 unique images/s. Native WPF visual stepping still requires owner inspection before release.
 - The unobtrusive coffee control opens `https://buymeacoffee.com/dubcodes` only after an explicit click.
 
 See [architecture](docs/ARCHITECTURE.md), [capture backends](docs/CAPTURE_BACKENDS.md), [testing](docs/TESTING.md), and [contribution guidelines](CONTRIBUTING.md).

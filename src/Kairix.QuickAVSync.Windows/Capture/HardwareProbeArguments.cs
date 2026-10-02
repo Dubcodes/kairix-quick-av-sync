@@ -7,7 +7,8 @@ public sealed record HardwareProbeArguments(
     string? DeviceId = null,
     string? ModeId = null,
     string? SourceId = null,
-    string? InterlacedHandlingId = null,
+    bool ReconstructFields = false,
+    string FieldOrder = "top",
     bool ListFormats = false,
     bool AnalyzeSignal = false,
     bool TimingDetail = false,
@@ -15,8 +16,8 @@ public sealed record HardwareProbeArguments(
 {
     public static HardwareProbeArguments Parse(IReadOnlyList<string> arguments)
     {
-        string? device = null, deviceId = null, mode = null, source = null, handling = null, positionalDevice = null;
-        var list = false; var analyze = false; var timing = false; var help = false;
+        string? device = null, deviceId = null, mode = null, source = null, fieldOrder = null, positionalDevice = null;
+        var list = false; var analyze = false; var timing = false; var reconstruct = false; var help = false;
         for (var index = 0; index < arguments.Count; index++)
         {
             var argument = arguments[index];
@@ -26,7 +27,8 @@ public sealed record HardwareProbeArguments(
                 case "--device-id": deviceId = ReadValue(arguments, ref index, argument, deviceId); break;
                 case "--mode": mode = ReadValue(arguments, ref index, argument, mode); break;
                 case "--source": source = ReadValue(arguments, ref index, argument, source); break;
-                case "--interlaced-handling": handling = ReadValue(arguments, ref index, argument, handling); break;
+                case "--reconstruct-fields": SetFlag(ref reconstruct, argument); break;
+                case "--field-order": fieldOrder = ReadValue(arguments, ref index, argument, fieldOrder); break;
                 case "--list-formats": SetFlag(ref list, argument); break;
                 case "--analyze-signal": SetFlag(ref analyze, argument); break;
                 case "--timing-detail": SetFlag(ref timing, argument); break;
@@ -40,7 +42,9 @@ public sealed record HardwareProbeArguments(
         }
         if (device is not null && positionalDevice is not null) throw new ArgumentException("Specify the friendly name using either --device or one positional argument, not both.");
         if (deviceId is not null && (device is not null || positionalDevice is not null)) throw new ArgumentException("Specify either --device/positional name or --device-id, not both.");
-        return new(device ?? positionalDevice, deviceId, mode, source, handling, list, analyze, timing, help);
+        fieldOrder ??= "top";
+        if (fieldOrder is not ("top" or "bottom")) throw new ArgumentException("--field-order must be 'top' or 'bottom'.");
+        return new(device ?? positionalDevice, deviceId, mode, source, reconstruct, fieldOrder, list, analyze, timing, help);
     }
 
     public CaptureDeviceDescriptor ResolveDevice(IReadOnlyList<CaptureDeviceDescriptor> devices)

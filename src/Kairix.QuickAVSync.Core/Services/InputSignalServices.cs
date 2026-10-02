@@ -102,19 +102,6 @@ public static class InputSignalOptions
     }
 }
 
-public static class InterlacedHandlingOptions
-{
-    public static IReadOnlyList<InterlacedHandlingOption> Common { get; } =
-    [
-        new("", "Auto / Unknown", InterlacedInputHandling.Unknown, "Capture-card processing is not known. Kairix does not assume a field-rate or frame-rate output."),
-        new("preserve", "Preserve fields (Weave)", InterlacedInputHandling.PreserveFields, "The device preserves both fields together. For 1080i50 this normally produces 25 full frames per second."),
-        new("field-rate", "Deinterlace to field rate", InterlacedInputHandling.DeinterlaceToFieldRate, "The device outputs one progressive image per temporal field. For 1080i50 this is approximately 50 images per second."),
-        new("frame-rate", "Deinterlace to frame rate", InterlacedInputHandling.DeinterlaceToFrameRate, "The device combines each field pair into one progressive image. For 1080i50 this is approximately 25 images per second.")
-    ];
-
-    public static InterlacedHandlingOption Find(string? id) => Common.FirstOrDefault(option => string.Equals(option.Id, id, StringComparison.Ordinal)) ?? Common[0];
-}
-
 public static class InputSignalFormatter
 {
     public static string Format(InputSignalInfo? signal)
@@ -154,13 +141,12 @@ public static class InputSignalFormatter
 
 public static class SourceAwareFormatMatcher
 {
-    public static bool CanAutomaticallyApply(InputSignalInfo? source, InterlacedInputHandling handling = InterlacedInputHandling.Unknown) => source?.HasUsefulData == true &&
-        (source.Provenance == InputSignalProvenance.UserDeclared || source.Authority == SignalAuthority.Authoritative) &&
-        (source.ScanMode != ScanMode.Interlaced || handling != InterlacedInputHandling.Unknown);
+    public static bool CanAutomaticallyApply(InputSignalInfo? source) => source?.HasUsefulData == true && source.ScanMode != ScanMode.Interlaced &&
+        (source.Provenance == InputSignalProvenance.UserDeclared || source.Authority == SignalAuthority.Authoritative);
 
-    public static CaptureFormat? Recommend(IEnumerable<CaptureFormat> candidates, InputSignalInfo? source, InterlacedInputHandling handling = InterlacedInputHandling.Unknown)
+    public static CaptureFormat? Recommend(IEnumerable<CaptureFormat> candidates, InputSignalInfo? source)
     {
-        if (source?.HasUsefulData != true || DesiredOutputRate(source, handling) is not { } temporalRate) return null;
+        if (source?.HasUsefulData != true || source.ScanMode == ScanMode.Interlaced || source.EffectiveTemporalRate is not { } temporalRate) return null;
 
         var matches = candidates.Where(candidate => source.Width is not { } width || candidate.Width == width)
             .Where(candidate => source.Height is not { } height || candidate.Height == height)
@@ -173,51 +159,11 @@ public static class SourceAwareFormatMatcher
         return matches.FirstOrDefault();
     }
 
-    public static double? DesiredOutputRate(InputSignalInfo source, InterlacedInputHandling handling)
-    {
-        if (source.ScanMode != ScanMode.Interlaced) return source.EffectiveTemporalRate;
-        return handling switch
-        {
-            InterlacedInputHandling.PreserveFields or InterlacedInputHandling.DeinterlaceToFrameRate => source.FrameRate?.Value ?? source.FieldRate / 2,
-            InterlacedInputHandling.DeinterlaceToFieldRate => source.FieldRate ?? source.EffectiveTemporalRate,
-            _ => null
-        };
-    }
-
     private static double OutputTemporalRate(CaptureFormat format) =>
         format.ScanMode == ScanMode.Interlaced && format.InterlaceLayout == InterlaceLayout.FullFrame
             ? format.FrameRate.Value * 2 : format.FrameRate.Value;
 
     private static bool NearlyEqual(double left, double right) => Math.Abs(left - right) <= Math.Max(0.025, right * 0.0015);
-}
-
-public sealed record InterlaceCompatibilityInfo(bool Active, string HandlingText, string Warning, string TemporalResolution);
-
-public static class InterlaceCompatibility
-{
-    public static InterlaceCompatibilityInfo Evaluate(InputSignalInfo? source, InterlacedInputHandling handling, CaptureFormat? capture)
-    {
-        if (source?.ScanMode != ScanMode.Interlaced) return new(false, "", "", "");
-        var option = InterlacedHandlingOptions.Common.First(candidate => candidate.Value == handling);
-        if (capture is null) return new(true, $"Interlaced: {option.Display}", "", "");
-        var outputRate = OutputRate(capture);
-        var pairRate = source.FrameRate?.Value ?? source.FieldRate / 2;
-        var fieldRate = source.FieldRate ?? source.EffectiveTemporalRate;
-        var warning = "";
-        if (handling is InterlacedInputHandling.PreserveFields or InterlacedInputHandling.DeinterlaceToFrameRate && fieldRate is { } fields && NearlyEqual(outputRate, fields))
-            warning = $"INTERLACE WARNING · {option.Display} normally produces {pairRate:0.##} full frames/sec. {outputRate:0.##}p capture may contain repeated frame pairs.";
-        else if (handling == InterlacedInputHandling.DeinterlaceToFieldRate && pairRate is { } pairs && NearlyEqual(outputRate, pairs))
-            warning = $"INTERLACE WARNING · Field-rate deinterlacing normally produces {fieldRate:0.##} images/sec. {outputRate:0.##}p capture may discard temporal images.";
-
-        var pairBased = handling is InterlacedInputHandling.PreserveFields or InterlacedInputHandling.DeinterlaceToFrameRate;
-        var resolution = pairBased && pairRate is { } rate && NearlyEqual(outputRate, rate)
-            ? $"Visual review resolution: {1000d / outputRate:0.###} ms · Field-level review not enabled"
-            : "";
-        return new(true, $"Interlaced: {option.Display}", warning, resolution);
-    }
-
-    private static double OutputRate(CaptureFormat format) => format.ScanMode == ScanMode.Interlaced && format.InterlaceLayout == InterlaceLayout.FullFrame ? format.FrameRate.Value * 2 : format.FrameRate.Value;
-    private static bool NearlyEqual(double left, double right) => Math.Abs(left - right) <= Math.Max(.025, right * .0015);
 }
 
 public static class FrameContentAnalyzer

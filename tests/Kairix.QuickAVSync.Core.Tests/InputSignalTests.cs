@@ -55,36 +55,12 @@ public sealed class InputSignalTests
     }
 
     [Fact]
-    public void Matcher_DoesNotGuessOutputRateForInterlacedSourceWithUnknownHandling()
-    {
-        var source = new InputSignalInfo(1920, 1080, Rational.From(25), 50, 50, ScanMode.Interlaced,
-            Provenance: InputSignalProvenance.UserDeclared, Authority: SignalAuthority.Authoritative);
-        var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
-        Assert.Null(SourceAwareFormatMatcher.Recommend([p50], source, InterlacedInputHandling.Unknown));
-        Assert.False(SourceAwareFormatMatcher.CanAutomaticallyApply(source, InterlacedInputHandling.Unknown));
-    }
-
-    [Theory]
-    [InlineData(InterlacedInputHandling.PreserveFields, 25)]
-    [InlineData(InterlacedInputHandling.DeinterlaceToFrameRate, 25)]
-    [InlineData(InterlacedInputHandling.DeinterlaceToFieldRate, 50)]
-    public void Matcher_UsesExplicitInterlacedHandling(InterlacedInputHandling handling, int expectedRate)
+    public void Matcher_DoesNotGuessOutputRateForInterlacedSource()
     {
         var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal!;
-        var p25 = new CaptureFormat(1920, 1080, Rational.From(25), ScanMode.Progressive, FieldOrder.Unknown);
         var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
-        Assert.Equal(expectedRate, SourceAwareFormatMatcher.Recommend([p50, p25], source, handling)!.FrameRate.Value);
-    }
-
-    [Theory]
-    [InlineData(InterlacedInputHandling.PreserveFields, 30000, 1001)]
-    [InlineData(InterlacedInputHandling.DeinterlaceToFieldRate, 60000, 1001)]
-    public void Matcher_PreservesFractionalInterlacedCadence(InterlacedInputHandling handling, int numerator, int denominator)
-    {
-        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-59.94i").Signal!;
-        var p2997 = new CaptureFormat(1920, 1080, Rational.From(30000, 1001), ScanMode.Progressive, FieldOrder.Unknown);
-        var p5994 = new CaptureFormat(1920, 1080, Rational.From(60000, 1001), ScanMode.Progressive, FieldOrder.Unknown);
-        Assert.Equal(Rational.From(numerator, denominator), SourceAwareFormatMatcher.Recommend([p5994, p2997], source, handling)!.FrameRate);
+        Assert.Null(SourceAwareFormatMatcher.Recommend([p50], source));
+        Assert.False(SourceAwareFormatMatcher.CanAutomaticallyApply(source));
     }
 
     [Fact]
@@ -143,38 +119,6 @@ public sealed class InputSignalTests
         Assert.Equal(timing.Content.NearIdenticalFraction, passive.NearIdenticalFraction, 6);
         Assert.Equal(0, passive.NearIdenticalFraction);
         Assert.False(passive.PairedRepeatDetected);
-    }
-
-    [Fact]
-    public void Compatibility_WarnsButDoesNotRejectManualFieldRateCaptureForWeave()
-    {
-        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal!;
-        var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
-        var result = InterlaceCompatibility.Evaluate(source, InterlacedInputHandling.PreserveFields, p50);
-        Assert.Contains("INTERLACE WARNING", result.Warning);
-        Assert.Contains("repeated frame pairs", result.Warning, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void Compatibility_ReportsFortyMillisecondReviewWithoutInventingFields()
-    {
-        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal!;
-        var p25 = new CaptureFormat(1920, 1080, Rational.From(25), ScanMode.Progressive, FieldOrder.Unknown);
-        var result = InterlaceCompatibility.Evaluate(source, InterlacedInputHandling.PreserveFields, p25);
-        Assert.Empty(result.Warning);
-        Assert.Contains("40 ms", result.TemporalResolution);
-        Assert.Contains("Field-level review not enabled", result.TemporalResolution);
-    }
-
-    [Fact]
-    public void Compatibility_IgnoresInterlacedHandlingForProgressiveInput()
-    {
-        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50p").Signal!;
-        var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
-        var result = InterlaceCompatibility.Evaluate(source, InterlacedInputHandling.PreserveFields, p50);
-        Assert.False(result.Active);
-        Assert.Empty(result.Warning);
-        Assert.Empty(result.TemporalResolution);
     }
 
     [Theory]

@@ -14,7 +14,7 @@ public sealed class SettingsService(string? path = null)
     public void Save(AppSettings value)
     {
         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-        var clean = new AppSettings { LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName, AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual, VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30), WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000), NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal), InputSignalByDevice = new(value.InputSignalByDevice ?? new(), StringComparer.Ordinal), InterlacedHandlingByDevice = new(value.InterlacedHandlingByDevice ?? new(), StringComparer.Ordinal) };
+        var clean = new AppSettings { LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName, AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual, VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30), WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000), NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal), ReconstructFieldsByDevice = new(value.ReconstructFieldsByDevice ?? new(), StringComparer.Ordinal), ReconstructionFieldOrderByDevice = new(value.ReconstructionFieldOrderByDevice ?? new(), StringComparer.Ordinal) };
         File.WriteAllText(Path, JsonSerializer.Serialize(clean, Options));
     }
 }

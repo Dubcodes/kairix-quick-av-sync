@@ -21,7 +21,9 @@ public enum PairingConfidence { None, NameFallback, HardwareParent, ExactContain
 public enum InputSignalProvenance { Unknown, OperatingSystem, DeviceStandardProperty, VendorApi, ObservedAnalysis, UserDeclared }
 public enum SignalAuthority { Unknown, EstimatedLow, EstimatedMedium, EstimatedHigh, Authoritative }
 public enum SignalLockStatus { Unknown, Unlocked, Locking, Locked }
-public enum InterlacedInputHandling { Unknown, PreserveFields, DeinterlaceToFieldRate, DeinterlaceToFrameRate }
+public enum TemporalImageKind { ProgressiveFrame, TopField, BottomField }
+public enum TimestampOrigin { DirectCapture, ReconstructedFirstField, CaptureTimestampAssumedSecondField }
+public enum TimestampPhaseAssumption { CaptureTimestampRepresentsSecondField }
 
 public readonly record struct Rational(int Numerator, int Denominator)
 {
@@ -84,8 +86,8 @@ public sealed record VideoFrame(
     int Height,
     byte[] Luma,
     int TemporalIndex,
-    bool IsField = false,
-    bool TopField = false,
+    TemporalImageKind TemporalImageKind = TemporalImageKind.ProgressiveFrame,
+    TimestampOrigin TimestampOrigin = TimestampOrigin.DirectCapture,
     int Stride = 0,
     VideoPixelFormat PixelFormat = VideoPixelFormat.Luma8,
     byte[]? PresentationBgra = null,
@@ -94,6 +96,8 @@ public sealed record VideoFrame(
     int PresentationStride = 0,
     VideoTimingObservation? TimingObservation = null)
 {
+    public bool IsField => TemporalImageKind is TemporalImageKind.TopField or TemporalImageKind.BottomField;
+    public bool TopField => TemporalImageKind == TemporalImageKind.TopField;
     public int EffectiveStride => Stride > 0 ? Stride : Width;
     public bool HasPresentation => PresentationBgra is { Length: > 0 } && PresentationWidth > 0 && PresentationHeight > 0;
     public int EffectivePresentationStride => PresentationStride > 0 ? PresentationStride : PresentationWidth * 4;
@@ -205,9 +209,47 @@ public sealed record InputSignalOption(string Id, string Display, InputSignalInf
     public override string ToString() => Display;
 }
 
-public sealed record InterlacedHandlingOption(string Id, string Display, InterlacedInputHandling Value, string Help)
+public sealed record ResolutionOption(int Width, int Height)
 {
-    public override string ToString() => Display;
+    public override string ToString() => $"{Width}×{Height}";
+}
+
+public sealed record InterpretationFormatOption(
+    Rational TransportRate,
+    ScanMode TransportScanMode,
+    bool ReconstructFields = false,
+    Rational? InterpretedFieldRate = null,
+    FieldOrder FieldOrder = FieldOrder.Unknown)
+{
+    public double ReviewTemporalRate => ReconstructFields ? InterpretedFieldRate?.Value ?? TransportRate.Value * 2 : TransportRate.Value;
+    public string TransportDisplay => $"{TransportRate.Value:0.000}{(TransportScanMode == ScanMode.Progressive ? "p" : TransportScanMode == ScanMode.Interlaced ? "i" : " fps")}";
+    public override string ToString() => !ReconstructFields
+        ? TransportDisplay
+        : $"{TransportDisplay} → {InterpretedFieldRate?.Value ?? TransportRate.Value * 2:0.000}i · {(FieldOrder == FieldOrder.BottomFirst ? "Bottom first" : "Top first")}";
+}
+
+public sealed record PixelFormatOption(VideoPixelFormat Value)
+{
+    public override string ToString() => Value switch
+    {
+        VideoPixelFormat.Nv12 => "NV12",
+        VideoPixelFormat.Yuy2 => "YUY2",
+        VideoPixelFormat.Uyvy => "UYVY",
+        VideoPixelFormat.Bgr24 => "RGB24",
+        VideoPixelFormat.Bgra32 => "BGRA32",
+        VideoPixelFormat.Luma8 => "Luma8",
+        _ => "Unknown"
+    };
+}
+
+public sealed record FieldReconstructionOptions(
+    Rational CapturedProgressiveRate,
+    Rational TargetFieldRate,
+    FieldOrder FieldOrder,
+    TimestampPhaseAssumption TimestampPhase = TimestampPhaseAssumption.CaptureTimestampRepresentsSecondField)
+{
+    public long FieldIntervalTicks100ns => Services.ReconstructedFieldTimestampModel.FieldIntervalTicks100ns(TargetFieldRate);
+    public double ReviewTemporalRate => TargetFieldRate.Value;
 }
 
 public sealed record CaptureDeviceDescriptor(
@@ -251,7 +293,7 @@ public sealed record CaptureOpenOptions(
     int PreferredPresentationHeight = 90,
     InputSignalInfo? PreferredSourceSignal = null,
     bool RequirePreferredNativeFormat = false,
-    InterlacedInputHandling InterlacedInputHandling = InterlacedInputHandling.Unknown);
+    FieldReconstructionOptions? FieldReconstruction = null);
 public sealed record CaptureStatusChangedEventArgs(CaptureStatus Status, string Message, Exception? Error = null);
 
 public sealed record SyncResult(double SignedMilliseconds, string Wording, bool TimingComparable = true)
@@ -281,6 +323,6 @@ public sealed class AppSettings
     public double RollingBufferSeconds { get; set; } = 5;
     public double WorkWindowMilliseconds { get; set; } = 250;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
-    public Dictionary<string, string> InputSignalByDevice { get; set; } = new(StringComparer.Ordinal);
-    public Dictionary<string, string> InterlacedHandlingByDevice { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, bool> ReconstructFieldsByDevice { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> ReconstructionFieldOrderByDevice { get; set; } = new(StringComparer.Ordinal);
 }

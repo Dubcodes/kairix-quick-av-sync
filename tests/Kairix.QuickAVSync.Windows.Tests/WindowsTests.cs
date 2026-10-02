@@ -11,7 +11,7 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, InputSignalByDevice = new() { ["device"] = "1920x1080-50i" }, InterlacedHandlingByDevice = new() { ["device"] = "preserve" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.Equal("1920x1080-50i", loaded.InputSignalByDevice["device"]); Assert.Equal("preserve", loaded.InterlacedHandlingByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 }
@@ -35,6 +35,42 @@ public sealed class WindowsEnumerationTests
         Assert.True(provider.CanHandle(device));
         Assert.Null(await provider.GetSignalAsync(device, default));
     }
+}
+
+public sealed class NativeFieldFrameConverterTests
+{
+    [Fact]
+    public void Yuy2WovenRowsBecomeDistinctBobbedTopAndBottomImages()
+    {
+        var bytes = Yuy2Rows(10, 20, 30, 40);
+        var layout = new NativeFrameLayout(4, 4, 8, VideoPixelFormat.Yuy2);
+        var top = NativeVideoFrameConverter.Convert(bytes, layout, 2, 4, 2, 4, TemporalImageKind.TopField);
+        var bottom = NativeVideoFrameConverter.Convert(bytes, layout, 2, 4, 2, 4, TemporalImageKind.BottomField);
+        Assert.Equal([10, 10, 10, 10, 30, 30, 30, 30], top.Luma.Select(value => (int)value));
+        Assert.Equal([20, 20, 20, 20, 40, 40, 40, 40], bottom.Luma.Select(value => (int)value));
+        Assert.NotEqual(top.Bgra, bottom.Bgra);
+    }
+
+    [Fact]
+    public void BgraWovenRowsUseTheSameParityAwareBobAbstraction()
+    {
+        var bytes = Enumerable.Range(0, 4).SelectMany(row => Enumerable.Range(0, 2).SelectMany(_ => new byte[] { (byte)(10 + row * 30), (byte)(10 + row * 30), (byte)(10 + row * 30), 255 })).ToArray();
+        var layout = new NativeFrameLayout(2, 4, 8, VideoPixelFormat.Bgra32);
+        var top = NativeVideoFrameConverter.Convert(bytes, layout, 2, 4, 2, 4, TemporalImageKind.TopField);
+        var bottom = NativeVideoFrameConverter.Convert(bytes, layout, 2, 4, 2, 4, TemporalImageKind.BottomField);
+        Assert.Equal([10, 10, 10, 10, 70, 70, 70, 70], top.Luma.Select(value => (int)value));
+        Assert.Equal([40, 40, 40, 40, 100, 100, 100, 100], bottom.Luma.Select(value => (int)value));
+    }
+
+    [Fact]
+    public void ProgressiveConversionRemainsOneWholeFrameImage()
+    {
+        var bytes = Yuy2Rows(10, 20, 30, 40);
+        var converted = NativeVideoFrameConverter.Convert(bytes, new(4, 4, 8, VideoPixelFormat.Yuy2), 2, 4, 2, 4);
+        Assert.Equal([10, 10, 20, 20, 30, 30, 40, 40], converted.Luma.Select(value => (int)value));
+    }
+
+    private static byte[] Yuy2Rows(params byte[] rows) => rows.SelectMany(y => new byte[] { y, 128, y, 128, y, 128, y, 128 }).ToArray();
 }
 
 public sealed class NativeFormatRankingTests
@@ -153,17 +189,6 @@ public sealed class NativeFormatRankingTests
         Assert.Equal(WindowsNativeFormatRanker.Rank([p60, p50]).Select(candidate => candidate.NativeIndex), WindowsNativeFormatRanker.Rank([p60, p50], null, source).Select(candidate => candidate.NativeIndex));
     }
 
-    [Theory]
-    [InlineData(InterlacedInputHandling.PreserveFields, 25)]
-    [InlineData(InterlacedInputHandling.DeinterlaceToFrameRate, 25)]
-    [InlineData(InterlacedInputHandling.DeinterlaceToFieldRate, 50)]
-    public void AutoUsesExplicitInterlacedHandling(InterlacedInputHandling handling, int expectedRate)
-    {
-        var modes = new[] { Candidate(0, 1920, 1080, 60, VideoPixelFormat.Yuy2), Candidate(1, 1920, 1080, 50, VideoPixelFormat.Yuy2), Candidate(2, 1920, 1080, 25, VideoPixelFormat.Yuy2) };
-        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal;
-        Assert.Equal(expectedRate, WindowsNativeFormatRanker.Rank(modes, null, source, handling)[0].Format.FrameRate.Value);
-    }
-
     [Fact]
     public void AutoWithUserDeclared1080p25Prefers1080p25()
     {
@@ -179,7 +204,7 @@ public sealed class NativeFormatRankingTests
         var p60 = Candidate(0, 1920, 1080, 60, VideoPixelFormat.Yuy2);
         var p50 = Candidate(1, 1920, 1080, 50, VideoPixelFormat.Yuy2);
         var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal;
-        Assert.Equal(0, WindowsNativeFormatRanker.Rank([p60, p50], WindowsNativeFormatRanker.ModeId(p60), source, InterlacedInputHandling.PreserveFields)[0].NativeIndex);
+        Assert.Equal(0, WindowsNativeFormatRanker.Rank([p60, p50], WindowsNativeFormatRanker.ModeId(p60), source)[0].NativeIndex);
     }
 
     [Fact]
@@ -220,7 +245,7 @@ public sealed class HardwareProbeArgumentTests
     }
 
     [Fact] public void SourceAndTimingFlagsParse() { var parsed = HardwareProbeArguments.Parse(["--device", "USB Capture SDI", "--source", "1920x1080-50i", "--timing-detail"]); Assert.Equal("1920x1080-50i", parsed.SourceId); Assert.Null(parsed.ModeId); Assert.True(parsed.TimingDetail); }
-    [Fact] public void InterlacedHandlingParses() { var parsed = HardwareProbeArguments.Parse(["--device", "USB Capture SDI", "--interlaced-handling", "preserve"]); Assert.Equal("preserve", parsed.InterlacedHandlingId); }
+    [Fact] public void FieldReconstructionParses() { var parsed = HardwareProbeArguments.Parse(["--device", "USB Capture SDI", "--reconstruct-fields", "--field-order", "bottom"]); Assert.True(parsed.ReconstructFields); Assert.Equal("bottom", parsed.FieldOrder); }
     [Fact] public void DeviceWithoutModeParses() { var parsed = HardwareProbeArguments.Parse(["--device", "A quoted friendly name"]); Assert.Equal("A quoted friendly name", parsed.DeviceName); Assert.Null(parsed.ModeId); }
     [Fact] public void UnknownOptionFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--wat"]));
     [Fact] public void MissingValueFails() => Assert.Throws<ArgumentException>(() => HardwareProbeArguments.Parse(["--device"]));
