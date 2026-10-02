@@ -63,7 +63,10 @@ public sealed class SettingsService(string? path = null) : IDisposable
             SettingsPanelExpanded = value.SettingsPanelExpanded,
             NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal),
             ReconstructFieldsByDevice = new(value.ReconstructFieldsByDevice ?? new(), StringComparer.Ordinal),
-            ReconstructionFieldOrderByDevice = new(value.ReconstructionFieldOrderByDevice ?? new(), StringComparer.Ordinal)
+            ReconstructionFieldOrderByDevice = new(value.ReconstructionFieldOrderByDevice ?? new(), StringComparer.Ordinal),
+            VideoTimingOffsetOverridesMilliseconds = new((value.VideoTimingOffsetOverridesMilliseconds ?? new())
+                .Where(pair => double.IsFinite(pair.Value) && pair.Value is >= -5000 and <= 5000)
+                .ToDictionary(pair => pair.Key, pair => pair.Value), StringComparer.Ordinal)
         };
     }
     public void Dispose() { FlushPending(); lock (_settingsGate) { _saveTimer?.Dispose(); _saveTimer = null; } }

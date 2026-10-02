@@ -24,6 +24,7 @@ public enum SignalLockStatus { Unknown, Unlocked, Locking, Locked }
 public enum TemporalImageKind { ProgressiveFrame, TopField, BottomField }
 public enum TimestampOrigin { DirectCapture, ReconstructedFirstField, CaptureTimestampAssumedSecondField }
 public enum TimestampPhaseAssumption { CaptureTimestampRepresentsSecondField }
+public enum VideoTimingOffsetSource { Automatic, Manual }
 
 public readonly record struct Rational(int Numerator, int Denominator)
 {
@@ -338,7 +339,13 @@ public sealed record SyncResult(double SignedMilliseconds, string Wording, bool 
     }
 }
 
-public sealed record SessionResult(DateTime Time, SyncResult Result, double? Confidence);
+public sealed record SessionResult(
+    DateTime Time,
+    SyncResult Result,
+    double? Confidence,
+    SyncResult? RawResult = null,
+    double VideoTimingOffsetMilliseconds = 0,
+    VideoTimingOffsetSource VideoTimingOffsetSource = VideoTimingOffsetSource.Automatic);
 
 public sealed class AppSettings
 {
@@ -359,4 +366,5 @@ public sealed class AppSettings
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, bool> ReconstructFieldsByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> ReconstructionFieldOrderByDevice { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, double> VideoTimingOffsetOverridesMilliseconds { get; set; } = new(StringComparer.Ordinal);
 }

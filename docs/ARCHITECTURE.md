@@ -88,6 +88,10 @@ Every Windows video frame carries platform-neutral observations for DeviceTimest
 
 In reconstruction mode the capture worker emits two field frames sharing one `NativeSampleIndex`. Review navigation and visual detection use the interpreted field rate. `FrameTimingAnalyzer` analyzes derived media timestamps at that review cadence, but groups arrival/device/sample/reader observations by native identity and reports the factual transport cadence separately. Audio remains unchanged on the WASAPI QPC timeline.
 
+Measurement compensation is a separate fourth layer. `VideoTimingCompensation` never mutates frames or observations. For explicit reconstruction its automatic offset is the exact target field interval; corrected visual time is `raw interpreted visual time - effective video offset`. The same offset is applied to every field in a pair, so 20 ms raw spacing remains 20 ms corrected spacing. `EventReviewState` retains raw candidate, manual mark, and playhead timestamps while calculating Auto, Manual Preview, and Manual Result through this helper. Detector proximity and video-window selection are centered at `audio + effective offset`, because detection still examines raw captured frames.
+
+`VideoTimingProfileKey` is the single stable key for manual overrides and includes device identity, native mode identity, reconstruction state, field order, and target field rate. Session history snapshots corrected result, raw result, effective offset, and automatic/manual provenance so later settings changes cannot rewrite prior events.
+
 ## Processing and presentation performance
 
 `CaptureOpenOptions` keeps three rasters distinct: the native capture raster selected from Media Foundation, the detection raster stored as `VideoFrame.Luma`, and the review raster stored as `PresentationBgra`. Changing either processing raster reconnects the same exact native mode and interpretation. A reusable conversion plan precomputes progressive/top/bottom source maps. NV12, YUY2, and UYVY use direct luma-byte reads for analysis; only presentation performs YUV-to-BGR conversion.

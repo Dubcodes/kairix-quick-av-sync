@@ -50,6 +50,12 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 
 The left side is split into a collapsible **Settings** column and an always-visible operational capture column beside the video. Settings provides independent **Detection resolution** (luma used by the detector) and **Review image resolution** (BGRA used by live preview, stepping, and thumbnails). These never change the native capture raster. Higher detection resolution examines more spatial detail; either higher raster increases rolling-buffer memory as frames arrive. The live image-buffer estimate warns above roughly 512 MB and more strongly above 1 GB without silently reducing quality. Graphite is the default theme; Midnight, Light, and High Contrast switch immediately and persist.
 
+## Video timing compensation
+
+When Kairix explicitly reconstructs two fields from one progressive woven frame, it assumes the capture device could not deliver that completed frame until both fields had arrived. The default **Video timing offset** is therefore one exact reconstructed field interval: +20.000 ms for 25p→50i and approximately +16.683 ms for 29.97p→59.94i. A positive setting represents known video delivery delay and is subtracted from the interpreted visual time for measurement. Both fields move earlier together, preserving their cadence; raw frame, field, hardware, and transport timestamps never change.
+
+This is a documented operating assumption based on observed Magewell Weave behavior, not a claim about every capture device. Settings shows the effective value and lets the operator save a manual override per device/native-format/reconstruction/order/rate profile. **Reset to automatic** restores one field interval for explicit reconstruction and 0.000 ms for normal progressive or native-interlaced capture. The primary result and review timeline use corrected timing, while the Current Result panel retains the raw measurement for diagnosis.
+
 An explicitly selected resolution/rate/pixel-format combination is strict: Kairix either captures that exact negotiated size, rational rate, scan/layout, and pixel format or displays **REQUESTED CAPTURE FORMAT NOT ACCEPTED**. Initial unsaved detection may use Auto to discover a mode.
 
 ## Keyboard shortcuts

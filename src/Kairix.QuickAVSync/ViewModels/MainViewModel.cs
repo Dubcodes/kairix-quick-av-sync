@@ -87,6 +87,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand JumpAutoCommand { get; }
     public ICommand CoffeeCommand { get; }
     public ICommand ToggleSettingsCommand { get; }
+    public ICommand ResetVideoTimingOffsetCommand { get; }
 
     public MainViewModel()
     {
@@ -103,6 +104,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         JumpAutoCommand = new RelayCommand(_ => JumpToAuto());
         CoffeeCommand = new RelayCommand(_ => OpenCoffee(), _ => !string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl));
         ToggleSettingsCommand = new RelayCommand(_ => IsSettingsPanelExpanded = !IsSettingsPanelExpanded);
+        ResetVideoTimingOffsetCommand = new RelayCommand(_ => ResetVideoTimingOffset());
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current.Dispatcher);
     }
 
@@ -196,6 +198,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     public GridLength SettingsColumnWidth => new(IsSettingsPanelExpanded ? 270 : 54);
     public string SettingsPanelToggleText => IsSettingsPanelExpanded ? "◀  Hide settings" : "▶";
+    public double VideoTimingOffsetMilliseconds
+    {
+        get => EffectiveVideoTimingOffset.Milliseconds;
+        set
+        {
+            if (!double.IsFinite(value) || CurrentTimingProfileKey is not { } key) return;
+            _settings.VideoTimingOffsetOverridesMilliseconds[key] = Math.Clamp(value, -5000, 5000);
+            ApplyTimingOffsetChange(); SaveSettings();
+        }
+    }
+    public bool IsVideoTimingOffsetManual => EffectiveVideoTimingOffset.IsManual;
+    public string VideoTimingOffsetModeText => IsVideoTimingOffsetManual
+        ? $"Manual profile override: {VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms\nApplied as {-VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms to visual timing."
+        : $"Automatic reconstruction compensation: {VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms\n{(CurrentFieldReconstruction is null ? "No reconstructed-field delivery compensation." : "Capture card assumed to deliver the woven frame after both fields arrive.")}\nApplied as {-VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms to visual timing.";
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; Changed(); SaveSettings(); } } }
     public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; Changed(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
@@ -251,14 +267,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public double? AutoVisualMs => _review?.AutoOffsetMs;
     public double? VisualMarkerMs => _review?.ManualVisualOffsetMs;
     public double PlayheadMs => _review?.PlayheadOffsetMs ?? 0;
+    public double PlayheadMeasurementMs => _review is null ? 0 : VideoTimingCompensation.Calculate(_review.AudioMark, _review.Playhead, _review.VideoTimingOffset).SignedMilliseconds;
     public SyncResult? CurrentResult => _review?.CurrentResult;
+    public SyncResult? CurrentRawResult => _review?.CurrentRawResult;
     public string ResultModeText => _review?.ResultMode switch { ReviewResultMode.Auto => "AUTO RESULT", ReviewResultMode.ManualPreview => "MANUAL PREVIEW", ReviewResultMode.ManualResult => "MANUAL RESULT", _ => "" };
     public string ResultText => _timelineAnalysis is { TimingValid: false } ? "TIMELINE TIMING INVALID" : CurrentResult?.Wording ?? "WAITING FOR CLAP";
     public string ResultSummaryText => string.IsNullOrEmpty(ResultModeText) ? ResultText : $"{ResultModeText}\n{ResultText}";
     public double SyncValue => _timelineAnalysis is not { TimingValid: false } && CurrentResult is { TimingComparable: true } result ? result.SignedMilliseconds : 0;
     public string TimelineIntegrityText => _timelineAnalysis?.Status ?? "TIMELINE · LIVE";
-    public string ConfidenceText => _review?.AutoCandidate is not { } candidate ? "No visual candidate" : $"{candidate.Confidence:P0} confidence · {SyncResult.Calculate(_review.AudioMark, candidate.Timestamp).SignedMilliseconds:+0;-0;0} ms";
-    public string ReviewPosition => !_isReview || _reviewFrames.Count == 0 ? "LIVE" : $"{_playheadIndex + 1} / {_reviewFrames.Count} · {FieldLabel(_reviewFrames[_playheadIndex])} · {PlayheadMs:+0.0;-0.0;0} ms";
+    public string ConfidenceText => _review?.AutoCandidate is not { } candidate ? "No visual candidate" : $"{candidate.Confidence:P0} confidence · {VideoTimingCompensation.Calculate(_review.AudioMark, candidate.Timestamp, _review.VideoTimingOffset).SignedMilliseconds:+0;-0;0} ms";
+    public string ReviewPosition
+    {
+        get
+        {
+            if (!_isReview || _reviewFrames.Count == 0 || _review is null) return "LIVE";
+            var measurement = VideoTimingCompensation.Calculate(_review.AudioMark, _review.Playhead, _review.VideoTimingOffset);
+            return $"{_playheadIndex + 1} / {_reviewFrames.Count} · {FieldLabel(_reviewFrames[_playheadIndex])} · {(measurement.TimingComparable ? $"{measurement.SignedMilliseconds:+0.0;-0.0;0} ms" : "TIMING NOT CORRELATED")}";
+        }
+    }
+    public string RawMeasurementText => CurrentRawResult is { TimingComparable: true } raw ? $"{raw.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—";
+    public string TimingCorrectionText => $"{-EffectiveVideoTimingOffset.Milliseconds:+0.0;-0.0;0.0} ms · {(EffectiveVideoTimingOffset.IsManual ? "manual profile override" : CurrentFieldReconstruction is null ? "automatic · none" : "automatic reconstructed-field compensation")}";
     // Hold is session-only and must never overwrite the capture readiness state.
     public bool IsHold { get => _isHold; set => Set(ref _isHold, value); }
     public string LogPath => _log.Path;
@@ -542,17 +570,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         var generation = _analysisGeneration.Next();
         FinalizeCurrentEvent();
-        var review = new EventReviewState(audioMark, audioMark); _review = review; AutoThumbnail = null; _isReview = true; Status = audioFinalized ? "REVIEW · ANALYSING" : "REVIEW · SELECT AUDIO MARK";
+        var review = new EventReviewState(audioMark, audioMark, EffectiveVideoTimingOffset); _review = review; AutoThumbnail = null; _isReview = true; Status = audioFinalized ? "REVIEW · ANALYSING" : "REVIEW · SELECT AUDIO MARK";
         await BuildEventSnapshotAsync(generation); if (!_analysisGeneration.IsCurrent(generation)) return; NotifyMarkers();
         _analysisCts?.Cancel(); _analysisCts = new();
         try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(WorkWindowMilliseconds + 40), _analysisCts.Token);
+            await Task.Delay(TimeSpan.FromMilliseconds(WorkWindowMilliseconds + Math.Max(0, review.VideoTimingOffset.Milliseconds) + 40), _analysisCts.Token);
             await BuildEventSnapshotAsync(generation); if (!_analysisGeneration.IsCurrent(generation)) return;
             if (AutoVisual && audioFinalized)
             {
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var candidate = await _visualDetector.DetectAsync(_reviewFrames, review.AudioMark, _analysisCts.Token, new(VisualSensitivity));
+                var candidate = await _visualDetector.DetectAsync(_reviewFrames, review.ExpectedRawVisualTimestamp, _analysisCts.Token, new(VisualSensitivity));
                 stopwatch.Stop(); var analyzed = _reviewFrames.FirstOrDefault();
                 _log.Write("visual.analysis", $"frames={_reviewFrames.Count} resolution={analyzed?.Width ?? 0}x{analyzed?.Height ?? 0} detail='{MotionVisualClapDetector.DetailDescription(analyzed?.Width ?? 0, analyzed?.Height ?? 0)}' sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))}");
                 if (candidate is not null && _analysisGeneration.IsCurrent(generation) && ReferenceEquals(_review, review))
@@ -582,7 +610,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public void MovePlayheadTo(double relativeMs)
     {
         if (_review is null || _reviewFrames.Count == 0) return;
-        _playheadIndex = ReviewTimeline.NearestFrameIndex(_reviewFrames, _review.EventReference, relativeMs); _review.MovePlayhead(_reviewFrames[_playheadIndex].Timestamp); ShowPlayhead(); NotifyMarkers();
+        var rawRelativeMs = relativeMs + _review.VideoTimingOffset.Milliseconds;
+        _playheadIndex = ReviewTimeline.NearestFrameIndex(_reviewFrames, _review.EventReference, rawRelativeMs); _review.MovePlayhead(_reviewFrames[_playheadIndex].Timestamp); ShowPlayhead(); NotifyMarkers();
     }
     private async Task BuildEventSnapshotAsync(long generation)
     {
@@ -590,13 +619,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var declaredRate = ExpectedReviewTemporalRate;
         var built = await Task.Run(() =>
         {
-            var timeline = ReviewTimelineIntegrity.Build(videoSnapshot, reference, half, declaredRate, ExpectedCaptureTransportRate); var chunks = WorkWindowSelector.Around(audioSnapshot, a => a.Timestamp, reference, half + TimeSpan.FromMilliseconds(25));
+            var timeline = ReviewTimelineIntegrity.Build(videoSnapshot, review.ExpectedRawVisualTimestamp, half, declaredRate, ExpectedCaptureTransportRate); var chunks = WorkWindowSelector.Around(audioSnapshot, a => a.Timestamp, reference, half + TimeSpan.FromMilliseconds(25));
             return (Timeline: timeline, Waveform: _waveformBuilder.Build(chunks, reference, half, 900));
         });
         if (!_analysisGeneration.IsCurrent(generation) || !ReferenceEquals(_review, review)) return;
         var priorPlayhead = review.Playhead; _reviewFrames = built.Timeline.Frames; _timelineAnalysis = built.Timeline.Analysis; _playheadIndex = _reviewFrames.Count == 0 ? 0 : FindNearest(_reviewFrames, priorPlayhead);
         if (_reviewFrames.Count > 0) review.SetInitialPlayhead(_reviewFrames[_playheadIndex].Timestamp);
-        Waveform = built.Waveform; ReviewFrameTicks = _reviewFrames.Select(frame => (frame.Timestamp.Ticks100ns - reference.Ticks100ns) / 10_000d).ToArray();
+        Waveform = built.Waveform; ReviewFrameTicks = _reviewFrames.Select(frame => VideoTimingCompensation.CorrectedOffsetMilliseconds(reference, frame.Timestamp, review.VideoTimingOffset)).ToArray();
         _log.Write("timeline.integrity", $"reviewDeclared={_timelineAnalysis.DeclaredTemporalRate:0.###} reviewObserved={_timelineAnalysis.Primary.ObservedRate:0.###} reviewMedianMs={_timelineAnalysis.Primary.MedianIntervalMilliseconds:0.###} transportDeclared={_timelineAnalysis.DeclaredTransportRate:0.###} transportObserved={_timelineAnalysis.CaptureTransport.ObservedRate:0.###} transportMedianMs={_timelineAnalysis.CaptureTransport.MedianIntervalMilliseconds:0.###} nativeSamples={_timelineAnalysis.NativeSamplesAnalyzed} rawFrames={built.Timeline.RawFrameCount} reviewFrames={_reviewFrames.Count} windowMs={half.TotalMilliseconds * 2:0.###} duplicateTimestamps={_timelineAnalysis.Primary.DuplicateCount} backwards={_timelineAnalysis.Primary.BackwardCount} gaps={_timelineAnalysis.Primary.LargeGapCount} nearIdentical={_timelineAnalysis.NearIdenticalConsecutiveImages} pairedRepeat={_timelineAnalysis.Content.PairedRepeatDetected} estimatedUniqueRate={_timelineAnalysis.Content.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} arrivalRate={_timelineAnalysis.Arrival.ObservedRate:0.###}");
         ShowPlayhead(); NotifyMarkers();
     }
@@ -612,10 +641,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void FinalizeCurrentEvent()
     {
         if (_review is null || _timelineAnalysis is { TimingValid: false } || !_review.TryFinalize(out var result) || result is null) return;
-        _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item);
+        _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence, _review.CurrentRawResult, _review.VideoTimingOffset.Milliseconds, _review.VideoTimingOffset.Source)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item);
     }
     private string AuthoritativeCaptureStatus() => _captureStatus switch { CaptureStatus.Running => _captureStatusText, CaptureStatus.Starting => _captureStatusText, CaptureStatus.DeviceLost => "CAPTURE DEVICE LOST", CaptureStatus.Failed => "CAPTURE FAILED", CaptureStatus.Stopping => "STOPPING", CaptureStatus.Stopped => "CAPTURE STOPPED", _ => "CAPTURE NOT READY" };
-    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(ReviewPosition)); Changed(nameof(TimelineIntegrityText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); }
+    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(CurrentRawResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(PlayheadMeasurementMs)); Changed(nameof(ReviewPosition)); Changed(nameof(RawMeasurementText)); Changed(nameof(TimingCorrectionText)); Changed(nameof(TimelineIntegrityText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); }
     private static BitmapSource ToBitmap(VideoFrame frame)
     {
         var bitmap = frame.HasPresentation
@@ -650,6 +679,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private FieldReconstructionOptions? CurrentFieldReconstruction => ReconstructInterlacedFields && SelectedInterpretationFormat is { ReconstructFields: true, InterpretedFieldRate: { } fieldRate } interpretation
         ? new(interpretation.TransportRate, fieldRate, interpretation.FieldOrder)
         : null;
+    private string? CurrentTimingProfileKey => SelectedDevice is null || string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id)
+        ? null
+        : VideoTimingProfileKey.Create(SelectedDevice.Id, _selectedCaptureFormat.Id, CurrentFieldReconstruction);
+    private VideoTimingOffset EffectiveVideoTimingOffset
+    {
+        get
+        {
+            var manual = CurrentTimingProfileKey is { } key && _settings.VideoTimingOffsetOverridesMilliseconds.TryGetValue(key, out var value) ? value : (double?)null;
+            return VideoTimingCompensation.Resolve(CurrentFieldReconstruction, manual);
+        }
+    }
+    private void ResetVideoTimingOffset()
+    {
+        if (CurrentTimingProfileKey is { } key) _settings.VideoTimingOffsetOverridesMilliseconds.Remove(key);
+        ApplyTimingOffsetChange(); SaveSettings();
+    }
+    private void ApplyTimingOffsetChange()
+    {
+        var offset = EffectiveVideoTimingOffset;
+        if (_review is { } review)
+        {
+            review.SetVideoTimingOffset(offset);
+            ReviewFrameTicks = _reviewFrames.Select(frame => VideoTimingCompensation.CorrectedOffsetMilliseconds(review.EventReference, frame.Timestamp, offset)).ToArray();
+        }
+        Changed(nameof(VideoTimingOffsetMilliseconds)); Changed(nameof(IsVideoTimingOffsetManual)); Changed(nameof(VideoTimingOffsetModeText)); NotifyMarkers();
+    }
     private double ExpectedReviewTemporalRate
     {
         get
@@ -684,7 +739,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void RefreshInterpretationDisplay()
     {
-        Changed(nameof(DetectedCaptureText)); Changed(nameof(InterpretationText)); Changed(nameof(FieldReconstructionHelpText)); Changed(nameof(VisualReviewResolutionText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); RefreshPerformanceDisplay();
+        Changed(nameof(DetectedCaptureText)); Changed(nameof(InterpretationText)); Changed(nameof(FieldReconstructionHelpText)); Changed(nameof(VisualReviewResolutionText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); Changed(nameof(VideoTimingOffsetMilliseconds)); Changed(nameof(IsVideoTimingOffsetManual)); Changed(nameof(VideoTimingOffsetModeText)); Changed(nameof(TimingCorrectionText)); RefreshPerformanceDisplay();
     }
     private void RefreshPerformanceDisplay() { Changed(nameof(BufferEstimateText)); Changed(nameof(BufferEstimateWarning)); Changed(nameof(IsBufferEstimateHigh)); Changed(nameof(IsBufferEstimateVeryHigh)); }
     private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoSampleReceived -= OnVideoFrame; _capture.AudioSampleReceived -= OnAudio; _capture.StatusChanged -= OnCaptureStatus; await _capture.DisposeAsync(); _capture = null; }

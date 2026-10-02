@@ -14,11 +14,12 @@ public sealed class EventReviewState
 {
     private bool _finalized;
 
-    public EventReviewState(MediaTimestamp eventReference, MediaTimestamp audioMark)
+    public EventReviewState(MediaTimestamp eventReference, MediaTimestamp audioMark, VideoTimingOffset videoTimingOffset = default)
     {
         EventReference = eventReference;
         AudioMark = audioMark;
-        Playhead = eventReference;
+        VideoTimingOffset = videoTimingOffset;
+        Playhead = VideoTimingCompensation.ExpectedRawVisual(eventReference, videoTimingOffset);
     }
 
     public MediaTimestamp EventReference { get; }
@@ -27,13 +28,31 @@ public sealed class EventReviewState
     public MediaTimestamp? ManualVisualMark { get; private set; }
     public MediaTimestamp Playhead { get; private set; }
     public ReviewResultMode ResultMode { get; private set; }
+    public VideoTimingOffset VideoTimingOffset { get; private set; }
 
     public double AudioOffsetMs => OffsetFromReference(AudioMark);
-    public double? AutoOffsetMs => AutoCandidate is null ? null : OffsetFromReference(AutoCandidate.Timestamp);
-    public double? ManualVisualOffsetMs => ManualVisualMark is null ? null : OffsetFromReference(ManualVisualMark.Value);
-    public double PlayheadOffsetMs => OffsetFromReference(Playhead);
+    public double? AutoOffsetMs => AutoCandidate is null ? null : CorrectedOffsetFromReference(AutoCandidate.Timestamp);
+    public double? ManualVisualOffsetMs => ManualVisualMark is null ? null : CorrectedOffsetFromReference(ManualVisualMark.Value);
+    public double PlayheadOffsetMs => CorrectedOffsetFromReference(Playhead);
+    public double RawPlayheadOffsetMs => OffsetFromReference(Playhead);
+    public MediaTimestamp ExpectedRawVisualTimestamp => VideoTimingCompensation.ExpectedRawVisual(AudioMark, VideoTimingOffset);
 
     public SyncResult? CurrentResult
+    {
+        get
+        {
+            var visual = ResultMode switch
+            {
+                ReviewResultMode.Auto => AutoCandidate?.Timestamp,
+                ReviewResultMode.ManualPreview => Playhead,
+                ReviewResultMode.ManualResult => ManualVisualMark,
+                _ => null
+            };
+            return visual is null ? null : VideoTimingCompensation.Calculate(AudioMark, visual.Value, VideoTimingOffset);
+        }
+    }
+
+    public SyncResult? CurrentRawResult
     {
         get
         {
@@ -47,6 +66,8 @@ public sealed class EventReviewState
             return visual is null ? null : SyncResult.Calculate(AudioMark, visual.Value);
         }
     }
+
+    public void SetVideoTimingOffset(VideoTimingOffset value) => VideoTimingOffset = value;
 
     public void SetInitialPlayhead(MediaTimestamp timestamp) => Playhead = timestamp;
 
@@ -99,4 +120,6 @@ public sealed class EventReviewState
 
     private double OffsetFromReference(MediaTimestamp timestamp) =>
         (timestamp.Ticks100ns - EventReference.Ticks100ns) / 10_000d;
+    private double CorrectedOffsetFromReference(MediaTimestamp timestamp) =>
+        VideoTimingCompensation.CorrectedOffsetMilliseconds(EventReference, timestamp, VideoTimingOffset);
 }

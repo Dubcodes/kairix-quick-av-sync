@@ -62,6 +62,121 @@ public sealed class WorkWindowWaveformAndHistoryTests
     private static MediaTimestamp T(double milliseconds) => new((long)(milliseconds * 10_000), TimingQuality.StreamTimestamp);
 }
 
+public sealed class VideoTimingCompensationTests
+{
+    private static readonly FieldReconstructionOptions Reconstruction50 = new(Rational.From(25), Rational.From(50), FieldOrder.TopFirst);
+    private static readonly FieldReconstructionOptions Reconstruction5994 = new(Rational.From(30_000, 1_001), Rational.From(60_000, 1_001), FieldOrder.BottomFirst);
+
+    [Fact]
+    public void AutomaticDefaultsUseOneExactReconstructedFieldIntervalOnly()
+    {
+        Assert.Equal(200_000, VideoTimingCompensation.Automatic(Reconstruction50).Ticks100ns);
+        Assert.Equal(20, VideoTimingCompensation.Automatic(Reconstruction50).Milliseconds, 6);
+        Assert.Equal(20, VideoTimingCompensation.Automatic(Reconstruction50 with { FieldOrder = FieldOrder.BottomFirst }).Milliseconds, 6);
+        var fractional = VideoTimingCompensation.Automatic(Reconstruction5994);
+        Assert.Equal(ReconstructedFieldTimestampModel.FieldIntervalTicks100ns(Rational.From(60_000, 1_001)), fractional.Ticks100ns);
+        Assert.Equal(16.6833, fractional.Milliseconds, 4);
+        Assert.Equal(0, VideoTimingCompensation.Automatic(null).Ticks100ns);
+    }
+
+    [Fact]
+    public void PairWideCompensationPreservesContinuousFieldCadence()
+    {
+        var raw = new[] { 20d, 40d, 60d, 80d }.Select(T).ToArray();
+        var effective = raw.Select(timestamp => VideoTimingCompensation.CorrectedOffsetMilliseconds(T(0), timestamp, VideoTimingCompensation.Automatic(Reconstruction50))).ToArray();
+        Assert.Equal([0d, 20d, 40d, 60d], effective);
+        Assert.All(effective.Zip(effective.Skip(1)), pair => Assert.Equal(20, pair.Second - pair.First));
+    }
+
+    [Fact]
+    public void PhysicalExampleDisplaysCorrectedResultWithoutMutatingRawTimestamp()
+    {
+        var audio = T(0); var rawVisual = T(22.7); var originalTicks = rawVisual.Ticks100ns;
+        var result = VideoTimingCompensation.Calculate(audio, rawVisual, VideoTimingCompensation.Automatic(Reconstruction50));
+        Assert.Equal(2.7, result.SignedMilliseconds, 6);
+        Assert.Equal("AUDIO LEADS VIDEO BY 2.7 ms", result.Wording);
+        Assert.Equal(originalTicks, rawVisual.Ticks100ns);
+    }
+
+    [Fact]
+    public void ManualOverrideWinsAndResetResolvesBackToAutomatic()
+    {
+        var manual = VideoTimingCompensation.Resolve(Reconstruction50, 18.5);
+        Assert.True(manual.IsManual); Assert.Equal(18.5, manual.Milliseconds, 6);
+        var reset = VideoTimingCompensation.Resolve(Reconstruction50, null);
+        Assert.False(reset.IsManual); Assert.Equal(20, reset.Milliseconds, 6);
+        Assert.Equal(0, VideoTimingCompensation.Resolve(null, null).Milliseconds);
+    }
+
+    [Fact]
+    public void ProfileKeysSeparateDeviceFormatReconstructionOrderAndRate()
+    {
+        var reconstructed = VideoTimingProfileKey.Create("device-a", "1080p25-yuy2", Reconstruction50);
+        Assert.NotEqual(reconstructed, VideoTimingProfileKey.Create("device-b", "1080p25-yuy2", Reconstruction50));
+        Assert.NotEqual(reconstructed, VideoTimingProfileKey.Create("device-a", "1080p50-yuy2", null));
+        Assert.NotEqual(reconstructed, VideoTimingProfileKey.Create("device-a", "1080p25-yuy2", Reconstruction50 with { FieldOrder = FieldOrder.BottomFirst }));
+        Assert.NotEqual(reconstructed, VideoTimingProfileKey.Create("device-a", "1080p25-yuy2", Reconstruction5994));
+    }
+
+    [Fact]
+    public void ProfileSwitchRestoresOnlyThatProfilesManualOverride()
+    {
+        var reconstructedKey = VideoTimingProfileKey.Create("device", "1080p25-yuy2", Reconstruction50);
+        var progressiveKey = VideoTimingProfileKey.Create("device", "1080p50-yuy2", null);
+        var overrides = new Dictionary<string, double> { [reconstructedKey] = 18.5 };
+        Assert.Equal(18.5, VideoTimingCompensation.Resolve(Reconstruction50, overrides.GetValueOrDefault(reconstructedKey)).Milliseconds, 6);
+        Assert.Equal(0, VideoTimingCompensation.Resolve(null, overrides.TryGetValue(progressiveKey, out var progressive) ? progressive : null).Milliseconds);
+        Assert.Equal(18.5, VideoTimingCompensation.Resolve(Reconstruction50, overrides.GetValueOrDefault(reconstructedKey)).Milliseconds, 6);
+    }
+
+    [Fact]
+    public void EventReviewAppliesOffsetToAutoPreviewAndManualWithoutChangingMarks()
+    {
+        var offset = VideoTimingCompensation.Automatic(Reconstruction50);
+        var state = new EventReviewState(T(0), T(0), offset);
+        var frame = new VideoFrame(T(22.7), 1, 1, [0], 1);
+        state.SetAutoCandidate(new(frame.Timestamp, 1, .8, 4, frame));
+        Assert.Equal(22.7, state.CurrentRawResult!.SignedMilliseconds, 6);
+        Assert.Equal(2.7, state.CurrentResult!.SignedMilliseconds, 6);
+        state.MovePlayhead(T(30)); Assert.Equal(10, state.CurrentResult!.SignedMilliseconds, 6);
+        state.CommitManualVisual(); Assert.Equal(10, state.CurrentResult!.SignedMilliseconds, 6);
+        Assert.Equal(300_000, state.ManualVisualMark!.Value.Ticks100ns);
+    }
+
+    [Fact]
+    public void ExpectedRawDetectorPositionAndReviewWindowMoveLaterByOffset()
+    {
+        var expected = VideoTimingCompensation.ExpectedRawVisual(T(1000), VideoTimingCompensation.Automatic(Reconstruction50));
+        Assert.Equal(1020, expected.Ticks100ns / 10_000d, 6);
+        var frames = Enumerable.Range(95, 12).Select(value => new VideoFrame(T(value * 10), 1, 1, [0], value)).ToArray();
+        var selected = WorkWindowSelector.Around(frames, frame => frame.Timestamp, expected, TimeSpan.FromMilliseconds(20));
+        Assert.Equal([1000d, 1010d, 1020d, 1030d, 1040d], selected.Select(frame => frame.Timestamp.Ticks100ns / 10_000d));
+    }
+
+    [Fact]
+    public void CompensationDoesNotMakeUnrelatedClocksComparable()
+    {
+        var audio = new MediaTimestamp(0, TimingQuality.Unrelated, "audio");
+        var visual = new MediaTimestamp(227_000, TimingQuality.DeviceHardware, "video");
+        var result = VideoTimingCompensation.Calculate(audio, visual, VideoTimingCompensation.Automatic(Reconstruction50));
+        Assert.False(result.TimingComparable); Assert.Equal("TIMING DOMAINS NOT CORRELATED", result.Wording);
+    }
+
+    [Fact]
+    public void CompensationLeavesAllCapturedTimingMetadataAndAnalysisUntouched()
+    {
+        var observation = new VideoTimingObservation(VideoPrimaryTimestampSource.DeviceTimestamp, 1234, 10_000_000, 400_000, 400_000, 400_000);
+        var frame = new VideoFrame(T(40), 1, 1, [7], 3, TimingObservation: observation, NativeSampleIndex: 9);
+        var before = new FrameTimingAnalyzer().Analyze([frame], 50, 25);
+        _ = VideoTimingCompensation.Calculate(T(0), frame.Timestamp, VideoTimingCompensation.Automatic(Reconstruction50));
+        var after = new FrameTimingAnalyzer().Analyze([frame], 50, 25);
+        Assert.Equal(T(40), frame.Timestamp); Assert.Same(observation, frame.TimingObservation); Assert.Equal(9, frame.NativeSampleIndex);
+        Assert.Equal(before, after);
+    }
+
+    private static MediaTimestamp T(double milliseconds) => new((long)Math.Round(milliseconds * 10_000d), TimingQuality.StreamTimestamp);
+}
+
 public sealed class VisualDetectorTests(ITestOutputHelper output)
 {
     [Fact] public async Task NoMotionHasNoCandidate() { var f = Frames(false); Assert.Null(await new MotionVisualClapDetector().DetectAsync(f, f[5].Timestamp, default)); }

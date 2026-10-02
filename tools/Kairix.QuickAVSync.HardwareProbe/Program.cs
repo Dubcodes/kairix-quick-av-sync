@@ -48,6 +48,7 @@ if (options.ReconstructFields)
 
 Console.WriteLine("REQUESTED MODE:"); Console.WriteLine(options.ModeId ?? "Auto");
 Console.WriteLine("INPUT INTERPRETATION:"); Console.WriteLine(reconstruction is null ? "Native progressive frames" : $"{reconstruction.CapturedProgressiveRate.Value:0.000}p -> {reconstruction.TargetFieldRate.Value:0.000}i · {reconstruction.FieldOrder}");
+Console.WriteLine($"AUTOMATIC VIDEO TIMING OFFSET: {VideoTimingCompensation.Automatic(reconstruction).Milliseconds:+0.000;-0.000;0.000} ms");
 Console.WriteLine($"PROCESSING RASTERS: detection={options.DetectionWidth}x{options.DetectionHeight} review={options.ReviewWidth}x{options.ReviewHeight}");
 ICaptureSession session;
 try { session = await backend.OpenAsync(device, new(options.DetectionWidth, options.DetectionHeight, PreferredNativeFormatId: options.ModeId, PreferredPresentationWidth: options.ReviewWidth, PreferredPresentationHeight: options.ReviewHeight, PreferredSourceSignal: preferredSource, RequirePreferredNativeFormat: options.ModeId is not null, FieldReconstruction: reconstruction), default); }
@@ -79,6 +80,7 @@ if (options.TimingDetail) PrintTimingDetail(captured, 100);
 Console.WriteLine("DEVICE"); Console.WriteLine($"Requested: {options.DeviceId ?? options.DeviceName ?? "<only available device>"}"); Console.WriteLine($"Resolved: {device.FriendlyName} [{device.Id}]");
 Console.WriteLine("FORMAT"); Console.WriteLine($"Requested: {options.ModeId ?? "Auto"}"); Console.WriteLine($"Negotiated: {session.CurrentFormat.Display} {session.CurrentFormat.PixelFormat}");
 Console.WriteLine($"Interpretation: {(reconstruction is null ? "native capture cadence" : $"{reconstruction.CapturedProgressiveRate.Value:0.000}p -> {reconstruction.TargetFieldRate.Value:0.000}i {reconstruction.FieldOrder}")}");
+Console.WriteLine($"Automatic measurement offset: {VideoTimingCompensation.Automatic(reconstruction).Milliseconds:+0.000;-0.000;0.000} ms (applied earlier to visual measurement only)");
 if (reconstruction is not null) Console.WriteLine($"Reconstructed field timing: {reconstruction.FieldOrder}; captured sample assumed to represent second field / completed pair; interval={reconstruction.FieldIntervalTicks100ns / 10_000d:0.###} ms");
 Console.WriteLine("TIMESTAMPS");
 Console.WriteLine($"Primary source: {captured.FirstOrDefault()?.TimingObservation?.PrimarySource.ToString() ?? captured.FirstOrDefault()?.Timestamp.Quality.ToString() ?? "unknown"}");

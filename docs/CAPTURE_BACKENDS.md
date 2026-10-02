@@ -30,6 +30,8 @@ When reconstruction is enabled, each Media Foundation sample is locked once and 
 
 One native sample therefore emits two `VideoFrame` positions with distinct image arrays and field identity but the same native-sample ID and factual transport observations. Only the first review timestamp is derived as `T - field interval`; device/sample/reader/arrival values are never shifted. The target field rate is exactly twice the progressive transport rate. Validation rejects other relationships rather than creating conversions such as 25p to 60i. The session's `CurrentFormat` remains the negotiated progressive transport.
 
+The measurement layer additionally assumes that an explicitly reconstructed woven frame was delivered after both fields arrived. It therefore subtracts one target-field interval from both interpreted field positions: 20.000 ms for 50i or 1001/60000 seconds (approximately 16.683 ms) for 59.94i. This Magewell-informed default is visible and overridable per capture profile. It is not applied to ordinary progressive or driver-native interlaced modes, and it never changes backend timestamps, native-sample identity, or transport analysis.
+
 ### Processing rasters and conversion diagnostics
 
 Native capture, detector processing, and review presentation are independent. Defaults are 640×360 luma and 160×90 BGRA. Settings are aspect-preserving and never upscale above the selected native raster. Conversion plans precompute X/Y maps for progressive and both field parities, while YUV analysis reads the native luma component directly. Every 250 native samples, and once when a session closes, bounded `capture.conversion` diagnostics report both processing rasters, reconstruction state, average milliseconds, and maximum milliseconds.

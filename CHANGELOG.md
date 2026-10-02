@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added automatic reconstructed capture-delay compensation at the measurement layer. Explicit 25p→50i profiles default to +20.000 ms and 29.97p→59.94i profiles use the exact 1001/60000-second field interval; the whole field pair shifts together while raw capture/reconstruction timestamps remain unchanged.
+- Added a visible Video timing offset setting with per-device/native-mode/reconstruction/order/rate manual overrides and Reset to automatic. Current results, review positions, detector expectation, work-window selection, and session history now consistently distinguish corrected timing from retained raw measurements.
 - Added independent, aspect-preserving detection and review resolution settings, live image-buffer memory estimates/warnings, resolution-aware detector detail, and matching HardwareProbe controls.
 - Optimized conversion with direct NV12/YUY2/UYVY luma reads and reusable scaling/parity maps; coalesced preview frames before bitmap creation; removed the duplicate 600-frame passive-analysis store; replaced detector hot-path list/LINQ churn with bounded pooled scratch arrays; and debounced interactive settings writes.
 - Corrected reconstructed timing diagnostics: paired fields now share a native-sample identity and factual transport observations, only the first visual timestamp is derived, and reports distinguish 50 Hz review timing from 25 Hz transport timing.

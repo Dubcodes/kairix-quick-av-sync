@@ -14,7 +14,8 @@ public static class ReconstructedFieldTimestampModel
     {
         var reduced = fieldRate.Reduce();
         if (reduced.Numerator <= 0 || reduced.Denominator <= 0) throw new ArgumentOutOfRangeException(nameof(fieldRate));
-        return (long)Math.Round(10_000_000d * reduced.Denominator / reduced.Numerator, MidpointRounding.AwayFromZero);
+        var scaledDenominator = checked(10_000_000L * reduced.Denominator);
+        return checked((scaledDenominator + reduced.Numerator / 2L) / reduced.Numerator);
     }
 
     public static IReadOnlyList<ReconstructedFieldPosition> Reconstruct(
