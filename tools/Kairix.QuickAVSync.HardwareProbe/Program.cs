@@ -36,10 +36,13 @@ if (options.SourceId is not null)
     if (sourceOption?.Signal is null) { Console.Error.WriteLine($"SOURCE ERROR: Unknown manual source option '{options.SourceId}'."); return 4; }
     preferredSource = sourceOption.Signal;
 }
+var handlingOption = InterlacedHandlingOptions.Find(options.InterlacedHandlingId);
+if (options.InterlacedHandlingId is not null && string.IsNullOrWhiteSpace(handlingOption.Id)) { Console.Error.WriteLine($"SOURCE ERROR: Unknown interlaced handling '{options.InterlacedHandlingId}'. Use preserve, field-rate, or frame-rate."); return 4; }
 
 Console.WriteLine("REQUESTED MODE:"); Console.WriteLine(options.ModeId ?? "Auto");
+Console.WriteLine("INTERLACED HANDLING:"); Console.WriteLine(handlingOption.Display);
 ICaptureSession session;
-try { session = await backend.OpenAsync(device, new(PreferredNativeFormatId: options.ModeId, PreferredSourceSignal: preferredSource, RequirePreferredNativeFormat: options.ModeId is not null), default); }
+try { session = await backend.OpenAsync(device, new(PreferredNativeFormatId: options.ModeId, PreferredSourceSignal: preferredSource, RequirePreferredNativeFormat: options.ModeId is not null, InterlacedInputHandling: handlingOption.Value), default); }
 catch (Exception ex) { Console.Error.WriteLine("FORMAT NEGOTIATION FAILED"); Console.Error.WriteLine($"Requested: {options.ModeId ?? "Auto"}"); Console.Error.WriteLine(ex.Message); return 5; }
 await using var ownedSession = session;
 Console.WriteLine("NEGOTIATED MODE:"); Console.WriteLine($"{session.CurrentFormat.Display} {session.CurrentFormat.PixelFormat}");
@@ -66,6 +69,10 @@ if (options.TimingDetail) PrintTimingDetail(captured, 100);
 
 Console.WriteLine("DEVICE"); Console.WriteLine($"Requested: {options.DeviceId ?? options.DeviceName ?? "<only available device>"}"); Console.WriteLine($"Resolved: {device.FriendlyName} [{device.Id}]");
 Console.WriteLine("FORMAT"); Console.WriteLine($"Requested: {options.ModeId ?? "Auto"}"); Console.WriteLine($"Negotiated: {session.CurrentFormat.Display} {session.CurrentFormat.PixelFormat}");
+Console.WriteLine($"Interlaced handling declaration: {handlingOption.Display}");
+var compatibility = InterlaceCompatibility.Evaluate(preferredSource, handlingOption.Value, session.CurrentFormat);
+if (!string.IsNullOrWhiteSpace(compatibility.Warning)) Console.WriteLine(compatibility.Warning);
+if (!string.IsNullOrWhiteSpace(compatibility.TemporalResolution)) Console.WriteLine(compatibility.TemporalResolution);
 Console.WriteLine("TIMESTAMPS");
 Console.WriteLine($"Primary source: {captured.FirstOrDefault()?.TimingObservation?.PrimarySource.ToString() ?? captured.FirstOrDefault()?.Timestamp.Quality.ToString() ?? "unknown"}");
 Console.WriteLine($"Declared rate: {timing.DeclaredTemporalRate:0.###} fps"); Console.WriteLine($"Observed primary rate: {timing.Primary.ObservedRate:0.###} fps"); Console.WriteLine($"Observed arrival rate: {timing.Arrival.ObservedRate:0.###} fps");
@@ -82,11 +89,12 @@ if (review is not null)
     Console.WriteLine($"First/last offsets: {(offsets.Length == 0 ? 0 : offsets[0]):0.###} / {(offsets.Length == 0 ? 0 : offsets[^1]):0.###} ms");
 }
 Console.WriteLine("CONTENT"); Console.WriteLine($"Near-identical consecutive samples: {timing.NearIdenticalConsecutiveImages}"); Console.WriteLine("Near-identical content is diagnostic only; distinct valid timestamps are retained.");
+if (timing.Content.PairedRepeatDetected) Console.WriteLine($"REPEATED FRAME PAIRS DETECTED: {timing.Primary.ObservedRate:0.###} timestamped fps; approximately {timing.Content.EstimatedUniqueImageRate:0.###} unique images/sec. Capture device may be deinterlacing or frame-rate converting the source.");
 if (options.AnalyzeSignal)
 {
     var signal = new ObservedSignalAnalyzer().Analyze(captured);
     Console.WriteLine("SOURCE ANALYSIS");
-    Console.WriteLine($"estimate='{InputSignalFormatter.Format(signal.Signal)}' authority={signal.Signal.Authority} duplicateFraction={signal.DuplicateFraction:P1} repeat='{signal.RepeatPattern}' interlaceEvidence={signal.InterlaceEvidence:0.000}");
+    Console.WriteLine($"estimate='{InputSignalFormatter.Format(signal.Signal)}' authority={signal.Signal.Authority} nearIdenticalFraction={signal.NearIdenticalFraction:P1} sceneActivity={signal.SceneActivitySufficient} pairedRepeat={signal.PairedRepeatDetected} uniqueRate={signal.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} repeat='{signal.RepeatPattern}' interlaceEvidence={signal.InterlaceEvidence:0.000}");
 }
 var result = !timing.TimingValid ? "FAIL" : timing.DeclaredVsObservedErrorPercent >= 3 ? "WARNING" : "PASS";
 Console.WriteLine("RESULT"); Console.WriteLine(result); Console.WriteLine($"SUMMARY payloadFrames={samples} audioBlocks={audioBlocks} elapsedMs={stopwatch.ElapsedMilliseconds} mediaSaved=false");
@@ -121,13 +129,15 @@ static string Usage() => """
 Kairix Quick A/V Sync HardwareProbe
 
 Canonical usage:
-  --device "<friendly name>" [--mode "<native mode id>"] [--source "<source option id>"] [--analyze-signal] [--timing-detail]
+  --device "<friendly name>" [--mode "<native mode id>"] [--source "<source option id>"] [--interlaced-handling <mode>] [--analyze-signal] [--timing-detail]
 
 Options:
   --device <name>       Exact friendly-name match; ambiguity requires --device-id.
   --device-id <id>      Exact stable device ID.
   --mode <id>           Strict native mode; unavailable/rejected/mismatched negotiation fails.
   --source <id>         Manual physical-source option used only by Auto mode.
+  --interlaced-handling <mode>
+                        Describes device processing: preserve, field-rate, or frame-rate. Does not configure hardware.
   --list-formats        List native modes without starting capture.
   --analyze-signal      Run bounded passive signal analysis.
   --timing-detail       Print at most the first 100 timing rows.

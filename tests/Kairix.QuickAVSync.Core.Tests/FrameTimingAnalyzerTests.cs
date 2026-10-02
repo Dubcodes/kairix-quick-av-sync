@@ -62,7 +62,8 @@ public sealed class FrameTimingAnalyzerTests
         var analysis = new FrameTimingAnalyzer().Analyze(frames, 50);
         Assert.True(analysis.Primary.LargeGapCount > 0);
         Assert.True(analysis.DeclaredVsObservedErrorPercent > 15);
-        Assert.Contains("TIMELINE WARNING", analysis.Status);
+        Assert.Contains("TIMELINE TIMING INVALID", analysis.Status);
+        Assert.False(analysis.TimingValid);
     }
 
     [Fact]
@@ -117,6 +118,57 @@ public sealed class FrameTimingAnalyzerTests
         var analysis = new FrameTimingAnalyzer().Analyze(frames, 50);
         Assert.Equal(3, analysis.NearIdenticalConsecutiveImages);
         Assert.True(analysis.TimingValid);
+        Assert.False(analysis.Content.PairedRepeatDetected);
+        Assert.False(analysis.Content.SceneActivitySufficient);
+    }
+
+    [Fact]
+    public void Progressive50pHasNoPairedRepeat()
+    {
+        byte[] images = [10, 30, 50, 70, 90];
+        var analysis = new FrameTimingAnalyzer().Analyze(images.Select((value, index) => Frame(index * 20, index, luma: value)).ToArray(), 50);
+        Assert.Equal(50, analysis.Primary.ObservedRate, .01);
+        Assert.False(analysis.Content.PairedRepeatDetected);
+        Assert.True(analysis.Content.SceneActivitySufficient);
+    }
+
+    [Fact]
+    public void Timestamped50pWithAabbccContentReportsPairedRepeatsWithoutDroppingSamples()
+    {
+        byte[] images = [10, 10, 40, 40, 80, 80];
+        var frames = images.Select((value, index) => Frame(index * 20, index, luma: value)).ToArray();
+        var snapshot = ReviewTimelineIntegrity.Build(frames, Timestamp(50), TimeSpan.FromMilliseconds(100), 50);
+        Assert.True(snapshot.Analysis.TimingValid);
+        Assert.True(snapshot.Analysis.Content.PairedRepeatDetected);
+        Assert.Equal(25, snapshot.Analysis.Content.EstimatedUniqueImageRate!.Value, .01);
+        Assert.Equal(6, snapshot.Frames.Count);
+        Assert.Contains("REPEATED FRAME PAIRS", snapshot.Analysis.Status);
+    }
+
+    [Fact]
+    public void Woven25pHasNewImagesAndFortyMillisecondSpacing()
+    {
+        byte[] images = [10, 30, 50, 70, 90];
+        var analysis = new FrameTimingAnalyzer().Analyze(images.Select((value, index) => Frame(index * 40, index, luma: value)).ToArray(), 25);
+        Assert.Equal(25, analysis.Primary.ObservedRate, .01);
+        Assert.Equal(40, analysis.Primary.MedianIntervalMilliseconds, 3);
+        Assert.Equal(0, analysis.NearIdenticalConsecutiveImages);
+        Assert.False(analysis.Content.PairedRepeatDetected);
+    }
+
+    [Fact]
+    public void NoisyStaticSceneIsNotMisclassifiedAsPairedConversion()
+    {
+        var frames = Enumerable.Range(0, 6).Select(index =>
+        {
+            var luma = new byte[] { (byte)(100 + index % 2), (byte)(101 - index % 2), 100, 101 };
+            var ticks = index * 20 * TimeSpan.TicksPerMillisecond;
+            return new VideoFrame(new(ticks, TimingQuality.StreamTimestamp), 2, 2, luma, index, Stride: 2);
+        }).ToArray();
+        var analysis = new FrameTimingAnalyzer().Analyze(frames, 50);
+        Assert.False(analysis.Content.PairedRepeatDetected);
+        Assert.False(analysis.Content.SceneActivitySufficient);
+        Assert.Equal("insufficient scene activity", analysis.Content.Status);
     }
 
     private static VideoFrame[] CadenceFrames(Rational rate, int count) => Enumerable.Range(0, count)

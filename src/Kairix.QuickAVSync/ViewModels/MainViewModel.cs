@@ -38,7 +38,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private CaptureDeviceDescriptor? _selectedDevice;
     private CaptureFormatOption? _selectedCaptureFormat;
     private InputSignalOption? _selectedInputSignal;
+    private InterlacedHandlingOption? _selectedInterlacedHandling;
     private InputSignalInfo? _providerSignal, _observedSignal;
+    private ObservedSignalAnalysis? _observedAnalysis;
     private double? _observedDeliveredRate;
     private ImageSource? _videoImage, _autoThumbnail;
     private string _status = "STARTING", _formatText = "No negotiated format", _timingText = "TIMING NOT AVAILABLE", _memoryText = "Reading memory…";
@@ -54,6 +56,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private int _previewScheduled;
     private bool _suppressFormatReconnect;
     private bool _suppressInputSignalSave;
+    private bool _suppressInterlacedHandlingSave;
     private bool _suppressDeviceRefresh;
     private int _signalAnalysisRunning;
     private long _lastSignalAnalysisUtcTicks;
@@ -70,6 +73,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<CaptureDeviceDescriptor> Devices { get; } = [];
     public ObservableCollection<CaptureFormatOption> CaptureFormats { get; } = [];
     public ObservableCollection<InputSignalOption> InputSignals { get; } = [];
+    public ObservableCollection<InterlacedHandlingOption> InterlacedHandlings { get; } = [];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -86,6 +90,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _settings = _settingsService.Load(); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
         _signalCoordinator = new([new GenericWindowsInputSignalProvider()], _log);
         foreach (var option in InputSignalOptions.Common) InputSignals.Add(option);
+        foreach (var option in InterlacedHandlingOptions.Common) InterlacedHandlings.Add(option);
+        _selectedInterlacedHandling = InterlacedHandlings[0];
         RefreshCommand = new AsyncRelayCommand(RefreshDevicesAsync);
         ReconnectCommand = new AsyncRelayCommand(ReconnectAsync);
         ManualClapCommand = new RelayCommand(_ => BeginManualClap());
@@ -108,6 +114,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _suppressInputSignalSave = true;
             try { SelectedInputSignal = InputSignalOptions.Find(_settings.InputSignalByDevice.GetValueOrDefault(value.Id)); }
             finally { _suppressInputSignalSave = false; }
+            _suppressInterlacedHandlingSave = true;
+            try { SelectedInterlacedHandling = InterlacedHandlingOptions.Find(_settings.InterlacedHandlingByDevice.GetValueOrDefault(value.Id)); }
+            finally { _suppressInterlacedHandlingSave = false; }
             _providerSignal = null; _observedSignal = null; RefreshInputSignalDisplay();
             SaveSettings();
             if (!_suppressDeviceRefresh) { _ = RefreshCaptureFormatsAsync(value); _ = RefreshInputSignalAsync(value); }
@@ -122,6 +131,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (string.IsNullOrWhiteSpace(value?.Id)) _settings.NativeFormatByDevice.Remove(SelectedDevice.Id);
             else _settings.NativeFormatByDevice[SelectedDevice.Id] = value.Id;
             SaveSettings(); _log.Write("capture.format-selection", $"device='{SelectedDevice.FriendlyName}' selection='{value?.Display ?? CaptureFormatOption.Auto.Display}'");
+            RefreshInputSignalDisplay();
             _ = ReconnectAsync();
         }
     }
@@ -137,6 +147,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 else _settings.InputSignalByDevice[SelectedDevice.Id] = value.Id;
                 SaveSettings();
                 _log.Write("input-signal.selection", $"device='{SelectedDevice.FriendlyName}' selection='{value?.Display ?? InputSignalOption.Auto.Display}' (capture unchanged)");
+            }
+            RefreshInputSignalDisplay();
+        }
+    }
+    public InterlacedHandlingOption? SelectedInterlacedHandling
+    {
+        get => _selectedInterlacedHandling;
+        set
+        {
+            if (!Set(ref _selectedInterlacedHandling, value)) return;
+            if (!_suppressInterlacedHandlingSave && SelectedDevice is not null)
+            {
+                if (string.IsNullOrWhiteSpace(value?.Id)) _settings.InterlacedHandlingByDevice.Remove(SelectedDevice.Id);
+                else _settings.InterlacedHandlingByDevice[SelectedDevice.Id] = value.Id;
+                SaveSettings();
+                _log.Write("input-signal.interlaced-handling", $"device='{SelectedDevice.FriendlyName}' handling='{value?.Display ?? InterlacedHandlingOptions.Common[0].Display}' (describes hardware; capture unchanged until reconnect)");
             }
             RefreshInputSignalDisplay();
         }
@@ -169,9 +195,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         get
         {
             var signal = EffectiveInputSignal();
-            var recommendation = SourceAwareFormatMatcher.Recommend(_allCaptureFormats.Where(option => option.Format is not null).Select(option => option.Format!), signal);
+            var recommendation = SourceAwareFormatMatcher.Recommend(_allCaptureFormats.Where(option => option.Format is not null).Select(option => option.Format!), signal, CurrentInterlacedHandling);
             var suffix = recommendation is null || signal?.Provenance != InputSignalProvenance.ObservedAnalysis ? "" : $" Suggested capture: {recommendation.Display}; operator selection required.";
             return InputSignalFormatter.Detail(signal) + suffix;
+        }
+    }
+    public bool IsInterlacedHandlingEnabled => EffectiveInputSignal()?.ScanMode == ScanMode.Interlaced;
+    public string InterlacedHandlingHelpText => IsInterlacedHandlingEnabled
+        ? (SelectedInterlacedHandling?.Help ?? InterlacedHandlingOptions.Common[0].Help) + " This describes the capture device; Kairix does not change its hardware setting. Reconnect to apply the Auto preference."
+        : "Ignored because the declared physical input is not interlaced.";
+    public string InterlacedHandlingStateText => CurrentInterlaceCompatibility().HandlingText;
+    public string InterlaceWarningText => CurrentInterlaceCompatibility().Warning;
+    public string VisualReviewResolutionText => CurrentInterlaceCompatibility().TemporalResolution;
+    public string ContentWarningText
+    {
+        get
+        {
+            var content = _timelineAnalysis?.Content;
+            if (content?.PairedRepeatDetected == true) return PairedRepeatWarning(_timelineAnalysis!.Primary.ObservedRate, content.EstimatedUniqueImageRate);
+            return _observedAnalysis?.PairedRepeatDetected == true ? PairedRepeatWarning(_observedAnalysis.ObservedFrameRate, _observedAnalysis.EstimatedUniqueImageRate) : "";
         }
     }
     public string TimingText { get => _timingText; private set => Set(ref _timingText, value); }
@@ -276,15 +318,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         try
         {
         if (Volatile.Read(ref _disposing) != 0) return;
-        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _signalVideo.Clear(); _audio.Clear(); _observedSignal = null; _observedDeliveredRate = null; RefreshInputSignalDisplay();
+        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; ClearCurrentMediaState(); await StopCaptureAsync(); _video.Clear(); _signalVideo.Clear(); _audio.Clear(); _observedSignal = null; _observedAnalysis = null; _observedDeliveredRate = null; RefreshInputSignalDisplay();
         if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
         var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
         try
         {
             var sourcePreference = string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? EffectiveInputSignal() : null;
             var strictFormat = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id);
-            _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: SelectedCaptureFormat?.Id, PreferredSourceSignal: sourcePreference, RequirePreferredNativeFormat: strictFormat), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
-            await _capture.StartAsync(_lifetimeCts.Token); ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
+            _capture = await backend.OpenAsync(SelectedDevice, new(PreferredNativeFormatId: SelectedCaptureFormat?.Id, PreferredSourceSignal: sourcePreference, RequirePreferredNativeFormat: strictFormat, InterlacedInputHandling: CurrentInterlacedHandling), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
+            await _capture.StartAsync(_lifetimeCts.Token); ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInputSignalDisplay(); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}");
         }
         catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { await StopCaptureAsync(); }
         catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? "REQUESTED CAPTURE FORMAT NOT ACCEPTED" : "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; FormatText = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? $"Requested: {SelectedCaptureFormat.Display}" : "Capture: Not negotiated"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); }
@@ -318,10 +360,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             Application.Current.Dispatcher.BeginInvoke(() =>
             {
                 _observedSignal = task.Result.Signal.HasUsefulData ? task.Result.Signal : null;
+                _observedAnalysis = task.Result;
                 _observedDeliveredRate = task.Result.ObservedFrameRate > 0 ? task.Result.ObservedFrameRate : null;
                 FormatText = BuildCaptureText();
                 RefreshInputSignalDisplay();
-                _log.Write("input-signal.analysis", $"frames={task.Result.FramesAnalyzed} duration={task.Result.DurationSeconds:0.00}s output={task.Result.ObservedFrameRate:0.###}Hz cadence={task.Result.Signal.EffectiveTemporalRate?.ToString("0.###") ?? "unknown"} duplicates={task.Result.DuplicateFraction:P1} pattern='{task.Result.RepeatPattern}' interlace={task.Result.InterlaceEvidence:0.000} authority={task.Result.Signal.Authority}");
+                _log.Write("input-signal.analysis", $"frames={task.Result.FramesAnalyzed} duration={task.Result.DurationSeconds:0.00}s output={task.Result.ObservedFrameRate:0.###}Hz cadence={task.Result.Signal.EffectiveTemporalRate?.ToString("0.###") ?? "unknown"} nearIdentical={task.Result.NearIdenticalFraction:P1} sceneActivity={task.Result.SceneActivitySufficient} pairedRepeat={task.Result.PairedRepeatDetected} uniqueRate={task.Result.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} pattern='{task.Result.RepeatPattern}' interlace={task.Result.InterlaceEvidence:0.000} authority={task.Result.Signal.Authority}");
             });
         }, TaskScheduler.Default);
     }
@@ -433,7 +476,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var priorPlayhead = review.Playhead; _reviewFrames = built.Timeline.Frames; _timelineAnalysis = built.Timeline.Analysis; _playheadIndex = _reviewFrames.Count == 0 ? 0 : FindNearest(_reviewFrames, priorPlayhead);
         if (_reviewFrames.Count > 0) review.SetInitialPlayhead(_reviewFrames[_playheadIndex].Timestamp);
         Waveform = built.Waveform; ReviewFrameTicks = _reviewFrames.Select(frame => (frame.Timestamp.Ticks100ns - reference.Ticks100ns) / 10_000d).ToArray();
-        _log.Write("timeline.integrity", $"declared={_timelineAnalysis.DeclaredTemporalRate:0.###} observed={_timelineAnalysis.Primary.ObservedRate:0.###} medianMs={_timelineAnalysis.Primary.MedianIntervalMilliseconds:0.###} rawFrames={built.Timeline.RawFrameCount} reviewFrames={_reviewFrames.Count} windowMs={half.TotalMilliseconds * 2:0.###} duplicateTimestamps={_timelineAnalysis.Primary.DuplicateCount} backwards={_timelineAnalysis.Primary.BackwardCount} gaps={_timelineAnalysis.Primary.LargeGapCount} nearIdentical={_timelineAnalysis.NearIdenticalConsecutiveImages} arrivalRate={_timelineAnalysis.Arrival.ObservedRate:0.###}");
+        _log.Write("timeline.integrity", $"declared={_timelineAnalysis.DeclaredTemporalRate:0.###} observed={_timelineAnalysis.Primary.ObservedRate:0.###} medianMs={_timelineAnalysis.Primary.MedianIntervalMilliseconds:0.###} rawFrames={built.Timeline.RawFrameCount} reviewFrames={_reviewFrames.Count} windowMs={half.TotalMilliseconds * 2:0.###} duplicateTimestamps={_timelineAnalysis.Primary.DuplicateCount} backwards={_timelineAnalysis.Primary.BackwardCount} gaps={_timelineAnalysis.Primary.LargeGapCount} nearIdentical={_timelineAnalysis.NearIdenticalConsecutiveImages} pairedRepeat={_timelineAnalysis.Content.PairedRepeatDetected} estimatedUniqueRate={_timelineAnalysis.Content.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} arrivalRate={_timelineAnalysis.Arrival.ObservedRate:0.###}");
         ShowPlayhead(); NotifyMarkers();
     }
     private static int FindNearest(IReadOnlyList<VideoFrame> frames, MediaTimestamp mark) => ReviewTimeline.NearestFrameIndex(frames, mark, 0);
@@ -451,7 +494,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item);
     }
     private string AuthoritativeCaptureStatus() => _captureStatus switch { CaptureStatus.Running => _captureStatusText, CaptureStatus.Starting => _captureStatusText, CaptureStatus.DeviceLost => "CAPTURE DEVICE LOST", CaptureStatus.Failed => "CAPTURE FAILED", CaptureStatus.Stopping => "STOPPING", CaptureStatus.Stopped => "CAPTURE STOPPED", _ => "CAPTURE NOT READY" };
-    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(ReviewPosition)); Changed(nameof(TimelineIntegrityText)); }
+    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(CurrentResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(ReviewPosition)); Changed(nameof(TimelineIntegrityText)); Changed(nameof(ContentWarningText)); }
     private static BitmapSource ToBitmap(VideoFrame frame)
     {
         var bitmap = frame.HasPresentation
@@ -472,6 +515,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void SaveSettings() { try { _settingsService.Save(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
     private static void OpenCoffee() { if (!string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppConstants.BuyMeACoffeeUrl) { UseShellExecute = true }); }
     private static string DescribeTiming(TimingQuality quality) => quality switch { TimingQuality.DeviceHardware => "DEVICE/QPC TIMESTAMPS", TimingQuality.PlatformCaptureClock => "PLATFORM CAPTURE CLOCK", TimingQuality.ClockCorrelated => "CLOCKS CORRELATED", TimingQuality.StreamTimestamp => "STREAM TIMESTAMPS", TimingQuality.ArrivalFallback => "TIMING DEGRADED · ARRIVAL", _ => "TIMING DOMAINS UNRELATED" };
+    private static string PairedRepeatWarning(double timestampRate, double? uniqueRate) => $"REPEATED FRAME PAIRS DETECTED · {timestampRate:0.##} timestamped fps · ≈{uniqueRate:0.##} unique images/sec · capture device may be converting the source";
     private string BuildCaptureText()
     {
         if (_capture is null) return "Capture: Not negotiated";
@@ -485,7 +529,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (SelectedInputSignal?.Signal is { } manual && SelectedDevice is { } device) return manual with { DeviceIdentity = device.Id };
         return InputSignalCoordinator.SelectStrongest([_providerSignal, _observedSignal]);
     }
-    private void RefreshInputSignalDisplay() { Changed(nameof(InputSignalText)); Changed(nameof(InputSignalDetailText)); }
+    private InterlacedInputHandling CurrentInterlacedHandling => SelectedInterlacedHandling?.Value ?? InterlacedInputHandling.Unknown;
+    private InterlaceCompatibilityInfo CurrentInterlaceCompatibility()
+    {
+        var format = !string.IsNullOrWhiteSpace(SelectedCaptureFormat?.Id) ? SelectedCaptureFormat.Format : _capture?.CurrentFormat;
+        return InterlaceCompatibility.Evaluate(EffectiveInputSignal(), CurrentInterlacedHandling, format);
+    }
+    private void RefreshInputSignalDisplay()
+    {
+        Changed(nameof(InputSignalText)); Changed(nameof(InputSignalDetailText)); Changed(nameof(IsInterlacedHandlingEnabled));
+        Changed(nameof(InterlacedHandlingHelpText)); Changed(nameof(InterlacedHandlingStateText)); Changed(nameof(InterlaceWarningText)); Changed(nameof(VisualReviewResolutionText));
+        Changed(nameof(ContentWarningText));
+    }
     private async Task StopCaptureAsync() { if (_capture is null) return; _capture.VideoSampleReceived -= OnVideoFrame; _capture.AudioSampleReceived -= OnAudio; _capture.StatusChanged -= OnCaptureStatus; await _capture.DisposeAsync(); _capture = null; }
     public async ValueTask DisposeAsync()
     {

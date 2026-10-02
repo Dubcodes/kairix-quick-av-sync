@@ -405,8 +405,10 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
         try
         {
             var rankable = candidates.Select(candidate => new WindowsNativeFormatCandidate(candidate.Index, candidate.Format, candidate.Source.PixelFormat, current is { } hint && SameVideoMode(candidate.Format, candidate.Source, hint.Format, hint.Source))).ToArray();
-            var ranked = WindowsNativeFormatRanker.Rank(rankable, options.PreferredNativeFormatId, options.PreferredSourceSignal, options.RequirePreferredNativeFormat);
-            log.Write("capture.negotiation", $"ranking={(options.RequirePreferredNativeFormat ? "strict-explicit-mode" : string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) ? SourceAwareFormatMatcher.CanAutomaticallyApply(options.PreferredSourceSignal) ? "source-aware-auto" : "generic-auto" : "preferred-mode-with-fallback")} sourceProvenance={options.PreferredSourceSignal?.Provenance.ToString() ?? "none"}");
+            var ranked = options.RequirePreferredNativeFormat
+                ? WindowsNativeFormatRanker.Rank(rankable, options.PreferredNativeFormatId, options.PreferredSourceSignal, true)
+                : WindowsNativeFormatRanker.Rank(rankable, options.PreferredNativeFormatId, options.PreferredSourceSignal, options.InterlacedInputHandling);
+            log.Write("capture.negotiation", $"ranking={(options.RequirePreferredNativeFormat ? "strict-explicit-mode" : string.IsNullOrWhiteSpace(options.PreferredNativeFormatId) ? SourceAwareFormatMatcher.CanAutomaticallyApply(options.PreferredSourceSignal, options.InterlacedInputHandling) ? "source-aware-auto" : "generic-auto" : "preferred-mode-with-fallback")} sourceProvenance={options.PreferredSourceSignal?.Provenance.ToString() ?? "none"} interlacedHandling={options.InterlacedInputHandling}");
             foreach (var rankedCandidate in ranked)
             {
                 var candidate = candidates.First(item => item.Index == rankedCandidate.NativeIndex);

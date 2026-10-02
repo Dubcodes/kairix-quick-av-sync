@@ -55,13 +55,36 @@ public sealed class InputSignalTests
     }
 
     [Fact]
-    public void Matcher_PrefersProgressiveFiftyForInterlacedFiftySource()
+    public void Matcher_DoesNotGuessOutputRateForInterlacedSourceWithUnknownHandling()
     {
         var source = new InputSignalInfo(1920, 1080, Rational.From(25), 50, 50, ScanMode.Interlaced,
             Provenance: InputSignalProvenance.UserDeclared, Authority: SignalAuthority.Authoritative);
         var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
-        var i50 = new CaptureFormat(1920, 1080, Rational.From(25), ScanMode.Interlaced, FieldOrder.TopFirst, InterlaceLayout: InterlaceLayout.FullFrame);
-        Assert.Same(p50, SourceAwareFormatMatcher.Recommend([i50, p50], source));
+        Assert.Null(SourceAwareFormatMatcher.Recommend([p50], source, InterlacedInputHandling.Unknown));
+        Assert.False(SourceAwareFormatMatcher.CanAutomaticallyApply(source, InterlacedInputHandling.Unknown));
+    }
+
+    [Theory]
+    [InlineData(InterlacedInputHandling.PreserveFields, 25)]
+    [InlineData(InterlacedInputHandling.DeinterlaceToFrameRate, 25)]
+    [InlineData(InterlacedInputHandling.DeinterlaceToFieldRate, 50)]
+    public void Matcher_UsesExplicitInterlacedHandling(InterlacedInputHandling handling, int expectedRate)
+    {
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal!;
+        var p25 = new CaptureFormat(1920, 1080, Rational.From(25), ScanMode.Progressive, FieldOrder.Unknown);
+        var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
+        Assert.Equal(expectedRate, SourceAwareFormatMatcher.Recommend([p50, p25], source, handling)!.FrameRate.Value);
+    }
+
+    [Theory]
+    [InlineData(InterlacedInputHandling.PreserveFields, 30000, 1001)]
+    [InlineData(InterlacedInputHandling.DeinterlaceToFieldRate, 60000, 1001)]
+    public void Matcher_PreservesFractionalInterlacedCadence(InterlacedInputHandling handling, int numerator, int denominator)
+    {
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-59.94i").Signal!;
+        var p2997 = new CaptureFormat(1920, 1080, Rational.From(30000, 1001), ScanMode.Progressive, FieldOrder.Unknown);
+        var p5994 = new CaptureFormat(1920, 1080, Rational.From(60000, 1001), ScanMode.Progressive, FieldOrder.Unknown);
+        Assert.Equal(Rational.From(numerator, denominator), SourceAwareFormatMatcher.Recommend([p5994, p2997], source, handling)!.FrameRate);
     }
 
     [Fact]
@@ -91,8 +114,8 @@ public sealed class InputSignalTests
     }
 
     [Theory]
-    [InlineData(50, 25, "period 2")]
-    [InlineData(60, 30, "period 2")]
+    [InlineData(50, 25, "paired repeats")]
+    [InlineData(60, 30, "paired repeats")]
     [InlineData(60, 50, "period 6")]
     [InlineData(60, 24, "period 5")]
     public void Analyzer_ReportsDeterministicFrameConversionPattern(double outputRate, double sourceRate, string expectedPattern)
@@ -107,6 +130,51 @@ public sealed class InputSignalTests
         var result = new ObservedSignalAnalyzer().Analyze(StaticNoiseFrames(50, 6));
         Assert.False(result.Signal.HasUsefulData);
         Assert.Equal(SignalAuthority.EstimatedLow, result.Signal.Authority);
+        Assert.False(result.PairedRepeatDetected);
+        Assert.False(result.SceneActivitySufficient);
+    }
+
+    [Fact]
+    public void PassiveAndTimingAnalyzersShareNearIdenticalClassification()
+    {
+        var frames = Enumerable.Range(0, 8).Select(index => Frame(index, 25, 2, 2, [(byte)(100 + index), (byte)(100 + index), (byte)(100 + index), (byte)(100 + index)])).ToArray();
+        var passive = new ObservedSignalAnalyzer().Analyze(frames);
+        var timing = new FrameTimingAnalyzer().Analyze(frames, 25);
+        Assert.Equal(timing.Content.NearIdenticalFraction, passive.NearIdenticalFraction, 6);
+        Assert.Equal(0, passive.NearIdenticalFraction);
+        Assert.False(passive.PairedRepeatDetected);
+    }
+
+    [Fact]
+    public void Compatibility_WarnsButDoesNotRejectManualFieldRateCaptureForWeave()
+    {
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal!;
+        var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
+        var result = InterlaceCompatibility.Evaluate(source, InterlacedInputHandling.PreserveFields, p50);
+        Assert.Contains("INTERLACE WARNING", result.Warning);
+        Assert.Contains("repeated frame pairs", result.Warning, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Compatibility_ReportsFortyMillisecondReviewWithoutInventingFields()
+    {
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50i").Signal!;
+        var p25 = new CaptureFormat(1920, 1080, Rational.From(25), ScanMode.Progressive, FieldOrder.Unknown);
+        var result = InterlaceCompatibility.Evaluate(source, InterlacedInputHandling.PreserveFields, p25);
+        Assert.Empty(result.Warning);
+        Assert.Contains("40 ms", result.TemporalResolution);
+        Assert.Contains("Field-level review not enabled", result.TemporalResolution);
+    }
+
+    [Fact]
+    public void Compatibility_IgnoresInterlacedHandlingForProgressiveInput()
+    {
+        var source = InputSignalOptions.Common.Single(option => option.Id == "1920x1080-50p").Signal!;
+        var p50 = new CaptureFormat(1920, 1080, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
+        var result = InterlaceCompatibility.Evaluate(source, InterlacedInputHandling.PreserveFields, p50);
+        Assert.False(result.Active);
+        Assert.Empty(result.Warning);
+        Assert.Empty(result.TemporalResolution);
     }
 
     [Theory]
@@ -141,6 +209,14 @@ public sealed class InputSignalTests
         var result = new ObservedSignalAnalyzer().Analyze(MovingFrames(50, 50, 6));
         Assert.InRange(result.Signal.EffectiveTemporalRate!.Value, 49.9, 50.1);
         Assert.Equal(ScanMode.Unknown, result.Signal.ScanMode);
+    }
+
+    [Fact]
+    public void Analyzer_DescribesAllFreshFramesWithoutInventingAPeriod()
+    {
+        var result = new ObservedSignalAnalyzer().Analyze(MovingFrames(25, 25, 6));
+        Assert.Equal("100% temporally unique", result.RepeatPattern);
+        Assert.False(result.PairedRepeatDetected);
     }
 
     private static InputSignalInfo Signal(double cadence, InputSignalProvenance provenance, SignalAuthority authority) =>

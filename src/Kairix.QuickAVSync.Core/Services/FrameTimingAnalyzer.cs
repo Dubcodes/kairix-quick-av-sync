@@ -14,16 +14,18 @@ public sealed class FrameTimingAnalyzer
         var device = Statistics(frames.Select(frame => frame.TimingObservation?.DeviceTimestampTicks100ns), expectedMs);
         var sample = Statistics(frames.Select(frame => frame.TimingObservation?.SampleTimeTicks100ns), expectedMs);
         var reader = Statistics(frames.Select(frame => frame.TimingObservation?.ReaderTimestampTicks100ns), expectedMs);
-        var repeated = CountNearIdentical(frames);
         var error = declaredTemporalRate > 0 && primary.ObservedRate > 0
             ? Math.Abs(primary.ObservedRate - declaredTemporalRate) / declaredTemporalRate * 100
             : 0;
-        var valid = primary.BackwardCount == 0 && primary.DuplicateCount == 0;
+        var content = FrameContentAnalyzer.Analyze(frames, primary.ObservedRate);
+        var valid = primary.BackwardCount == 0 && primary.DuplicateCount == 0 && error < 10;
         var status = primary.BackwardCount > 0 ? "INVALID VIDEO TIMESTAMPS · BACKWARDS"
             : primary.DuplicateCount > 0 ? "INVALID VIDEO TIMESTAMPS · DUPLICATES"
+            : error >= 10 ? $"TIMELINE TIMING INVALID · DECLARED {declaredTemporalRate:0.###} · OBSERVED {primary.ObservedRate:0.###} FPS"
             : error >= 3 ? $"TIMELINE WARNING · DECLARED {declaredTemporalRate:0.###} · OBSERVED {primary.ObservedRate:0.###} FPS"
+            : content.PairedRepeatDetected ? $"REPEATED FRAME PAIRS DETECTED · {primary.ObservedRate:0.##} TIMESTAMPED FPS · ≈{content.EstimatedUniqueImageRate:0.##} UNIQUE FPS"
             : $"TIMELINE · {primary.ObservedRate:0.##} fps · {primary.MedianIntervalMilliseconds:0.###} ms";
-        return new(declaredTemporalRate, expectedMs, primary, arrival, device, sample, reader, frames.Count, repeated, error, valid, status);
+        return new(declaredTemporalRate, expectedMs, primary, arrival, device, sample, reader, frames.Count, content, error, valid, status);
     }
 
     private static CadenceStatistics Statistics(IEnumerable<long?> source, double expectedMs)
@@ -41,29 +43,6 @@ public sealed class FrameTimingAnalyzer
             positiveMs.Length == 0 ? 0 : positiveMs[0], positiveMs.Length == 0 ? 0 : positiveMs[^1], jitter,
             deltas.Count(delta => delta == 0), deltas.Count(delta => delta < 0),
             largeGapThreshold > 0 ? positiveMs.Count(delta => delta > largeGapThreshold) : 0);
-    }
-
-    private static int CountNearIdentical(IReadOnlyList<VideoFrame> frames)
-    {
-        var count = 0;
-        for (var i = 1; i < frames.Count; i++) if (NearIdentical(frames[i - 1], frames[i])) count++;
-        return count;
-    }
-
-    private static bool NearIdentical(VideoFrame left, VideoFrame right)
-    {
-        var width = Math.Min(left.Width, right.Width); var height = Math.Min(left.Height, right.Height);
-        if (width <= 0 || height <= 0) return false;
-        long absolute = 0; var changed = 0; var sampled = 0;
-        var stepX = Math.Max(1, width / 160); var stepY = Math.Max(1, height / 90);
-        for (var y = 0; y < height; y += stepY) for (var x = 0; x < width; x += stepX)
-        {
-            var li = y * left.EffectiveStride + x; var ri = y * right.EffectiveStride + x;
-            if (li >= left.Luma.Length || ri >= right.Luma.Length) continue;
-            var difference = Math.Abs(left.Luma[li] - right.Luma[ri]); absolute += difference; sampled++;
-            if (difference > 3) changed++;
-        }
-        return sampled > 0 && absolute / (double)sampled <= .5 && changed / (double)sampled <= .002;
     }
 
     private static double Median(IReadOnlyList<double> values)

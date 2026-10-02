@@ -102,6 +102,19 @@ public static class InputSignalOptions
     }
 }
 
+public static class InterlacedHandlingOptions
+{
+    public static IReadOnlyList<InterlacedHandlingOption> Common { get; } =
+    [
+        new("", "Auto / Unknown", InterlacedInputHandling.Unknown, "Capture-card processing is not known. Kairix does not assume a field-rate or frame-rate output."),
+        new("preserve", "Preserve fields (Weave)", InterlacedInputHandling.PreserveFields, "The device preserves both fields together. For 1080i50 this normally produces 25 full frames per second."),
+        new("field-rate", "Deinterlace to field rate", InterlacedInputHandling.DeinterlaceToFieldRate, "The device outputs one progressive image per temporal field. For 1080i50 this is approximately 50 images per second."),
+        new("frame-rate", "Deinterlace to frame rate", InterlacedInputHandling.DeinterlaceToFrameRate, "The device combines each field pair into one progressive image. For 1080i50 this is approximately 25 images per second.")
+    ];
+
+    public static InterlacedHandlingOption Find(string? id) => Common.FirstOrDefault(option => string.Equals(option.Id, id, StringComparison.Ordinal)) ?? Common[0];
+}
+
 public static class InputSignalFormatter
 {
     public static string Format(InputSignalInfo? signal)
@@ -141,12 +154,13 @@ public static class InputSignalFormatter
 
 public static class SourceAwareFormatMatcher
 {
-    public static bool CanAutomaticallyApply(InputSignalInfo? source) => source?.HasUsefulData == true &&
-        (source.Provenance == InputSignalProvenance.UserDeclared || source.Authority == SignalAuthority.Authoritative);
+    public static bool CanAutomaticallyApply(InputSignalInfo? source, InterlacedInputHandling handling = InterlacedInputHandling.Unknown) => source?.HasUsefulData == true &&
+        (source.Provenance == InputSignalProvenance.UserDeclared || source.Authority == SignalAuthority.Authoritative) &&
+        (source.ScanMode != ScanMode.Interlaced || handling != InterlacedInputHandling.Unknown);
 
-    public static CaptureFormat? Recommend(IEnumerable<CaptureFormat> candidates, InputSignalInfo? source)
+    public static CaptureFormat? Recommend(IEnumerable<CaptureFormat> candidates, InputSignalInfo? source, InterlacedInputHandling handling = InterlacedInputHandling.Unknown)
     {
-        if (source?.HasUsefulData != true || source.EffectiveTemporalRate is not { } temporalRate) return null;
+        if (source?.HasUsefulData != true || DesiredOutputRate(source, handling) is not { } temporalRate) return null;
 
         var matches = candidates.Where(candidate => source.Width is not { } width || candidate.Width == width)
             .Where(candidate => source.Height is not { } height || candidate.Height == height)
@@ -159,11 +173,127 @@ public static class SourceAwareFormatMatcher
         return matches.FirstOrDefault();
     }
 
+    public static double? DesiredOutputRate(InputSignalInfo source, InterlacedInputHandling handling)
+    {
+        if (source.ScanMode != ScanMode.Interlaced) return source.EffectiveTemporalRate;
+        return handling switch
+        {
+            InterlacedInputHandling.PreserveFields or InterlacedInputHandling.DeinterlaceToFrameRate => source.FrameRate?.Value ?? source.FieldRate / 2,
+            InterlacedInputHandling.DeinterlaceToFieldRate => source.FieldRate ?? source.EffectiveTemporalRate,
+            _ => null
+        };
+    }
+
     private static double OutputTemporalRate(CaptureFormat format) =>
         format.ScanMode == ScanMode.Interlaced && format.InterlaceLayout == InterlaceLayout.FullFrame
             ? format.FrameRate.Value * 2 : format.FrameRate.Value;
 
     private static bool NearlyEqual(double left, double right) => Math.Abs(left - right) <= Math.Max(0.025, right * 0.0015);
+}
+
+public sealed record InterlaceCompatibilityInfo(bool Active, string HandlingText, string Warning, string TemporalResolution);
+
+public static class InterlaceCompatibility
+{
+    public static InterlaceCompatibilityInfo Evaluate(InputSignalInfo? source, InterlacedInputHandling handling, CaptureFormat? capture)
+    {
+        if (source?.ScanMode != ScanMode.Interlaced) return new(false, "", "", "");
+        var option = InterlacedHandlingOptions.Common.First(candidate => candidate.Value == handling);
+        if (capture is null) return new(true, $"Interlaced: {option.Display}", "", "");
+        var outputRate = OutputRate(capture);
+        var pairRate = source.FrameRate?.Value ?? source.FieldRate / 2;
+        var fieldRate = source.FieldRate ?? source.EffectiveTemporalRate;
+        var warning = "";
+        if (handling is InterlacedInputHandling.PreserveFields or InterlacedInputHandling.DeinterlaceToFrameRate && fieldRate is { } fields && NearlyEqual(outputRate, fields))
+            warning = $"INTERLACE WARNING · {option.Display} normally produces {pairRate:0.##} full frames/sec. {outputRate:0.##}p capture may contain repeated frame pairs.";
+        else if (handling == InterlacedInputHandling.DeinterlaceToFieldRate && pairRate is { } pairs && NearlyEqual(outputRate, pairs))
+            warning = $"INTERLACE WARNING · Field-rate deinterlacing normally produces {fieldRate:0.##} images/sec. {outputRate:0.##}p capture may discard temporal images.";
+
+        var pairBased = handling is InterlacedInputHandling.PreserveFields or InterlacedInputHandling.DeinterlaceToFrameRate;
+        var resolution = pairBased && pairRate is { } rate && NearlyEqual(outputRate, rate)
+            ? $"Visual review resolution: {1000d / outputRate:0.###} ms · Field-level review not enabled"
+            : "";
+        return new(true, $"Interlaced: {option.Display}", warning, resolution);
+    }
+
+    private static double OutputRate(CaptureFormat format) => format.ScanMode == ScanMode.Interlaced && format.InterlaceLayout == InterlaceLayout.FullFrame ? format.FrameRate.Value * 2 : format.FrameRate.Value;
+    private static bool NearlyEqual(double left, double right) => Math.Abs(left - right) <= Math.Max(.025, right * .0015);
+}
+
+public static class FrameContentAnalyzer
+{
+    public static FrameContentAnalysis Analyze(IReadOnlyList<VideoFrame> frames, double observedTimestampRate = 0)
+    {
+        if (frames.Count < 2) return new(0, 0, 0, false, false, null, "insufficient scene activity");
+        var differences = frames.Zip(frames.Skip(1), Difference).ToArray();
+        var near = differences.Select(IsNearIdentical).ToArray();
+        var meaningful = differences.Select(value => !IsNearIdentical(value) && value.MeanAbsoluteDifference > .0025 && value.ChangedPixelFraction > .005).ToArray();
+        var nearCount = near.Count(value => value);
+        var meaningfulValues = differences.Where((_, index) => meaningful[index]).Select(value => value.MeanAbsoluteDifference).ToArray();
+        var sceneActivity = meaningfulValues.Length >= 2;
+        var timestampsHealthy = HealthyTimestamps(frames);
+        var paired = timestampsHealthy && sceneActivity && IsPairedPattern(near, meaningful, differences);
+        double? uniqueRate = paired && observedTimestampRate > 0 ? observedTimestampRate / 2 : null;
+        var status = paired ? "repeated frame pairs detected"
+            : !sceneActivity ? "insufficient scene activity"
+            : $"{nearCount * 100d / differences.Length:0.#}% near-identical transitions";
+        return new(differences.Length, nearCount, nearCount / (double)differences.Length, sceneActivity, paired, uniqueRate, status);
+    }
+
+    public static bool IsNearIdentical(VideoFrame left, VideoFrame right) => IsNearIdentical(Difference(left, right));
+
+    private static bool IsNearIdentical(FrameDifference value) => value.Samples > 0 && value.MeanAbsoluteDifference <= .5 / 255d && value.ChangedPixelFraction <= .002;
+
+    private static bool IsPairedPattern(IReadOnlyList<bool> near, IReadOnlyList<bool> meaningful, IReadOnlyList<FrameDifference> differences)
+    {
+        if (near.Count < 5) return false;
+        for (var lowPhase = 0; lowPhase < 2; lowPhase++)
+        {
+            var matches = 0; var lows = new List<double>(); var highs = new List<double>();
+            for (var index = 0; index < near.Count; index++)
+            {
+                var expectLow = index % 2 == lowPhase;
+                if (expectLow && near[index]) { matches++; lows.Add(differences[index].MeanAbsoluteDifference); }
+                else if (!expectLow && meaningful[index]) { matches++; highs.Add(differences[index].MeanAbsoluteDifference); }
+            }
+            if (lows.Count < 2 || highs.Count < 2 || matches / (double)near.Count < .8) continue;
+            var lowMedian = Median(lows); var highMedian = Median(highs);
+            if (highMedian >= Math.Max(.004, lowMedian * 3 + .001)) return true;
+        }
+        return false;
+    }
+
+    private static bool HealthyTimestamps(IReadOnlyList<VideoFrame> frames)
+    {
+        var deltas = frames.Zip(frames.Skip(1), (left, right) => (right.Timestamp.Ticks100ns - left.Timestamp.Ticks100ns) / 10_000d).ToArray();
+        if (deltas.Length == 0 || deltas.Any(value => value <= 0)) return false;
+        var median = Median(deltas);
+        return median > 0 && deltas.All(value => Math.Abs(value - median) <= Math.Max(2, median * .2));
+    }
+
+    private static FrameDifference Difference(VideoFrame left, VideoFrame right)
+    {
+        var width = Math.Min(left.Width, right.Width); var height = Math.Min(left.Height, right.Height);
+        if (width <= 0 || height <= 0) return new(0, 0, 0);
+        long absolute = 0; var changed = 0; var sampled = 0;
+        var stepX = Math.Max(1, width / 160); var stepY = Math.Max(1, height / 90);
+        for (var y = 0; y < height; y += stepY) for (var x = 0; x < width; x += stepX)
+        {
+            var li = y * left.EffectiveStride + x; var ri = y * right.EffectiveStride + x;
+            if ((uint)li >= left.Luma.Length || (uint)ri >= right.Luma.Length) continue;
+            var value = Math.Abs(left.Luma[li] - right.Luma[ri]); absolute += value; sampled++;
+            if (value > 3) changed++;
+        }
+        return new(sampled, sampled == 0 ? 0 : absolute / (double)sampled / 255d, sampled == 0 ? 0 : changed / (double)sampled);
+    }
+
+    private static double Median(IEnumerable<double> source)
+    {
+        var values = source.Order().ToArray(); if (values.Length == 0) return 0; var middle = values.Length / 2;
+        return values.Length % 2 == 0 ? (values[middle - 1] + values[middle]) / 2 : values[middle];
+    }
+
+    private readonly record struct FrameDifference(int Samples, double MeanAbsoluteDifference, double ChangedPixelFraction);
 }
 
 public sealed class ObservedSignalAnalyzer
@@ -172,49 +302,40 @@ public sealed class ObservedSignalAnalyzer
 
     public ObservedSignalAnalysis Analyze(IReadOnlyList<VideoFrame> input)
     {
-        var frames = input.OrderBy(frame => frame.Timestamp.Ticks100ns).ToArray();
-        if (frames.Length < 8) return Unknown(frames.Length);
+        var frames = input.ToArray();
+        if (frames.Length < 5) return Unknown(frames.Length);
         var intervals = frames.Zip(frames.Skip(1), (left, right) => (right.Timestamp.Ticks100ns - left.Timestamp.Ticks100ns) / 10_000d)
             .Where(value => value > 0 && value < 1000).ToArray();
-        if (intervals.Length < 6) return Unknown(frames.Length);
+        if (intervals.Length < 4) return Unknown(frames.Length);
 
         var medianInterval = Median(intervals);
         var observedRate = 1000d / medianInterval;
         var jitter = Median(intervals.Select(value => Math.Abs(value - medianInterval)).ToArray()) / medianInterval * 100;
-        var differences = new double[frames.Length - 1];
+        var content = FrameContentAnalyzer.Analyze(frames, observedRate);
+        var fresh = frames.Zip(frames.Skip(1), (left, right) => !FrameContentAnalyzer.IsNearIdentical(left, right)).ToArray();
         var parity = new double[frames.Length - 1];
-        for (var i = 1; i < frames.Length; i++)
-            (differences[i - 1], parity[i - 1]) = Difference(frames[i - 1], frames[i]);
-
-        var sorted = differences.Order().ToArray();
-        var q20 = sorted[(int)Math.Floor((sorted.Length - 1) * .2)];
-        // A low quantile near zero is the duplicate cluster; with no such cluster,
-        // keep the threshold below ordinary slow motion instead of following it up.
-        var duplicateThreshold = Math.Clamp(q20 * .5, .006, .012);
-        var fresh = differences.Select(value => value > duplicateThreshold).ToArray();
-        var moving = differences.Count(value => value > duplicateThreshold);
-        var duplicateFraction = 1d - moving / (double)differences.Length;
-        var activity = Median(differences.Where(value => value > duplicateThreshold).ToArray());
+        for (var i = 1; i < frames.Length; i++) parity[i - 1] = Difference(frames[i - 1], frames[i]).Parity;
         var duration = (frames[^1].Timestamp.Ticks100ns - frames[0].Timestamp.Ticks100ns) / 10_000_000d;
 
-        if (moving < Math.Max(4, differences.Length / 20) || activity < .0025)
-            return Unknown(frames.Length, observedRate, medianInterval, jitter, duplicateFraction, duration);
+        if (!content.SceneActivitySufficient)
+            return Unknown(frames.Length, observedRate, medianInterval, jitter, content.NearIdenticalFraction, duration);
 
-        var rawCadence = observedRate * moving / differences.Length;
+        var rawCadence = content.PairedRepeatDetected ? observedRate / 2 : observedRate * fresh.Count(value => value) / fresh.Length;
         var cadence = Snap(rawCadence);
-        var repeat = DescribePattern(fresh);
+        var repeat = content.PairedRepeatDetected ? "paired repeats: 1 unique image / 2 timestamped samples" : DescribePattern(fresh);
         var interlaceEvidence = InterlaceEvidence(parity, fresh);
         var scan = interlaceEvidence >= .58 ? ScanMode.Interlaced : ScanMode.Unknown;
         var authority = duration >= 4 && jitter < 8 && cadence.HasValue ? SignalAuthority.EstimatedHigh
             : duration >= 2 && cadence.HasValue ? SignalAuthority.EstimatedMedium : SignalAuthority.EstimatedLow;
         var signal = new InputSignalInfo(TemporalCadenceHz: cadence ?? rawCadence, ScanMode: scan,
             Provenance: InputSignalProvenance.ObservedAnalysis, Authority: authority, ProviderName: "Passive frame analysis");
-        return new(signal, observedRate, medianInterval, jitter, duplicateFraction, repeat, interlaceEvidence, frames.Length, duration);
+        return new(signal, observedRate, medianInterval, jitter, content.NearIdenticalFraction, repeat, interlaceEvidence, frames.Length, duration,
+            content.SceneActivitySufficient, content.PairedRepeatDetected, content.EstimatedUniqueImageRate);
     }
 
-    private static ObservedSignalAnalysis Unknown(int count, double rate = 0, double interval = 0, double jitter = 0, double duplicate = 0, double duration = 0) =>
+    private static ObservedSignalAnalysis Unknown(int count, double rate = 0, double interval = 0, double jitter = 0, double nearIdentical = 0, double duration = 0) =>
         new(InputSignalInfo.Unknown with { Provenance = InputSignalProvenance.ObservedAnalysis, Authority = SignalAuthority.EstimatedLow, ProviderName = "Passive frame analysis" },
-            rate, interval, jitter, duplicate, "insufficient scene activity", 0, count, duration);
+            rate, interval, jitter, nearIdentical, "insufficient scene activity", 0, count, duration);
 
     private static (double Difference, double Parity) Difference(VideoFrame left, VideoFrame right)
     {
@@ -254,6 +375,7 @@ public sealed class ObservedSignalAnalyzer
 
     private static string DescribePattern(IReadOnlyList<bool> fresh)
     {
+        if (fresh.All(value => value)) return "100% temporally unique";
         for (var period = 2; period <= Math.Min(12, fresh.Count / 3); period++)
         {
             var mismatches = 0;

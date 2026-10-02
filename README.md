@@ -14,7 +14,7 @@ First run:
 
 1. Download and run the self-contained EXE.
 2. Select the capture device and leave **Capture Format** on **Auto** initially.
-3. If the physical source is known but cannot be identified automatically, optionally declare it under **Physical Input**, then press **Reconnect** to let Auto prefer a matching capture output.
+3. If the physical source is known but cannot be identified automatically, declare it under **Physical Input**. For an interlaced source, also declare whether the device preserves fields or deinterlaces to field/frame rate, then press **Reconnect** to let Auto prefer a compatible capture output.
 4. Clap and review the sync result. Manual timeline scrubbing and Audio/Visual corrections remain available.
 
 ## Platform support
@@ -36,7 +36,7 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 ## Workflow
 
 1. Select a video source, then choose **Auto — best native format** or one of its recommended native capture modes. **Show all formats** reveals uncommon driver modes without reconnecting. A manual capture-format choice reconnects immediately and is remembered for that device.
-2. Leave **Physical Input** at **Auto / Detect**, or declare a known source standard. This declaration is labelled user-declared, is remembered per device, and never changes the capture mode.
+2. Leave **Physical Input** at **Auto / Detect**, or declare a known source standard. For an interlaced declaration choose **Auto / Unknown**, **Preserve fields (Weave)**, **Deinterlace to field rate**, or **Deinterlace to frame rate**. These declarations are remembered per device and tell Kairix how to rank Auto; they do not configure the capture hardware. Press **Reconnect** to apply a changed Auto preference.
 3. With all three automatic modes enabled, clap in front of the camera.
 4. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
 5. Click or drag the timeline to scrub to the nearest real temporal image. Mouse wheel and Left/Right step one image, while Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
@@ -93,12 +93,13 @@ Self-contained is the simplest public download but includes the runtime. Framewo
 - Timing models preserve 100 ns media time, clock domains, raw values, and device/QPC, stream timestamp, and arrival-fallback quality separately. Results are refused when clocks are not demonstrably comparable.
 - Each video sample retains bounded diagnostic observations for device timestamp, sample time, Source Reader timestamp, and monotonic host arrival. Review positions come only from captured primary timestamps; duplicate timestamps collapse to one position and backwards timestamps invalidate precision reporting. Near-identical images at distinct valid timestamps remain visible and are reported without being treated as a timing fault.
 - Frame rates are rational. Progressive, interlaced, and unknown scan metadata remain distinct; known interlaced modes preserve full-frame/single-field layout and field order instead of silently assuming progressive timing.
+- Interlaced source handling is explicit and generic. Unknown handling never silently assumes field-rate output; weave/frame-rate handling maps 1080i50 to a 25 fps full-image review stream, while field-rate deinterlacing maps it to 50 fps. A strict manual capture selection always wins.
 - Visual analysis is deterministic multi-scale downscaled-luma motion analysis. Coarse evidence rejects broad camera/exposure changes, fine cells retain small localized motion, and temporal rise/peak/drop evidence distinguishes likely contact from final approach. A persisted 0–100 sensitivity control changes acceptance thresholds without inflating confidence or bypassing the broad-motion/flash/noise rejection gates. It remains advisory and manually overridable.
 - The Windows backend uses Media Foundation source readers for video and shared-mode WASAPI for audio. Pairing prefers exact device Container IDs, then hardware parents, and uses a unique-name fallback only when unambiguous; it never silently substitutes the default microphone.
 - Native capture has been physically validated on an XI100DUSB HDMI capture device and Logitech C920 UVC webcam. It is designed for standard Windows Media Foundation/UVC capture devices; hardware and driver compatibility may vary.
 - Native video is reduced directly from locked NV12, YUY2, UYVY, RGB32, or RGB24 buffers to bounded 640×360 luma frames plus a separate bounded 160×90 BGRA presentation buffer. Luma remains the detector input; colour is used only for preview/review/thumbnail presentation. Audio is normalized from float32 or PCM16 to owned float samples.
 - **Input / Source** and **Capture** are separate. Capture is the authoritative negotiated Media Foundation output. Source information comes from the strongest available provider, a visibly user-declared override, or passive luma/timestamp analysis labelled as an estimate. Kairix never claims universal discovery of the physical connector format.
-- Physical hardware behavior remains driver-dependent and is not yet certified. Field extraction is not applied without a driver that actually reports an interlaced layout; the currently tested USB SDI driver reports progressive Media Foundation output for every enumerated mode, including 1080/50. Broader native formats, reconnect after hot-unplug, and broad capture-card compatibility validation remain V1 work.
+- Physical hardware behavior remains driver-dependent and is not yet certified. Field extraction is not fabricated when a driver reports progressive output. Kairix instead reports content evidence separately: a physically tested 1080i50-to-50p path produced repeated image pairs at valid 20 ms timestamps and was reported as approximately 25 unique images/sec without deleting frames. Broader native formats, reconnect after hot-unplug, and broad capture-card compatibility validation remain V1 work.
 - The unobtrusive coffee control opens `https://buymeacoffee.com/dubcodes` only after an explicit click.
 
 See [architecture](docs/ARCHITECTURE.md), [capture backends](docs/CAPTURE_BACKENDS.md), [testing](docs/TESTING.md), and [contribution guidelines](CONTRIBUTING.md).

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a persisted per-device interlaced-input handling declaration: Auto/Unknown, preserve fields (weave), deinterlace to field rate, or deinterlace to frame rate. Handling-aware Auto maps interlaced sources to pair or field rate without guessing when handling is unknown; strict manual formats still win.
+- Unified passive and frozen-timeline content diagnostics around one scene-activity-aware classifier. Stable A-A/B-B repeated pairs are reported separately from timestamp faults with an estimated unique-image rate, while static/noisy scenes remain inconclusive and all distinct-time frames stay available for review.
+- Gross declared/observed cadence mismatch now invalidates timing instead of presenting false precision. The UI and HardwareProbe also expose declaration/capture compatibility warnings and the real full-image review resolution when field-level review is unavailable.
+- Physically validated the generic behavior on `USB Capture SDI` with a 1080i50 source: preserve/weave Auto selected 1080p25 and delivered a clean 40 ms review cadence; strict 1080p50 delivered valid 20 ms timestamps but stable repeated image pairs at approximately 25 unique images/sec.
 - Fixed HardwareProbe argument parsing so positional and `--device` targets cannot be discarded when optional flags are absent. Device resolution is now exact and ambiguity/no-selection fails instead of opening an arbitrary camera.
 - Made explicit native capture modes strict in both HardwareProbe and the WPF application. Manual requests no longer fall through to another mode, and the post-`SetCurrentMediaType` format is read back and verified for size, rational rate, scan/layout/field order, and pixel format.
 - Added platform-neutral frame-timing integrity analysis across primary, device, sample, reader, and monotonic arrival clocks. Review windows analyze original capture order, expose gaps/cadence mismatch/near-identical content, reject duplicate or backwards timestamps as trusted measurements, and retain only one navigation position per exact timestamp.

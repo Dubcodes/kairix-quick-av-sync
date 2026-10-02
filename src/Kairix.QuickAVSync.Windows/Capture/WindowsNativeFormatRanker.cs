@@ -30,10 +30,17 @@ public static class WindowsNativeFormatRanker
         IEnumerable<WindowsNativeFormatCandidate> candidates,
         string? preferredModeId,
         InputSignalInfo? preferredSourceSignal)
+        => Rank(candidates, preferredModeId, preferredSourceSignal, InterlacedInputHandling.Unknown);
+
+    public static IReadOnlyList<WindowsNativeFormatCandidate> Rank(
+        IEnumerable<WindowsNativeFormatCandidate> candidates,
+        string? preferredModeId,
+        InputSignalInfo? preferredSourceSignal,
+        InterlacedInputHandling interlacedInputHandling)
     {
         var list = candidates.ToArray();
         return string.IsNullOrWhiteSpace(preferredModeId)
-            ? RankForSource(list, preferredSourceSignal)
+            ? RankForSource(list, preferredSourceSignal, interlacedInputHandling)
             : Rank(list, preferredModeId);
     }
 
@@ -50,12 +57,12 @@ public static class WindowsNativeFormatRanker
         return exact.Length == 1 ? exact : throw new InvalidOperationException($"REQUESTED CAPTURE FORMAT NOT ACCEPTED: native mode '{preferredModeId}' is not exposed by this device.");
     }
 
-    public static IReadOnlyList<WindowsNativeFormatCandidate> RankForSource(IEnumerable<WindowsNativeFormatCandidate> candidates, InputSignalInfo? source)
+    public static IReadOnlyList<WindowsNativeFormatCandidate> RankForSource(IEnumerable<WindowsNativeFormatCandidate> candidates, InputSignalInfo? source, InterlacedInputHandling handling = InterlacedInputHandling.Unknown)
     {
         var autoRanked = Rank(candidates);
-        if (!SourceAwareFormatMatcher.CanAutomaticallyApply(source)) return autoRanked;
+        if (!SourceAwareFormatMatcher.CanAutomaticallyApply(source, handling)) return autoRanked;
         var formats = autoRanked.Select(candidate => candidate.Format).ToArray();
-        var recommended = SourceAwareFormatMatcher.Recommend(formats, source);
+        var recommended = SourceAwareFormatMatcher.Recommend(formats, source, handling);
         if (recommended is null) return autoRanked;
         return autoRanked.OrderByDescending(candidate => candidate.Format == recommended).ToArray();
     }

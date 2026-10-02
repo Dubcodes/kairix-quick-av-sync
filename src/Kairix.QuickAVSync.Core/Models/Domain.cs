@@ -21,6 +21,7 @@ public enum PairingConfidence { None, NameFallback, HardwareParent, ExactContain
 public enum InputSignalProvenance { Unknown, OperatingSystem, DeviceStandardProperty, VendorApi, ObservedAnalysis, UserDeclared }
 public enum SignalAuthority { Unknown, EstimatedLow, EstimatedMedium, EstimatedHigh, Authoritative }
 public enum SignalLockStatus { Unknown, Unlocked, Locking, Locked }
+public enum InterlacedInputHandling { Unknown, PreserveFields, DeinterlaceToFieldRate, DeinterlaceToFrameRate }
 
 public readonly record struct Rational(int Numerator, int Denominator)
 {
@@ -129,9 +130,21 @@ public sealed record FrameTimingAnalysis(
     CadenceStatistics SampleTime,
     CadenceStatistics ReaderTimestamp,
     int FramesAnalyzed,
-    int NearIdenticalConsecutiveImages,
+    FrameContentAnalysis Content,
     double DeclaredVsObservedErrorPercent,
     bool TimingValid,
+    string Status)
+{
+    public int NearIdenticalConsecutiveImages => Content.NearIdenticalConsecutiveImages;
+}
+
+public sealed record FrameContentAnalysis(
+    int Comparisons,
+    int NearIdenticalConsecutiveImages,
+    double NearIdenticalFraction,
+    bool SceneActivitySufficient,
+    bool PairedRepeatDetected,
+    double? EstimatedUniqueImageRate,
     string Status);
 
 public sealed record AudioChunk(
@@ -177,15 +190,23 @@ public sealed record ObservedSignalAnalysis(
     double ObservedFrameRate,
     double MedianIntervalMilliseconds,
     double JitterPercent,
-    double DuplicateFraction,
+    double NearIdenticalFraction,
     string RepeatPattern,
     double InterlaceEvidence,
     int FramesAnalyzed,
-    double DurationSeconds);
+    double DurationSeconds,
+    bool SceneActivitySufficient = false,
+    bool PairedRepeatDetected = false,
+    double? EstimatedUniqueImageRate = null);
 
 public sealed record InputSignalOption(string Id, string Display, InputSignalInfo? Signal = null)
 {
     public static InputSignalOption Auto { get; } = new("", "Auto / Detect");
+    public override string ToString() => Display;
+}
+
+public sealed record InterlacedHandlingOption(string Id, string Display, InterlacedInputHandling Value, string Help)
+{
     public override string ToString() => Display;
 }
 
@@ -229,7 +250,8 @@ public sealed record CaptureOpenOptions(
     int PreferredPresentationWidth = 160,
     int PreferredPresentationHeight = 90,
     InputSignalInfo? PreferredSourceSignal = null,
-    bool RequirePreferredNativeFormat = false);
+    bool RequirePreferredNativeFormat = false,
+    InterlacedInputHandling InterlacedInputHandling = InterlacedInputHandling.Unknown);
 public sealed record CaptureStatusChangedEventArgs(CaptureStatus Status, string Message, Exception? Error = null);
 
 public sealed record SyncResult(double SignedMilliseconds, string Wording, bool TimingComparable = true)
@@ -260,4 +282,5 @@ public sealed class AppSettings
     public double WorkWindowMilliseconds { get; set; } = 250;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> InputSignalByDevice { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> InterlacedHandlingByDevice { get; set; } = new(StringComparer.Ordinal);
 }
