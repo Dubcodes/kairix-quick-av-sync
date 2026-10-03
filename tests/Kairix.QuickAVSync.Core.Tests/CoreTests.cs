@@ -63,6 +63,55 @@ public sealed class WorkWindowWaveformAndHistoryTests
     private static MediaTimestamp T(double milliseconds) => new((long)(milliseconds * 10_000), TimingQuality.StreamTimestamp);
 }
 
+public sealed class WaveformDisplayTransformTests
+{
+    [Fact]
+    public void AutoGainTargetsNinetyPercentAndPreservesRatios()
+    {
+        var display = WaveformDisplayTransform.Transform([0f, .25f, .10f], WaveformDisplayTransform.AutoGain);
+        Assert.Equal(.9, display.Max(), 3); Assert.Equal(.36, display[2], 3);
+    }
+
+    [Fact]
+    public void AutoGainHandlesFullScaleSilenceAndNearSilenceWithoutArtificialGain()
+    {
+        Assert.Equal(.9, WaveformDisplayTransform.Transform([1f], WaveformDisplayTransform.AutoGain)[0], 3);
+        Assert.Equal(.0001, WaveformDisplayTransform.Transform([.0001f], WaveformDisplayTransform.AutoGain)[0], 6);
+        Assert.Equal(0, WaveformDisplayTransform.Transform([0f, 0f], WaveformDisplayTransform.AutoGain).Max());
+    }
+
+    [Fact]
+    public void DecibelScaleUsesTwentyLogTenAndClampsAtTheSelectedFloor()
+    {
+        Assert.Equal(0, WaveformDisplayTransform.Decibels(1, -60), 6);
+        Assert.Equal(-20, WaveformDisplayTransform.Decibels(.1, -60), 6);
+        Assert.Equal(-40, WaveformDisplayTransform.Decibels(.01, -60), 6);
+        Assert.Equal(-60, WaveformDisplayTransform.Decibels(0, -60), 6);
+        Assert.Equal(-96, WaveformDisplayTransform.Decibels(.0000001, -96), 6);
+    }
+
+    [Fact]
+    public void DisplayOptionsDoNotAlterTheWaveformSnapshotOrReviewMeasurement()
+    {
+        var source = new float[] { 0, .1f, .25f, 0 };
+        var snapshot = source.ToArray();
+        foreach (var amplitude in WaveformDisplayTransform.Amplitudes) _ = WaveformDisplayTransform.Transform(source, amplitude);
+        Assert.Equal(snapshot, source);
+        var state = new EventReviewState(T(0), T(0)); var frame = new VideoFrame(T(60), 1, 1, [0], 3); state.SetAutoCandidate(new(T(60), 3, .5, 2, frame));
+        Assert.Equal(60, state.CurrentResult!.SignedMilliseconds); Assert.Equal(60, state.AutoCandidate!.Timestamp.Time.TotalMilliseconds);
+    }
+
+    [Theory]
+    [InlineData("Mirrored", "Centered Bars")]
+    [InlineData("Filled", "Centered Fill")]
+    [InlineData("Line", "Centered Line")]
+    [InlineData("Peaks", "Peak Bars")]
+    [InlineData("Filled Peaks", "Peak Fill")]
+    public void LegacyStylesMigrateToCanonicalNames(string legacy, string canonical) => Assert.Equal(canonical, WaveformDisplayTransform.NormalizeStyle(legacy));
+
+    private static MediaTimestamp T(double milliseconds) => new((long)(milliseconds * 10_000), TimingQuality.StreamTimestamp);
+}
+
 public sealed class VideoTimingCompensationTests
 {
     private static readonly FieldReconstructionOptions Reconstruction50 = new(Rational.From(25), Rational.From(50), FieldOrder.TopFirst);

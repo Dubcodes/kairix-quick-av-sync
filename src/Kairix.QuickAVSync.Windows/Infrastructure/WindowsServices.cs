@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using Kairix.QuickAVSync.Capture;
 using Kairix.QuickAVSync.Models;
+using Kairix.QuickAVSync.Services;
 
 namespace Kairix.QuickAVSync.Windows.Infrastructure;
 
@@ -49,7 +50,7 @@ public sealed class SettingsService(string? path = null) : IDisposable
     private static AppSettings Sanitize(AppSettings value)
     {
         var themes = new HashSet<string>(["Graphite", "Midnight", "Light", "High Contrast", "Synthwave", "Terminal", "Solar Flare"], StringComparer.Ordinal);
-        var audioStyles = new HashSet<string>(["Mirrored", "Filled", "Line", "Peaks", "Filled Peaks"], StringComparer.Ordinal);
+        var audioStyles = new HashSet<string>(["Centered Fill", "Centered Bars", "Centered Line", "Peak Fill", "Peak Bars", "Peak Line"], StringComparer.Ordinal);
         return new AppSettings
         {
             LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName,
@@ -61,7 +62,8 @@ public sealed class SettingsService(string? path = null) : IDisposable
             ReviewWidth = value.ReviewWidth is > 0 and <= 8192 ? value.ReviewWidth : 160,
             ReviewHeight = value.ReviewHeight is > 0 and <= 4320 ? value.ReviewHeight : 90,
             Theme = themes.Contains(value.Theme ?? "") ? value.Theme! : "Light",
-            AudioDisplayStyle = audioStyles.Contains(value.AudioDisplayStyle ?? "") ? value.AudioDisplayStyle! : "Mirrored",
+            AudioDisplayStyle = audioStyles.Contains(WaveformDisplayTransform.NormalizeStyle(value.AudioDisplayStyle)) ? WaveformDisplayTransform.NormalizeStyle(value.AudioDisplayStyle) : "Centered Fill",
+            AudioDisplayAmplitude = WaveformDisplayTransform.NormalizeAmplitude(value.AudioDisplayAmplitude),
             SettingsPanelExpanded = value.SettingsPanelExpanded,
             NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal),
             ReconstructFieldsByDevice = new(value.ReconstructFieldsByDevice ?? new(), StringComparer.Ordinal),

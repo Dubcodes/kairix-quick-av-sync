@@ -2,7 +2,12 @@ using Kairix.QuickAVSync.Models;
 using Kairix.QuickAVSync.Services;
 using Kairix.QuickAVSync.Windows.Infrastructure;
 using Kairix.QuickAVSync.Windows.Capture;
+using System.IO;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
 
 namespace Kairix.QuickAVSync.Windows.Tests;
 
@@ -11,7 +16,7 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, AudioSensitivity = 68, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Filled Peaks", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(68, loaded.AudioSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Filled Peaks", loaded.AudioDisplayStyle); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, AudioSensitivity = 68, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Filled Peaks", AudioDisplayAmplitude = "dB · 96 dB", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(68, loaded.AudioSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Peak Fill", loaded.AudioDisplayStyle); Assert.Equal("dB · 96 dB", loaded.AudioDisplayAmplitude); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
@@ -32,7 +37,7 @@ public sealed class SettingsTests
     public void NewInstallDefaultsAreLightWithThreeHundredMillisecondWorkWindow()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { using var service = new SettingsService(path); var loaded = service.Load(); Assert.Equal("Light", loaded.Theme); Assert.Equal(300, loaded.WorkWindowMilliseconds); Assert.Equal(50, loaded.AudioSensitivity); }
+        try { using var service = new SettingsService(path); var loaded = service.Load(); Assert.Equal("Light", loaded.Theme); Assert.Equal("Centered Fill", loaded.AudioDisplayStyle); Assert.Equal("Auto Gain", loaded.AudioDisplayAmplitude); Assert.Equal(300, loaded.WorkWindowMilliseconds); Assert.Equal(50, loaded.AudioSensitivity); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
     [Fact]
@@ -40,6 +45,13 @@ public sealed class SettingsTests
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
         try { File.WriteAllText(path, "{\"VideoTimingOffsetOverridesMilliseconds\":{\"valid\":18.5,\"huge\":6000}}"); using var service = new SettingsService(path); var loaded = service.Load(); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["valid"]); Assert.False(loaded.VideoTimingOffsetOverridesMilliseconds.ContainsKey("huge")); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+    [Fact]
+    public void UnknownAppearanceValuesFallBackSafely()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try { File.WriteAllText(path, "{\"AudioDisplayStyle\":\"Unknown\",\"AudioDisplayAmplitude\":\"Overdrive\"}"); using var service = new SettingsService(path); var loaded = service.Load(); Assert.Equal("Centered Fill", loaded.AudioDisplayStyle); Assert.Equal("Auto Gain", loaded.AudioDisplayAmplitude); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 }
@@ -491,11 +503,12 @@ public sealed class OperatorUiContractTests
     }
 
     [Theory]
-    [InlineData("Mirrored")]
-    [InlineData("Filled")]
-    [InlineData("Line")]
-    [InlineData("Peaks")]
-    [InlineData("Filled Peaks")]
+    [InlineData("Centered Fill")]
+    [InlineData("Centered Bars")]
+    [InlineData("Centered Line")]
+    [InlineData("Peak Fill")]
+    [InlineData("Peak Bars")]
+    [InlineData("Peak Line")]
     public void AudioDisplayStylesArePersistable(string style)
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-style-{Guid.NewGuid():N}.json");
@@ -518,8 +531,11 @@ public sealed class ThemeContrastTests
             AssertContrast(file, colors, "SecondaryTextBrush", "PanelBackgroundBrush");
             AssertContrast(file, colors, "MutedTextBrush", "PanelBackgroundBrush");
             AssertContrast(file, colors, "ControlTextBrush", "ControlBackgroundBrush");
+            AssertContrast(file, colors, "ControlTextBrush", "ControlSurfaceBrush");
+            AssertContrast(file, colors, "ControlTextBrush", "ControlPopupBrush");
             AssertContrast(file, colors, "ControlTextBrush", "ControlHoverBrush");
             AssertContrast(file, colors, "ControlTextBrush", "ControlPressedBrush");
+            AssertContrast(file, colors, "ControlDisabledTextBrush", "ControlDisabledBrush", 3);
             AssertContrast(file, colors, "AccentTextBrush", "AccentBrush");
             AssertContrast(file, colors, "PrimaryTextBrush", "PanelSecondaryBrush");
             AssertContrast(file, colors, "SecondaryTextBrush", "PanelSecondaryBrush");
@@ -534,8 +550,8 @@ public sealed class ThemeContrastTests
         return document.Descendants().Where(element => element.Name.LocalName == "SolidColorBrush").ToDictionary(element => element.Attribute(x + "Key")!.Value, element => element.Attribute("Color")!.Value);
     }
 
-    private static void AssertContrast(string file, IReadOnlyDictionary<string, string> colors, string foreground, string background) =>
-        Assert.True(Contrast(colors[foreground], colors[background]) >= 4.5, $"{Path.GetFileNameWithoutExtension(file)} {foreground}/{background} contrast was {Contrast(colors[foreground], colors[background]):0.00}");
+    private static void AssertContrast(string file, IReadOnlyDictionary<string, string> colors, string foreground, string background, double minimum = 4.5) =>
+        Assert.True(Contrast(colors[foreground], colors[background]) >= minimum, $"{Path.GetFileNameWithoutExtension(file)} {foreground}/{background} contrast was {Contrast(colors[foreground], colors[background]):0.00}");
 
     private static double Contrast(string first, string second)
     {
@@ -547,5 +563,44 @@ public sealed class ThemeContrastTests
         var hex = color.TrimStart('#'); if (hex.Length == 8) hex = hex[2..];
         static double Channel(int value) { var normalized = value / 255d; return normalized <= .04045 ? normalized / 12.92 : Math.Pow((normalized + .055) / 1.055, 2.4); }
         return .2126 * Channel(Convert.ToInt32(hex[..2], 16)) + .7152 * Channel(Convert.ToInt32(hex.Substring(2, 2), 16)) + .0722 * Channel(Convert.ToInt32(hex.Substring(4, 2), 16));
+    }
+}
+
+public sealed class ThemedControlRenderingTests
+{
+    [Fact]
+    public void EveryThemeInstantiatesTheKairixControlSurfacesAndComboBoxStates()
+    {
+        RunSta(() =>
+        {
+            var app = new Kairix.QuickAVSync.App();
+            foreach (var theme in ThemeManager.Themes)
+            {
+                ThemeManager.Apply(theme.Name);
+                foreach (var key in new[] { "ControlSurfaceBrush", "ControlPopupBrush", "ControlDisabledBrush", "ControlDisabledTextBrush", "FocusBrush" }) Assert.IsType<SolidColorBrush>(app.Resources[key]);
+                var combo = new ComboBox { ItemsSource = new[] { "one", "two" }, SelectedIndex = 0 };
+                var text = new TextBox { Text = "value" }; var button = new Button { Content = "Apply" }; var check = new CheckBox { Content = "Enabled", IsChecked = true }; var slider = new Slider { Minimum = 0, Maximum = 100, Value = 50 };
+                var host = new StackPanel(); host.Children.Add(combo); host.Children.Add(text); host.Children.Add(button); host.Children.Add(check); host.Children.Add(slider);
+                var window = new Window { Content = host, Width = 320, Height = 180, ShowInTaskbar = false, WindowStyle = WindowStyle.None, Left = -10000, Top = -10000 };
+                window.Show();
+                window.UpdateLayout();
+                combo.ApplyTemplate(); text.ApplyTemplate(); button.ApplyTemplate(); check.ApplyTemplate(); slider.ApplyTemplate();
+                Assert.NotNull(combo.Template);
+                Assert.NotNull(combo.Template.FindName("PART_Popup", combo));
+                Assert.NotNull(text.Template.FindName("PART_ContentHost", text));
+                combo.IsDropDownOpen = true; combo.IsDropDownOpen = false; combo.IsEnabled = false;
+                Assert.False(combo.IsEnabled);
+                window.Close();
+            }
+            app.Shutdown();
+        });
+    }
+
+    private static void RunSta(Action action)
+    {
+        Exception? exception = null;
+        var thread = new Thread(() => { try { action(); } catch (Exception failure) { exception = failure; } }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (exception is not null) ExceptionDispatchInfo.Capture(exception).Throw();
     }
 }

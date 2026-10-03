@@ -29,7 +29,7 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 9. Press R, Space, and F5 to verify resume, manual capture, and reconnect.
 10. Close/reopen and verify preferences persist while history/media do not.
 11. Confirm Settings collapses to a narrow reopen rail; switch AP/DET/REV/CAP/KEY/? pages and verify engineering detail appears only in About.
-12. Switch all seven themes and all five waveform display styles without restarting. Verify readable settings navigation, controls, history, marker labels, outlined video playhead, and result overlay; confirm waveform style changes do not move any marker or result. Peaks and Filled Peaks must use the bottom as zero and extend upward.
+12. Switch all seven themes, all six waveform styles, and all four amplitude modes without restarting. Verify readable settings navigation, controls, history, marker labels, outlined video playhead, and result overlay; confirm display changes do not move any marker or result. Centered modes use the drawing-area midpoint; Peak modes use its bottom as zero and extend upward. Auto Gain should make a useful snapshot peak reach about 90% height while near-silence remains small.
 
 Both existing win-x64 publish profiles must pass `scripts/smoke-test-windows.ps1`. It requires a live process with the exact title, a non-zero visible maximized top-level window handle, and a clean close.
 

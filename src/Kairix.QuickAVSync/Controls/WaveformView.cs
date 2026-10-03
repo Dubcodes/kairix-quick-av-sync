@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using Kairix.QuickAVSync.Services;
 
 namespace Kairix.QuickAVSync.Controls;
 
@@ -13,7 +14,8 @@ public sealed class WaveformView : FrameworkElement
     public static readonly DependencyProperty VisualMarkerMsProperty = DependencyProperty.Register(nameof(VisualMarkerMs), typeof(double?), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty PlayheadMsProperty = DependencyProperty.Register(nameof(PlayheadMs), typeof(double), typeof(WaveformView), new FrameworkPropertyMetadata(0d, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty FrameTicksMsProperty = DependencyProperty.Register(nameof(FrameTicksMs), typeof(IReadOnlyList<double>), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
-    public static readonly DependencyProperty DisplayStyleProperty = DependencyProperty.Register(nameof(DisplayStyle), typeof(string), typeof(WaveformView), new FrameworkPropertyMetadata("Mirrored", FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty DisplayStyleProperty = DependencyProperty.Register(nameof(DisplayStyle), typeof(string), typeof(WaveformView), new FrameworkPropertyMetadata("Centered Fill", FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty DisplayAmplitudeProperty = DependencyProperty.Register(nameof(DisplayAmplitude), typeof(string), typeof(WaveformView), new FrameworkPropertyMetadata(WaveformDisplayTransform.AutoGain, FrameworkPropertyMetadataOptions.AffectsRender));
     public IReadOnlyList<float>? Samples { get => (IReadOnlyList<float>?)GetValue(SamplesProperty); set => SetValue(SamplesProperty, value); }
     public double HalfWindowMs { get => (double)GetValue(HalfWindowMsProperty); set => SetValue(HalfWindowMsProperty, value); }
     public double AudioMarkerMs { get => (double)GetValue(AudioMarkerMsProperty); set => SetValue(AudioMarkerMsProperty, value); }
@@ -22,6 +24,7 @@ public sealed class WaveformView : FrameworkElement
     public double PlayheadMs { get => (double)GetValue(PlayheadMsProperty); set => SetValue(PlayheadMsProperty, value); }
     public IReadOnlyList<double>? FrameTicksMs { get => (IReadOnlyList<double>?)GetValue(FrameTicksMsProperty); set => SetValue(FrameTicksMsProperty, value); }
     public string DisplayStyle { get => (string)GetValue(DisplayStyleProperty); set => SetValue(DisplayStyleProperty, value); }
+    public string DisplayAmplitude { get => (string)GetValue(DisplayAmplitudeProperty); set => SetValue(DisplayAmplitudeProperty, value); }
     public event EventHandler<double>? PlayheadSelected;
     public event EventHandler<double>? AudioPointPreviewed;
     public event EventHandler<double>? AudioPointCommitted;
@@ -88,43 +91,48 @@ public sealed class WaveformView : FrameworkElement
         }
         if (Samples is { Count: > 1 })
         {
-            var baseline = new Pen(gridBrush, 1); var waveformBrush = ResourceBrush("WaveformBrush", Brushes.Cyan); var pen = new Pen(waveformBrush, 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47); var peakBottom = ActualHeight - 19; var peakAmplitude = Math.Max(8, peakBottom - 46);
-            var peaks = string.Equals(DisplayStyle, "Peaks", StringComparison.Ordinal) || string.Equals(DisplayStyle, "Filled Peaks", StringComparison.Ordinal);
+            var baseline = new Pen(gridBrush, 1); var waveformBrush = ResourceBrush("WaveformBrush", Brushes.Cyan); var pen = new Pen(waveformBrush, 1); var top = 42d; var bottom = ActualHeight - 18d; var mid = (top + bottom) / 2d; var amplitude = Math.Max(4, (bottom - top) / 2d - 4); var peakBottom = bottom; var peakAmplitude = Math.Max(8, bottom - top - 4);
+            var display = WaveformDisplayTransform.Transform(Samples, DisplayAmplitude); var style = WaveformDisplayTransform.NormalizeStyle(DisplayStyle);
+            var peaks = style.StartsWith("Peak", StringComparison.Ordinal);
             dc.DrawLine(baseline, new(0, peaks ? peakBottom : mid), new(ActualWidth, peaks ? peakBottom : mid));
-            if (string.Equals(DisplayStyle, "Filled Peaks", StringComparison.Ordinal))
+            if (style == "Peak Fill")
             {
                 var geometry = new StreamGeometry(); using (var context = geometry.Open())
                 {
                     context.BeginFigure(new(0, peakBottom), true, true);
-                    for (var i = 0; i < Samples.Count; i++) context.LineTo(PeakPoint(i), true, false);
+                    for (var i = 0; i < display.Length; i++) context.LineTo(PeakPoint(i), true, false);
                     context.LineTo(new(ActualWidth, peakBottom), true, false);
                 }
                 geometry.Freeze(); var fill = waveformBrush.Clone(); fill.Opacity = .60; dc.DrawGeometry(fill, pen, geometry);
             }
-            else if (string.Equals(DisplayStyle, "Peaks", StringComparison.Ordinal))
+            else if (style == "Peak Bars")
             {
-                for (var i = 0; i < Samples.Count; i++) dc.DrawLine(pen, new(PeakPoint(i).X, peakBottom), PeakPoint(i));
+                for (var i = 0; i < display.Length; i++) dc.DrawLine(pen, new(PeakPoint(i).X, peakBottom), PeakPoint(i));
             }
-            else if (string.Equals(DisplayStyle, "Filled", StringComparison.Ordinal))
+            else if (style == "Peak Line")
+            {
+                for (var i = 1; i < display.Length; i++) dc.DrawLine(pen, PeakPoint(i - 1), PeakPoint(i));
+            }
+            else if (style == "Centered Fill")
             {
                 var geometry = new StreamGeometry(); using (var context = geometry.Open())
                 {
                     context.BeginFigure(new(0, mid), true, true);
-                    for (var i = 0; i < Samples.Count; i++) context.LineTo(WavePoint(i, -1), true, false);
-                    for (var i = Samples.Count - 1; i >= 0; i--) context.LineTo(WavePoint(i, 1), true, false);
+                    for (var i = 0; i < display.Length; i++) context.LineTo(WavePoint(i, -1), true, false);
+                    for (var i = display.Length - 1; i >= 0; i--) context.LineTo(WavePoint(i, 1), true, false);
                 }
                 geometry.Freeze(); var fill = waveformBrush.Clone(); fill.Opacity = .55; dc.DrawGeometry(fill, pen, geometry);
             }
-            else if (string.Equals(DisplayStyle, "Line", StringComparison.Ordinal))
+            else if (style == "Centered Line")
             {
-                for (var i = 1; i < Samples.Count; i++) dc.DrawLine(pen, WavePoint(i - 1, -1), WavePoint(i, -1));
+                for (var i = 1; i < display.Length; i++) dc.DrawLine(pen, WavePoint(i - 1, -1), WavePoint(i, -1));
             }
             else
             {
-                for (var i = 0; i < Samples.Count; i++) dc.DrawLine(pen, WavePoint(i, -1), WavePoint(i, 1));
+                for (var i = 0; i < display.Length; i++) dc.DrawLine(pen, WavePoint(i, -1), WavePoint(i, 1));
             }
-            Point WavePoint(int index, int direction) { var x = index / (double)Math.Max(1, Samples.Count - 1) * ActualWidth; var display = Math.Sqrt(Math.Clamp(Samples[index], 0, 1)); return new(x, mid + direction * display * amplitude); }
-            Point PeakPoint(int index) { var x = index / (double)Math.Max(1, Samples.Count - 1) * ActualWidth; var display = Math.Sqrt(Math.Clamp(Samples[index], 0, 1)); return new(x, peakBottom - display * peakAmplitude); }
+            Point WavePoint(int index, int direction) { var x = index / (double)Math.Max(1, display.Length - 1) * ActualWidth; return new(x, mid + direction * display[index] * amplitude); }
+            Point PeakPoint(int index) { var x = index / (double)Math.Max(1, display.Length - 1) * ActualWidth; return new(x, peakBottom - display[index] * peakAmplitude); }
         }
         Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, ResourceBrush("AudioMarkerBrush", Brushes.Gold), 2.5, "AUDIO", 2);
         if (AutoVisualMs is { } auto) Marker(dc, auto, ResourceBrush("AutoMarkerBrush", Brushes.DodgerBlue), 1.5, "AUTO", 12);

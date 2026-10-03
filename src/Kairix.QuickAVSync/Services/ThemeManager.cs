@@ -18,7 +18,7 @@ public static class ThemeManager
     {
         var normalized = Normalize(name);
         var file = normalized.Replace(" ", "", StringComparison.Ordinal);
-        var dictionary = new ResourceDictionary { Source = new Uri($"Themes/{file}.xaml", UriKind.Relative) };
+        var dictionary = new ResourceDictionary { Source = new Uri($"/Kairix.QuickAVSync;component/Themes/{file}.xaml", UriKind.Relative) };
         var merged = Application.Current.Resources.MergedDictionaries;
         if (merged.Count == 0) merged.Add(dictionary); else merged[0] = dictionary;
         foreach (Window window in Application.Current.Windows) Invalidate(window);

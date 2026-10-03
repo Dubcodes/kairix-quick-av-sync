@@ -377,7 +377,8 @@ public sealed class AppSettings
     public int ReviewWidth { get; set; } = 160;
     public int ReviewHeight { get; set; } = 90;
     public string Theme { get; set; } = "Light";
-    public string AudioDisplayStyle { get; set; } = "Mirrored";
+    public string AudioDisplayStyle { get; set; } = "Centered Fill";
+    public string AudioDisplayAmplitude { get; set; } = "Auto Gain";
     public bool SettingsPanelExpanded { get; set; } = true;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, bool> ReconstructFieldsByDevice { get; set; } = new(StringComparer.Ordinal);

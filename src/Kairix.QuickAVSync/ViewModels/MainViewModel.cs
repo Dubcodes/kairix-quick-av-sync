@@ -41,7 +41,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private PixelFormatOption? _selectedPixelFormat;
     private ProcessingResolutionOption? _selectedDetectionResolution, _selectedReviewResolution;
     private ThemeOption? _selectedTheme;
-    private string _selectedAudioDisplayStyle = "Mirrored";
+    private string _selectedAudioDisplayStyle = "Centered Fill";
+    private string _selectedAudioDisplayAmplitude = WaveformDisplayTransform.AutoGain;
     private bool _reconstructInterlacedFields;
     private InputSignalInfo? _observedSignal;
     private ObservedSignalAnalysis? _observedAnalysis;
@@ -81,7 +82,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<ProcessingResolutionOption> DetectionResolutions { get; } = [];
     public ObservableCollection<ProcessingResolutionOption> ReviewResolutions { get; } = [];
     public ObservableCollection<ThemeOption> Themes { get; } = [];
-    public ObservableCollection<string> AudioDisplayStyles { get; } = ["Mirrored", "Filled", "Line", "Peaks", "Filled Peaks"];
+    public ObservableCollection<string> AudioDisplayStyles { get; } = ["Centered Fill", "Centered Bars", "Centered Line", "Peak Fill", "Peak Bars", "Peak Line"];
+    public ObservableCollection<string> AudioDisplayAmplitudes { get; } = [WaveformDisplayTransform.AutoGain, WaveformDisplayTransform.Linear, WaveformDisplayTransform.Db60, WaveformDisplayTransform.Db96];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -103,7 +105,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _settings = _settingsService.Load(); _transientDetector.Sensitivity = _settings.AudioSensitivity; _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
         foreach (var theme in ThemeManager.Themes) Themes.Add(theme);
         _selectedTheme = Themes.First(theme => theme.Name == ThemeManager.Normalize(_settings.Theme)); ThemeManager.Apply(_selectedTheme.Name);
-        _selectedAudioDisplayStyle = AudioDisplayStyles.Contains(_settings.AudioDisplayStyle) ? _settings.AudioDisplayStyle : "Mirrored";
+        _selectedAudioDisplayStyle = WaveformDisplayTransform.NormalizeStyle(_settings.AudioDisplayStyle);
+        _selectedAudioDisplayAmplitude = WaveformDisplayTransform.NormalizeAmplitude(_settings.AudioDisplayAmplitude);
         RefreshCommand = new AsyncRelayCommand(RefreshDevicesAsync);
         ReconnectCommand = new AsyncRelayCommand(ReconnectAsync);
         ManualClapCommand = new RelayCommand(_ => BeginManualClap());
@@ -207,6 +210,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             if (!AudioDisplayStyles.Contains(value) || !Set(ref _selectedAudioDisplayStyle, value)) return;
             _settings.AudioDisplayStyle = value; SaveSettings();
+        }
+    }
+    public string SelectedAudioDisplayAmplitude
+    {
+        get => _selectedAudioDisplayAmplitude;
+        set
+        {
+            if (!AudioDisplayAmplitudes.Contains(value) || !Set(ref _selectedAudioDisplayAmplitude, value)) return;
+            _settings.AudioDisplayAmplitude = value; SaveSettings();
         }
     }
     public bool IsSettingsPanelExpanded

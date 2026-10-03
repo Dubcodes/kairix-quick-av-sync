@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Replaced the remaining default WPF ComboBox surface with a single dynamic-resource Kairix template, including collapsed, focus, popup, item, hover, selection, pressed, and disabled states. The shared semantic control resources now cover settings controls across all seven themes.
+- Renamed waveform styles to Centered Fill, Centered Bars, Centered Line, Peak Fill, Peak Bars, and Peak Line. Existing persisted legacy names migrate safely.
+- Added independent display-only amplitude modes: Auto Gain, Linear, dB · 60 dB, and dB · 96 dB. Auto Gain is snapshot-wide, targets 90% height, and does not boost signals below -50 dBFS. Display settings never alter capture, detection, timing, markers, or results.
+
+## Unreleased
+
 - Replaced the abbreviated right-edge settings tabs and large hide button with a named, theme-aware left navigation strip and compact collapse control. Light is now the new-install default, all theme states and the outlined video playhead have expanded contrast contracts, and the high-level result column remains intentionally limited to current result, confidence, and session history.
 - Added persisted audio transient sensitivity beside visual detector controls, Peaks and Filled Peaks bottom-zero waveform modes, and a ±300 ms new-install work-window default that does not overwrite saved settings.
 - Corrected the live synthetic source: its deterministic clock now emits a single unambiguous contact onset exactly 60 ms after audio rather than an animated sequence with earlier settle edges. The device label and documentation state the positive audio-leads sign convention explicitly, with a regression test expecting exactly +60 ms.
