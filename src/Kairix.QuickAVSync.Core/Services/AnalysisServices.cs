@@ -9,7 +9,9 @@ public sealed class TransientDetector
     private readonly double _refractorySeconds;
     private double _noise = .002;
     private long _lastDetected = long.MinValue / 2;
+    private int _sensitivity = 50;
     public TransientDetector(double refractorySeconds = .28) => _refractorySeconds = refractorySeconds;
+    public int Sensitivity { get => Volatile.Read(ref _sensitivity); set => Interlocked.Exchange(ref _sensitivity, Math.Clamp(value, 0, 100)); }
     public IReadOnlyList<AudioTransient> Process(AudioChunk chunk)
     {
         if (chunk.SampleRate <= 0 || chunk.Channels <= 0) return [];
@@ -26,8 +28,10 @@ public sealed class TransientDetector
             var rms = Math.Sqrt(energy / Math.Max(1, end - frame));
             var timestamp = chunk.Timestamp.Ticks100ns + TimeSpan.FromSeconds((double)frame / chunk.SampleRate).Ticks;
             var elapsed = TimeSpan.FromTicks(timestamp - _lastDetected).TotalSeconds;
-            var threshold = Math.Max(.025, _noise * 7.5);
-            if (peak > threshold && rms > Math.Max(.008, _noise * 2.8) && elapsed >= _refractorySeconds)
+            var normalizedSensitivity = Sensitivity / 100d;
+            var thresholdScale = normalizedSensitivity <= .5 ? 1 + (.5 - normalizedSensitivity) * 1.6 : 1 - (normalizedSensitivity - .5) * .8;
+            var threshold = Math.Max(.025 * thresholdScale, _noise * 7.5 * thresholdScale);
+            if (peak > threshold && rms > Math.Max(.008 * thresholdScale, _noise * 2.8 * thresholdScale) && elapsed >= _refractorySeconds)
             {
                 output.Add(new(new(timestamp, chunk.Timestamp.Quality, chunk.Timestamp.ClockDomain, chunk.Timestamp.RawValue), peak, (float)_noise));
                 _lastDetected = timestamp;

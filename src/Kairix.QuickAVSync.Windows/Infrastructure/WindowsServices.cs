@@ -49,18 +49,18 @@ public sealed class SettingsService(string? path = null) : IDisposable
     private static AppSettings Sanitize(AppSettings value)
     {
         var themes = new HashSet<string>(["Graphite", "Midnight", "Light", "High Contrast", "Synthwave", "Terminal", "Solar Flare"], StringComparer.Ordinal);
-        var audioStyles = new HashSet<string>(["Mirrored", "Filled", "Line"], StringComparer.Ordinal);
+        var audioStyles = new HashSet<string>(["Mirrored", "Filled", "Line", "Peaks", "Filled Peaks"], StringComparer.Ordinal);
         return new AppSettings
         {
             LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName,
             AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual,
-            VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30),
+            VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), AudioSensitivity = Math.Clamp(value.AudioSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30),
             WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000),
             DetectionWidth = value.DetectionWidth is > 0 and <= 8192 ? value.DetectionWidth : 640,
             DetectionHeight = value.DetectionHeight is > 0 and <= 4320 ? value.DetectionHeight : 360,
             ReviewWidth = value.ReviewWidth is > 0 and <= 8192 ? value.ReviewWidth : 160,
             ReviewHeight = value.ReviewHeight is > 0 and <= 4320 ? value.ReviewHeight : 90,
-            Theme = themes.Contains(value.Theme ?? "") ? value.Theme! : "Graphite",
+            Theme = themes.Contains(value.Theme ?? "") ? value.Theme! : "Light",
             AudioDisplayStyle = audioStyles.Contains(value.AudioDisplayStyle ?? "") ? value.AudioDisplayStyle! : "Mirrored",
             SettingsPanelExpanded = value.SettingsPanelExpanded,
             NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal),

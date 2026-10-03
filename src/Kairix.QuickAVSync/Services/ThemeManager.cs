@@ -12,7 +12,7 @@ public static class ThemeManager
 {
     public static IReadOnlyList<ThemeOption> Themes { get; } = [new("Graphite"), new("Midnight"), new("Light"), new("High Contrast"), new("Synthwave"), new("Terminal"), new("Solar Flare")];
 
-    public static string Normalize(string? name) => Themes.Any(theme => theme.Name == name) ? name! : "Graphite";
+    public static string Normalize(string? name) => Themes.Any(theme => theme.Name == name) ? name! : "Light";
 
     public static void Apply(string? name)
     {

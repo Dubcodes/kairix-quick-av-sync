@@ -7,7 +7,7 @@ namespace Kairix.QuickAVSync.Controls;
 public sealed class WaveformView : FrameworkElement
 {
     public static readonly DependencyProperty SamplesProperty = DependencyProperty.Register(nameof(Samples), typeof(IReadOnlyList<float>), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
-    public static readonly DependencyProperty HalfWindowMsProperty = DependencyProperty.Register(nameof(HalfWindowMs), typeof(double), typeof(WaveformView), new FrameworkPropertyMetadata(250d, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty HalfWindowMsProperty = DependencyProperty.Register(nameof(HalfWindowMs), typeof(double), typeof(WaveformView), new FrameworkPropertyMetadata(300d, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty AudioMarkerMsProperty = DependencyProperty.Register(nameof(AudioMarkerMs), typeof(double), typeof(WaveformView), new FrameworkPropertyMetadata(0d, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty AutoVisualMsProperty = DependencyProperty.Register(nameof(AutoVisualMs), typeof(double?), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty VisualMarkerMsProperty = DependencyProperty.Register(nameof(VisualMarkerMs), typeof(double?), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
@@ -88,9 +88,24 @@ public sealed class WaveformView : FrameworkElement
         }
         if (Samples is { Count: > 1 })
         {
-            var baseline = new Pen(gridBrush, 1); var waveformBrush = ResourceBrush("WaveformBrush", Brushes.Cyan); var pen = new Pen(waveformBrush, 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47);
-            dc.DrawLine(baseline, new(0, mid), new(ActualWidth, mid));
-            if (string.Equals(DisplayStyle, "Filled", StringComparison.Ordinal))
+            var baseline = new Pen(gridBrush, 1); var waveformBrush = ResourceBrush("WaveformBrush", Brushes.Cyan); var pen = new Pen(waveformBrush, 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47); var peakBottom = ActualHeight - 19; var peakAmplitude = Math.Max(8, peakBottom - 46);
+            var peaks = string.Equals(DisplayStyle, "Peaks", StringComparison.Ordinal) || string.Equals(DisplayStyle, "Filled Peaks", StringComparison.Ordinal);
+            dc.DrawLine(baseline, new(0, peaks ? peakBottom : mid), new(ActualWidth, peaks ? peakBottom : mid));
+            if (string.Equals(DisplayStyle, "Filled Peaks", StringComparison.Ordinal))
+            {
+                var geometry = new StreamGeometry(); using (var context = geometry.Open())
+                {
+                    context.BeginFigure(new(0, peakBottom), true, true);
+                    for (var i = 0; i < Samples.Count; i++) context.LineTo(PeakPoint(i), true, false);
+                    context.LineTo(new(ActualWidth, peakBottom), true, false);
+                }
+                geometry.Freeze(); var fill = waveformBrush.Clone(); fill.Opacity = .60; dc.DrawGeometry(fill, pen, geometry);
+            }
+            else if (string.Equals(DisplayStyle, "Peaks", StringComparison.Ordinal))
+            {
+                for (var i = 0; i < Samples.Count; i++) dc.DrawLine(pen, new(PeakPoint(i).X, peakBottom), PeakPoint(i));
+            }
+            else if (string.Equals(DisplayStyle, "Filled", StringComparison.Ordinal))
             {
                 var geometry = new StreamGeometry(); using (var context = geometry.Open())
                 {
@@ -109,15 +124,16 @@ public sealed class WaveformView : FrameworkElement
                 for (var i = 0; i < Samples.Count; i++) dc.DrawLine(pen, WavePoint(i, -1), WavePoint(i, 1));
             }
             Point WavePoint(int index, int direction) { var x = index / (double)Math.Max(1, Samples.Count - 1) * ActualWidth; var display = Math.Sqrt(Math.Clamp(Samples[index], 0, 1)); return new(x, mid + direction * display * amplitude); }
+            Point PeakPoint(int index) { var x = index / (double)Math.Max(1, Samples.Count - 1) * ActualWidth; var display = Math.Sqrt(Math.Clamp(Samples[index], 0, 1)); return new(x, peakBottom - display * peakAmplitude); }
         }
         Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, ResourceBrush("AudioMarkerBrush", Brushes.Gold), 2.5, "AUDIO", 2);
         if (AutoVisualMs is { } auto) Marker(dc, auto, ResourceBrush("AutoMarkerBrush", Brushes.DodgerBlue), 1.5, "AUTO", 12);
         if (VisualMarkerMs is { } visual) Marker(dc, visual, ResourceBrush("VisualMarkerBrush", Brushes.Red), 2.5, "VISUAL", 22);
-        Marker(dc, PlayheadMs, ResourceBrush("PlayheadBrush", Brushes.White), 1, "PLAYHEAD", 32);
+        Marker(dc, PlayheadMs, ResourceBrush("PlayheadBrush", Brushes.White), 2.5, "PLAYHEAD", 32, ResourceBrush("PlayheadOutlineBrush", Brushes.Black));
     }
-    private void Marker(DrawingContext dc, double ms, Brush brush, double width, string label, double labelTop)
+    private void Marker(DrawingContext dc, double ms, Brush brush, double width, string label, double labelTop, Brush? outline = null)
     {
-        var x = Math.Clamp(MsToX(ms), 0, ActualWidth); dc.DrawLine(new(brush, width), new(x, 42), new(x, ActualHeight - 18));
+        var x = Math.Clamp(MsToX(ms), 0, ActualWidth); if (outline is not null) dc.DrawLine(new(outline, width + 3), new(x, 42), new(x, ActualHeight - 18)); dc.DrawLine(new(brush, width), new(x, 42), new(x, ActualHeight - 18));
         var text = new FormattedText(label, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 9, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip); dc.DrawText(text, new(Math.Clamp(x + 3, 1, Math.Max(1, ActualWidth - text.Width - 2)), labelTop));
     }
     private Brush ResourceBrush(string key, Brush fallback) => TryFindResource(key) as Brush ?? fallback;

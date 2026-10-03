@@ -4,6 +4,6 @@
   <SolidColorBrush x:Key="PrimaryTextBrush" Color="#151A1E"/><SolidColorBrush x:Key="SecondaryTextBrush" Color="#37434C"/><SolidColorBrush x:Key="MutedTextBrush" Color="#56646F"/><SolidColorBrush x:Key="BorderBrush" Color="#86949F"/>
   <SolidColorBrush x:Key="AccentBrush" Color="#087F71"/><SolidColorBrush x:Key="AccentTextBrush" Color="#FFFFFF"/><SolidColorBrush x:Key="WarningBrush" Color="#8A5C00"/><SolidColorBrush x:Key="DangerBrush" Color="#B62424"/>
   <SolidColorBrush x:Key="VideoBackgroundBrush" Color="#111315"/><SolidColorBrush x:Key="OverlayBackgroundBrush" Color="#E8FFFFFF"/><SolidColorBrush x:Key="WaveformBrush" Color="#087F71"/><SolidColorBrush x:Key="GridBrush" Color="#8A969F"/>
-  <SolidColorBrush x:Key="AudioMarkerBrush" Color="#A66B00"/><SolidColorBrush x:Key="AutoMarkerBrush" Color="#125EB8"/><SolidColorBrush x:Key="VisualMarkerBrush" Color="#B62424"/><SolidColorBrush x:Key="PlayheadBrush" Color="#151A1E"/>
+  <SolidColorBrush x:Key="AudioMarkerBrush" Color="#A66B00"/><SolidColorBrush x:Key="AutoMarkerBrush" Color="#125EB8"/><SolidColorBrush x:Key="VisualMarkerBrush" Color="#B62424"/><SolidColorBrush x:Key="PlayheadBrush" Color="#151A1E"/><SolidColorBrush x:Key="PlayheadOutlineBrush" Color="#FFFFFF"/>
   <SolidColorBrush x:Key="MemoryOtherBrush" Color="#87939C"/><SolidColorBrush x:Key="MemoryProcessBrush" Color="#087F71"/><SolidColorBrush x:Key="PositiveBrush" Color="#125EB8"/>
 </ResourceDictionary>

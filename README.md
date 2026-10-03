@@ -42,14 +42,14 @@ Build and run on Windows with the .NET 10 SDK:
 dotnet run --project src/Kairix.QuickAVSync -c Release
 ```
 
-When no working hardware backend is available, the app selects **Synthetic A/V test source**. It creates a transient and matching visual event every five seconds, allowing the complete detection, timeline, review, override, and history workflow to be exercised without a capture card.
+When no working hardware backend is available, the app selects **Synthetic A/V test · expected +60 ms (audio leads video)**. Every five seconds it emits an audio transient followed exactly 60 ms later by one unambiguous visual contact onset and brief hold. Kairix defines positive results as audio leading video, so the expected automatic result is `+60 ms` / **AUDIO LEADS VIDEO BY 60 ms**. This deterministic calibration pattern exercises detection, timeline, review, override, and history without a capture card.
 
 ## Workflow
 
 1. Select a video source. **Detected Capture** is read-only and always describes the authoritative Media Foundation output using the real raster, numeric rate/scan, and pixel format.
 2. Choose the interpretation **Resolution**, **Format**, and **Pixel format**. A valid combination reconnects to the matching exact native mode; unavailable combinations are not offered and explicit selection never silently falls back.
 3. For woven capture such as `1920×1080 · 25.000p · YUY2` containing a 50i source, enable **Reconstruct interlaced fields** and select `25.000p → 50.000i · Top first` or `Bottom first`. This changes review cadence, not the authoritative detected capture metadata.
-4. Enable **Automatic detection**, **Audio trigger**, and **Visual clap match** under **Settings → Detection**. The main state reads **ARMED**, **HOLD**, or **AUTO OFF** truthfully.
+4. Enable **Automatic detection**, **Audio trigger**, and **Visual clap match** under **Settings → Detection**. The main state reads **ARMED**, **HOLD**, **TRIGGER OFF**, or **AUTO OFF** truthfully.
 5. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
 6. Click or drag the timeline to scrub to the nearest real temporal image. **Pre V/Nxt V**, mouse wheel, and Left/Right step one frame or field; Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
 7. Drag the yellow **AUDIO** marker or use **Pre A/Nxt A** (Ctrl+Left/Ctrl+Right) for deterministic 1.0 ms audio adjustments. Audio changes never move the visual playhead.
@@ -58,7 +58,7 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 
 **Manual Clap** (Space) freezes a work window around the latest rolling-buffer position. Capture and rolling buffers continue while reviewing. Press H once to toggle Hold for new automatic detections; press it again to resume. Hold never stops capture or buffering and resets off at launch.
 
-The left side is split into a collapsible tabbed **Settings** column and an always-visible operational capture column beside the video. Its vertical rail groups Appearance, Detection, Review, Capture, Shortcuts, and About; a narrow rail remains when collapsed. Engineering timing/reconstruction data is confined to About. Detection and review rasters never change native capture or timestamp math. Graphite, Midnight, Light, High Contrast, Synthwave, Terminal, and Solar Flare switch immediately and persist. Mirrored, Filled, and Line waveform styles are presentation-only and never modify samples, detection, or timing.
+The left side is split into a collapsible **Settings** column and an always-visible operational capture column beside the video. A theme-aware left navigation strip names Appearance, Detection, Review, Capture, Shortcuts, and About; a small chevron replaces the old large hide control and a narrow reopen rail remains when collapsed. Engineering timing/reconstruction data is confined to About. Detection groups the automatic master switches with practical visual and audio sensitivity controls. Detection and review rasters never change native capture or timestamp math. Light is the new-install default; Graphite, Midnight, High Contrast, Synthwave, Terminal, and Solar Flare remain available and persistent. Mirrored, Filled, Line, Peaks, and Filled Peaks waveform styles are presentation-only and never modify samples, detection, or timing. The default work window is ±300 ms; previously saved values remain unchanged.
 
 ## Video timing compensation
 

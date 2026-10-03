@@ -39,6 +39,7 @@ public sealed class TransientDetectorTests
     [Fact] public void EchoIsDebounced() { var samples = Noise(24000, .002f); Pulse(samples, 1000, .9f); Pulse(samples, 6000, .55f); Assert.Single(new TransientDetector().Process(Chunk(0, samples, 48000))); }
     [Theory] [InlineData(44100)] [InlineData(48000)] [InlineData(96000)] public void WorksAtDifferentRates(int rate) { var samples = Noise(rate / 4, .001f); Pulse(samples, rate / 10, .7f); Assert.Single(new TransientDetector().Process(Chunk(0, samples, rate))); }
     [Fact] public void TwoSeparatedImpulsesTriggerTwice() { var samples = Noise(48000, .001f); Pulse(samples, 1000, .8f); Pulse(samples, 20000, .8f); Assert.Equal(2, new TransientDetector().Process(Chunk(0, samples, 48000)).Count); }
+    [Fact] public void SensitivityChangesWeakTransientAcceptanceWithoutChangingDefault() { var weak = Noise(4800, .001f); Pulse(weak, 1000, .03f); var low = new TransientDetector { Sensitivity = 0 }; var high = new TransientDetector { Sensitivity = 100 }; Assert.Empty(low.Process(Chunk(0, weak, 48000))); Assert.Single(high.Process(Chunk(0, weak, 48000))); }
     private static AudioChunk Chunk(long ticks, float[] samples, int rate) => new(new(ticks, TimingQuality.StreamTimestamp), samples, rate, 1);
     private static float[] Noise(int count, float level) => Enumerable.Range(0, count).Select(i => (i % 7 - 3) * level / 3).ToArray();
     private static void Pulse(float[] samples, int at, float level) { for (var i = 0; i < 40; i++) samples[at + i] = level * (float)Math.Exp(-i / 10d); }
@@ -284,6 +285,17 @@ public sealed class ClockCorrelationTests
 
 public sealed class SyntheticPipelineTests
 {
+    [Fact]
+    public async Task LiveSyntheticPatternSelectsDeclaredPositiveSixtyMillisecondContact()
+    {
+        var audio = MediaTimestamp.FromTimeSpan(TimeSpan.FromSeconds(1), TimingQuality.StreamTimestamp, "synthetic-common");
+        var frames = Enumerable.Range(25, 51).Select(index => SyntheticCaptureSession.CreateFrame(TimeSpan.FromMilliseconds(index * 20), 1.06, index, 320, 180, 160, 90)).ToArray();
+        var visual = await new MotionVisualClapDetector().DetectAsync(frames, audio, default);
+        Assert.NotNull(visual); var result = SyncResult.Calculate(audio, visual!.Timestamp);
+        Assert.Equal(60, result.SignedMilliseconds, 6); Assert.Equal("AUDIO LEADS VIDEO BY 60 ms", result.Wording);
+        Assert.Contains("expected +60 ms (audio leads video)", SyntheticCaptureBackend.DisplayName(TimeSpan.FromMilliseconds(60)));
+    }
+
     [Theory]
     [InlineData(5)] [InlineData(10)] [InlineData(20)] [InlineData(60)] [InlineData(120)]
     [InlineData(-5)] [InlineData(-10)] [InlineData(-20)] [InlineData(-60)] [InlineData(-120)]

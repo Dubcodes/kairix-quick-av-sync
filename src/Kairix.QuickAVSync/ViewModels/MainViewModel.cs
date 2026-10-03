@@ -81,7 +81,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<ProcessingResolutionOption> DetectionResolutions { get; } = [];
     public ObservableCollection<ProcessingResolutionOption> ReviewResolutions { get; } = [];
     public ObservableCollection<ThemeOption> Themes { get; } = [];
-    public ObservableCollection<string> AudioDisplayStyles { get; } = ["Mirrored", "Filled", "Line"];
+    public ObservableCollection<string> AudioDisplayStyles { get; } = ["Mirrored", "Filled", "Line", "Peaks", "Filled Peaks"];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -100,7 +100,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public MainViewModel()
     {
-        _settings = _settingsService.Load(); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
+        _settings = _settingsService.Load(); _transientDetector.Sensitivity = _settings.AudioSensitivity; _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
         foreach (var theme in ThemeManager.Themes) Themes.Add(theme);
         _selectedTheme = Themes.First(theme => theme.Name == ThemeManager.Normalize(_settings.Theme)); ThemeManager.Apply(_selectedTheme.Name);
         _selectedAudioDisplayStyle = AudioDisplayStyles.Contains(_settings.AudioDisplayStyle) ? _settings.AudioDisplayStyle : "Mirrored";
@@ -117,7 +117,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         ResetVideoTimingOffsetCommand = new RelayCommand(_ => ResetVideoTimingOffset());
         StepAudioPreviousCommand = new RelayCommand(_ => StepAudio(-1));
         StepAudioNextCommand = new RelayCommand(_ => StepAudio(1));
-        ToggleHoldCommand = new RelayCommand(_ => IsHold = !IsHold, _ => AutoDetect);
+        ToggleHoldCommand = new RelayCommand(_ => IsHold = !IsHold, _ => IsArmEnabled);
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current.Dispatcher);
     }
 
@@ -218,7 +218,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _settings.SettingsPanelExpanded = value; Changed(); Changed(nameof(SettingsColumnWidth)); Changed(nameof(SettingsPanelToggleText)); SaveSettings();
         }
     }
-    public GridLength SettingsColumnWidth => new(IsSettingsPanelExpanded ? 330 : 54);
+    public GridLength SettingsColumnWidth => new(IsSettingsPanelExpanded ? 370 : 54);
     public string SettingsPanelToggleText => IsSettingsPanelExpanded ? "◀  Hide settings" : "▶";
     public double VideoTimingOffsetMilliseconds
     {
@@ -235,9 +235,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         ? $"Manual profile override: {VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms\nApplied as {-VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms to visual timing."
         : $"Automatic reconstruction compensation: {VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms\n{(CurrentFieldReconstruction is null ? "No reconstructed-field delivery compensation." : "Capture card assumed to deliver the woven frame after both fields arrive.")}\nApplied as {-VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms to visual timing.";
     public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; if (!value) IsHold = false; Changed(); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled)); CommandManager.InvalidateRequerySuggested(); SaveSettings(); } } }
-    public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; Changed(); SaveSettings(); } } }
+    public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; if (!value) IsHold = false; Changed(); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled)); CommandManager.InvalidateRequerySuggested(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
     public int VisualSensitivity { get => Math.Clamp(_settings.VisualSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.VisualSensitivity != clamped) { _settings.VisualSensitivity = clamped; Changed(); SaveSettings(); } } }
+    public int AudioSensitivity { get => Math.Clamp(_settings.AudioSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.AudioSensitivity != clamped) { _settings.AudioSensitivity = clamped; _transientDetector.Sensitivity = clamped; Changed(); SaveSettings(); } } }
     public double RollingBufferSeconds { get => _settings.RollingBufferSeconds; set { var v = Math.Clamp(value, 1, 30); if (_settings.RollingBufferSeconds != v) { _settings.RollingBufferSeconds = v; ResizeBuffers(); Changed(); RefreshPerformanceDisplay(); SaveSettings(); } } }
     public double WorkWindowMilliseconds { get => _settings.WorkWindowMilliseconds; set { var v = Math.Clamp(value, 50, 2000); if (_settings.WorkWindowMilliseconds != v) { _settings.WorkWindowMilliseconds = v; Changed(); Changed(nameof(HalfWindow)); SaveSettings(); } } }
     public double HalfWindow => WorkWindowMilliseconds;
@@ -311,8 +312,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string TimingCorrectionText => $"{-EffectiveVideoTimingOffset.Milliseconds:+0.0;-0.0;0.0} ms · {(EffectiveVideoTimingOffset.IsManual ? "manual profile override" : CurrentFieldReconstruction is null ? "automatic · none" : "automatic reconstructed-field compensation")}";
     // Hold is session-only and must never overwrite the capture readiness state.
     public bool IsHold { get => _isHold; set { if (Set(ref _isHold, value)) Changed(nameof(ArmStateText)); } }
-    public bool IsArmEnabled => AutoDetect;
-    public string ArmStateText => !AutoDetect ? "AUTO OFF" : IsHold ? "HOLD" : "ARMED";
+    public bool IsArmEnabled => AutoDetect && AutoSpike;
+    public string ArmStateText => !AutoDetect ? "AUTO OFF" : !AutoSpike ? "TRIGGER OFF" : IsHold ? "HOLD" : "ARMED";
     public bool IsInReview => _isReview;
     public string VersionText => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
     public string BuildText => Services.BuildIdentity.Current.BuildId;
@@ -573,11 +574,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         var priorEnd = Interlocked.Exchange(ref _lastAudioEndTicks, chunk.Timestamp.Ticks100ns + chunk.Duration.Ticks);
         if (priorEnd != long.MinValue && (chunk.Timestamp.Ticks100ns < priorEnd - TimeSpan.FromMilliseconds(1).Ticks || chunk.Timestamp.Ticks100ns > priorEnd + TimeSpan.FromMilliseconds(5).Ticks)) Interlocked.Increment(ref _audioContinuityFaults);
-        _audio.Add(chunk); if (!ReviewTimeline.AcceptsAutomaticEvents(AutoDetect, IsHold)) return;
+        _audio.Add(chunk); if (!ReviewTimeline.AcceptsAutomaticEvents(AutoDetect, IsHold) || !AutoSpike) return;
         foreach (var transient in _transientDetector.Process(chunk))
         {
             _log.Write($"Transient detected at {transient.Timestamp.Ticks100ns}; peak {transient.Peak:0.000}");
-            Application.Current.Dispatcher.BeginInvoke(() => StartEvent(transient.Timestamp, AutoSpike));
+            Application.Current.Dispatcher.BeginInvoke(() => StartEvent(transient.Timestamp, audioFinalized: true));
         }
     }
 

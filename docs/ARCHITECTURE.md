@@ -122,9 +122,9 @@ The signed calculation remains `visual - audio`: positive is audio leads, negati
 
 ## Operator UI and diagnostics
 
-The WPF shell separates routine operation from engineering detail. The normal result column binds only the result, evidence-only confidence, and three session-history summaries. Settings uses a right-edge vertical rail with Appearance, Detection, Review, Capture, Shortcuts, and About pages. About is the sole normal home for transport/reconstruction/phase, memory, raw-versus-corrected, and last-event detector diagnostics. Collapsing Settings retains a narrow reopen rail.
+The WPF shell separates routine operation from engineering detail. The normal result column binds only the result, evidence-only confidence, and three session-history summaries. Settings uses a theme-aware left navigation strip with named Appearance, Detection, Review, Capture, Shortcuts, and About pages. About is the sole normal home for transport/reconstruction/phase, memory, raw-versus-corrected, and last-event detector diagnostics. Collapsing Settings retains a narrow reopen rail.
 
-Waveform rendering consumes the same immutable amplitude array for Mirrored, Filled, and Line styles. Style changes invalidate drawing only; they never rebuild audio samples or detector timestamps. ARMED/HOLD is a session latch over the persisted Automatic detection master setting and never stops capture or buffering.
+Waveform rendering consumes the same immutable peak-amplitude array for Mirrored, Filled, Line, Peaks, and Filled Peaks styles. Peaks modes put zero at the bottom and extend levels upward. Style changes invalidate drawing only; they never rebuild audio samples or detector timestamps. The video playhead is drawn with a theme-specific contrasting outline while the existing audio marker remains unchanged. ARMED/HOLD is a session latch over the persisted Automatic detection master setting and never stops capture or buffering.
 
 ## Visual contact selection and resolution isolation
 

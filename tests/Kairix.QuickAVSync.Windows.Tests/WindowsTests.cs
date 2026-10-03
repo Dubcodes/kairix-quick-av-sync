@@ -11,7 +11,7 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Line", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Line", loaded.AudioDisplayStyle); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, AudioSensitivity = 68, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Filled Peaks", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(68, loaded.AudioSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Filled Peaks", loaded.AudioDisplayStyle); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
@@ -25,7 +25,14 @@ public sealed class SettingsTests
     [Fact] public void CorruptOrStaleProcessingSettingsFallBackSafely()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { File.WriteAllText(path, "{ definitely-not-json"); using (var corrupt = new SettingsService(path)) Assert.Equal(640, corrupt.Load().DetectionWidth); File.WriteAllText(path, "{\"DetectionWidth\":-1,\"DetectionHeight\":0,\"ReviewWidth\":99999,\"ReviewHeight\":0,\"Theme\":\"Missing\"}"); using var stale = new SettingsService(path); var loaded = stale.Load(); Assert.Equal((640, 360), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((160, 90), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Graphite", loaded.Theme); }
+        try { File.WriteAllText(path, "{ definitely-not-json"); using (var corrupt = new SettingsService(path)) Assert.Equal(640, corrupt.Load().DetectionWidth); File.WriteAllText(path, "{\"DetectionWidth\":-1,\"DetectionHeight\":0,\"ReviewWidth\":99999,\"ReviewHeight\":0,\"Theme\":\"Missing\"}"); using var stale = new SettingsService(path); var loaded = stale.Load(); Assert.Equal((640, 360), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((160, 90), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Light", loaded.Theme); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+    [Fact]
+    public void NewInstallDefaultsAreLightWithThreeHundredMillisecondWorkWindow()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try { using var service = new SettingsService(path); var loaded = service.Load(); Assert.Equal("Light", loaded.Theme); Assert.Equal(300, loaded.WorkWindowMilliseconds); Assert.Equal(50, loaded.AudioSensitivity); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
     [Fact]
@@ -439,14 +446,20 @@ public sealed class MediaFoundationInteropContractTests
 public sealed class OperatorUiContractTests
 {
     private static string Ui => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Ui", "MainWindow.xaml"));
+    private static string AppUi => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Ui", "App.xaml"));
 
     [Fact]
     public void SettingsAreTabbedAndCollapsedRailCanReopen()
     {
         foreach (var id in new[] { "AppearanceTab", "DetectionTab", "ReviewTab", "CaptureTab", "ShortcutsTab", "AboutTab", "OpenSettingsRailButton" }) Assert.Contains($"AutomationProperties.AutomationId=\"{id}\"", Ui);
-        Assert.Contains("TabStripPlacement=\"Right\"", Ui);
+        Assert.Contains("SettingsNavigationItemStyle", Ui);
+        Assert.Contains("Header=\"◐  Appearance\"", Ui);
+        Assert.Contains("Header=\"◎  Detection\"", Ui);
+        Assert.Contains("Property=\"TabStripPlacement\" Value=\"Left\"", AppUi);
+        Assert.Contains("DynamicResource PanelSecondaryBrush", AppUi);
         Assert.Contains("AudioDisplayStyleSelector", Ui);
         Assert.Contains("AutomaticDetectionToggle", Ui);
+        Assert.Contains("AudioSensitivitySlider", Ui);
     }
 
     [Fact]
@@ -481,6 +494,8 @@ public sealed class OperatorUiContractTests
     [InlineData("Mirrored")]
     [InlineData("Filled")]
     [InlineData("Line")]
+    [InlineData("Peaks")]
+    [InlineData("Filled Peaks")]
     public void AudioDisplayStylesArePersistable(string style)
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-style-{Guid.NewGuid():N}.json");
@@ -503,8 +518,13 @@ public sealed class ThemeContrastTests
             AssertContrast(file, colors, "SecondaryTextBrush", "PanelBackgroundBrush");
             AssertContrast(file, colors, "MutedTextBrush", "PanelBackgroundBrush");
             AssertContrast(file, colors, "ControlTextBrush", "ControlBackgroundBrush");
+            AssertContrast(file, colors, "ControlTextBrush", "ControlHoverBrush");
+            AssertContrast(file, colors, "ControlTextBrush", "ControlPressedBrush");
             AssertContrast(file, colors, "AccentTextBrush", "AccentBrush");
             AssertContrast(file, colors, "PrimaryTextBrush", "PanelSecondaryBrush");
+            AssertContrast(file, colors, "SecondaryTextBrush", "PanelSecondaryBrush");
+            AssertContrast(file, colors, "PlayheadBrush", "PanelSecondaryBrush");
+            AssertContrast(file, colors, "PlayheadBrush", "PlayheadOutlineBrush");
         }
     }
 

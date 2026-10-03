@@ -5,6 +5,7 @@
   <ItemGroup><ProjectReference Include="..\..\src\Kairix.QuickAVSync.Windows\Kairix.QuickAVSync.Windows.csproj" /></ItemGroup>
   <ItemGroup>
     <None Include="..\..\src\Kairix.QuickAVSync\Themes\*.xaml" Link="Themes\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\Kairix.QuickAVSync\App.xaml" Link="Ui\App.xaml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\src\Kairix.QuickAVSync\MainWindow.xaml" Link="Ui\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

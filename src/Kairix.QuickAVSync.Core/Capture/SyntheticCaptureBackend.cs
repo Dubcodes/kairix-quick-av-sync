@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Kairix.QuickAVSync.Models;
 
 namespace Kairix.QuickAVSync.Capture;
@@ -10,8 +9,15 @@ public sealed class SyntheticCaptureBackend(TimeSpan? audioToVideoOffset = null)
     private readonly TimeSpan _offset = audioToVideoOffset ?? TimeSpan.FromMilliseconds(60);
     public string Id => BackendName;
     public Task<IReadOnlyList<CaptureDeviceDescriptor>> EnumerateDevicesAsync(CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<CaptureDeviceDescriptor>>([
-        new(DeviceId, "Synthetic A/V test source (+60 ms video)", CaptureDeviceKind.Synthetic, BackendName, "synthetic")
+        new(DeviceId, DisplayName(_offset), CaptureDeviceKind.Synthetic, BackendName, "synthetic")
     ]);
+    public static string DisplayName(TimeSpan offset)
+    {
+        var milliseconds = offset.TotalMilliseconds;
+        if (Math.Abs(milliseconds) < .0005) return "Synthetic A/V test · expected 0 ms (in sync)";
+        var relationship = milliseconds > 0 ? "audio leads video" : "audio lags video";
+        return $"Synthetic A/V test · expected {milliseconds:+0.###;-0.###;0} ms ({relationship})";
+    }
     public Task<ICaptureSession> OpenAsync(CaptureDeviceDescriptor device, CaptureOpenOptions options, CancellationToken cancellationToken)
     {
         if (device.BackendId != BackendName) throw new ArgumentException("Descriptor does not belong to the synthetic backend.", nameof(device));
@@ -36,12 +42,12 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset, Capture
     private async Task RunAsync(CancellationToken ct)
     {
         StatusChanged?.Invoke(this, new(CaptureStatus.Running, "Synthetic source running"));
-        var clock = Stopwatch.StartNew(); var frame = 0; var nextAudioClap = 3.0;
+        var frame = 0; var nextAudioClap = 3.0;
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                var now = clock.Elapsed; var visualClap = nextAudioClap + audioToVideoOffset.TotalSeconds;
+                var now = TimeSpan.FromMilliseconds(frame * 20d); var visualClap = nextAudioClap + audioToVideoOffset.TotalSeconds;
                 var index = frame++;
                 VideoSampleReceived?.Invoke(this, CreateFrame(now, visualClap, index,
                     options?.PreferredAnalysisWidth ?? 640, options?.PreferredAnalysisHeight ?? 360,
@@ -56,16 +62,16 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset, Capture
     }
     public static VideoFrame CreateFrame(TimeSpan now, double visualClapSeconds, int frame, int width = 640, int height = 360, int presentationWidth = 160, int presentationHeight = 90)
     {
-        var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var distance = Math.Abs(now.TotalSeconds - visualClapSeconds);
+        var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var relativeSeconds = now.TotalSeconds - visualClapSeconds;
         for (var y = 0; y < height; y++) for (var x = 0; x < width; x++)
         {
             var background = 22 + x * 22 / width + y * 12 / height;
-            var hands = distance < .18 && Math.Abs(x - width / 2) < (int)(12 + distance * 350) && Math.Abs(y - height / 2) < 34;
+            var hands = IsHandPixel(x, y, width, height, relativeSeconds);
             luma[y * width + x] = (byte)(hands ? 205 : background);
         }
         for (var y = 0; y < presentationHeight; y++) for (var x = 0; x < presentationWidth; x++)
         {
-            var hands = distance < .18 && Math.Abs(x - presentationWidth / 2) < (int)(6 + distance * 175) && Math.Abs(y - presentationHeight / 2) < 17;
+            var hands = IsHandPixel(x, y, presentationWidth, presentationHeight, relativeSeconds);
             var offset = (y * presentationWidth + x) * 4;
             bgra[offset] = hands ? (byte)114 : (byte)(68 + x * 20 / presentationWidth);
             bgra[offset + 1] = hands ? (byte)164 : (byte)(44 + y * 20 / presentationHeight);
@@ -73,6 +79,17 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset, Capture
             bgra[offset + 3] = 255;
         }
         return new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, luma, frame, Stride: width, PresentationBgra: bgra, PresentationWidth: presentationWidth, PresentationHeight: presentationHeight, PresentationStride: presentationWidth * 4, NativeSampleIndex: frame);
+    }
+    private static bool IsHandPixel(int x, int y, int width, int height, double relativeSeconds)
+    {
+        if (relativeSeconds is < 0 or >= .16) return false;
+        var centerX = width / 2d; var centerY = height / 2d; var handWidth = Math.Max(3, width * .11); var handHeight = Math.Max(3, height * .20);
+        if (Math.Abs(y - centerY) > handHeight / 2) return false;
+        // The deterministic source is a calibration pattern, not a hand-motion
+        // simulation: one unambiguous visual contact appears at the declared
+        // timestamp and holds briefly so the detector cannot choose an earlier
+        // approach/settle edge.
+        return Math.Abs(x - centerX) <= handWidth;
     }
     internal static AudioChunk CreateAudio(TimeSpan now, double audioClapSeconds, Random random)
     {

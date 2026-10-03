@@ -369,13 +369,14 @@ public sealed class AppSettings
     public bool AutoSpike { get; set; } = true;
     public bool AutoVisual { get; set; } = true;
     public int VisualSensitivity { get; set; } = 50;
+    public int AudioSensitivity { get; set; } = 50;
     public double RollingBufferSeconds { get; set; } = 5;
-    public double WorkWindowMilliseconds { get; set; } = 250;
+    public double WorkWindowMilliseconds { get; set; } = 300;
     public int DetectionWidth { get; set; } = 640;
     public int DetectionHeight { get; set; } = 360;
     public int ReviewWidth { get; set; } = 160;
     public int ReviewHeight { get; set; } = 90;
-    public string Theme { get; set; } = "Graphite";
+    public string Theme { get; set; } = "Light";
     public string AudioDisplayStyle { get; set; } = "Mirrored";
     public bool SettingsPanelExpanded { get; set; } = true;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);

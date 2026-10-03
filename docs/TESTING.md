@@ -18,9 +18,9 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 
 ## Capture-free application test
 
-1. Start the app and select **Synthetic A/V test source (+60 ms video)**.
+1. Start the app and select **Synthetic A/V test · expected +60 ms (audio leads video)**.
 2. Confirm live motion and `READY TO CLAP`.
-3. Wait for the generated event and confirm a positive audio-leads result near +60 ms.
+3. Wait for the generated event and confirm `+60 ms` / **AUDIO LEADS VIDEO BY 60 ms**. Positive means the audio transient occurred before the visual contact.
 4. Confirm the automatic thumbnail remains fixed while Left/Right changes the main viewer.
 5. Scrub and verify the result changes to `MANUAL PREVIEW` and follows the white playhead; press Enter and verify it changes to `MANUAL RESULT`.
 6. Drag the yellow AUDIO marker or click Pre A/Nxt A and verify 1.0 ms Audio/result changes while the event window, waveform, visual playhead, Auto candidate, and thumbnail remain intact.
@@ -29,7 +29,7 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 9. Press R, Space, and F5 to verify resume, manual capture, and reconnect.
 10. Close/reopen and verify preferences persist while history/media do not.
 11. Confirm Settings collapses to a narrow reopen rail; switch AP/DET/REV/CAP/KEY/? pages and verify engineering detail appears only in About.
-12. Switch all seven themes and all three waveform display styles without restarting. Verify readable controls/history and confirm waveform style changes do not move any marker or result.
+12. Switch all seven themes and all five waveform display styles without restarting. Verify readable settings navigation, controls, history, marker labels, outlined video playhead, and result overlay; confirm waveform style changes do not move any marker or result. Peaks and Filled Peaks must use the bottom as zero and extend upward.
 
 Both existing win-x64 publish profiles must pass `scripts/smoke-test-windows.ps1`. It requires a live process with the exact title, a non-zero visible maximized top-level window handle, and a clean close.
 
@@ -105,7 +105,7 @@ For a physical reconstructed A/V check, record all three values separately: the 
 
 ## UI, contact, and resolution regressions
 
-The Windows suite copies `MainWindow.xaml` and every theme dictionary into its output. Contract tests verify the six settings pages, collapsed reopen rail, Appearance/audio controls, Detection controls, About/Shortcuts content, compact result panel, removed top-left viewer popup, Mark Visual review gating, and exact review-button order. Theme tests compute sRGB relative luminance and require at least 4.5:1 for primary/secondary/muted panel text, control text, accent text, and history text in Graphite, Midnight, Light, High Contrast, Synthwave, Terminal, and Solar Flare.
+The Windows suite copies `MainWindow.xaml` and every theme dictionary into its output. Contract tests verify the named left navigation and six settings pages, collapsed reopen rail, Appearance/audio controls, visual/audio Detection controls, About/Shortcuts content, compact result panel, removed top-left viewer popup, Mark Visual review gating, and exact review-button order. Theme tests compute sRGB relative luminance and require at least 4.5:1 for primary/secondary/muted panel text, normal/hover/pressed control text, accent text, history text, and the outlined video playhead in Graphite, Midnight, Light, High Contrast, Synthwave, Terminal, and Solar Flare.
 
 Core contact fixtures cover: approach→contact/settle (contact, not peak), fast post-peak contact, slow motion without contact (no candidate), broad camera movement rejection, reconstructed Top-approach/Bottom-contact, and progressive equivalent phase. One 1280×720 source sequence is downsampled to 320×180, 640×360, 960×540, and 1280×720; all must select the same physical contact index while confidence and score may differ.
 
