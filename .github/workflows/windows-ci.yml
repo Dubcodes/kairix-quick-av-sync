@@ -29,7 +29,8 @@ jobs:
         shell: pwsh
         run: |
           $shortSha = '${{ github.sha }}'.Substring(0, 7)
-          $buildId = "dev-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd'))-$shortSha"
+          $projectDate = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTimeOffset]::UtcNow, 'New Zealand Standard Time').ToString('yyyyMMdd')
+          $buildId = "dev-$projectDate-$shortSha"
           "build_id=$buildId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Package both Windows variants
         if: github.event_name == 'push'
