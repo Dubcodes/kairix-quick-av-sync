@@ -23,13 +23,13 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 3. Wait for the generated event and confirm a positive audio-leads result near +60 ms.
 4. Confirm the automatic thumbnail remains fixed while Left/Right changes the main viewer.
 5. Scrub and verify the result changes to `MANUAL PREVIEW` and follows the white playhead; press Enter and verify it changes to `MANUAL RESULT`.
-6. Drag the yellow AUDIO marker or press A and verify Audio/result changes live while the event window, waveform, playhead, Auto candidate, and thumbnail remain intact.
+6. Drag the yellow AUDIO marker or click Pre A/Nxt A and verify 1.0 ms Audio/result changes while the event window, waveform, visual playhead, Auto candidate, and thumbnail remain intact.
 7. Press H once across the next event and confirm no new test appears while preview continues; press H again to resume automatic events.
 8. Click/drag the timeline and confirm the review playhead and manual-preview result change without changing the stored Auto candidate. Confirm marker labels remain readable when timestamps coincide.
 9. Press R, Space, and F5 to verify resume, manual capture, and reconnect.
 10. Close/reopen and verify preferences persist while history/media do not.
-11. Confirm the Settings column collapses/reopens, all four toggles include their function plus `ON`/`OFF`, and the operational controls remain visible.
-12. Switch Graphite, Midnight, Light, and High Contrast without restarting. Verify readable ComboBox/TextBox/Button states and that waveform, sync, and RAM controls update.
+11. Confirm Settings collapses to a narrow reopen rail; switch AP/DET/REV/CAP/KEY/? pages and verify engineering detail appears only in About.
+12. Switch all seven themes and all three waveform display styles without restarting. Verify readable controls/history and confirm waveform style changes do not move any marker or result.
 
 Both existing win-x64 publish profiles must pass `scripts/smoke-test-windows.ps1`. It requires a live process with the exact title, a non-zero visible maximized top-level window handle, and a clean close.
 
@@ -94,3 +94,11 @@ These results validate extraction and cadence, not phase. Native UI inspection m
 Passing enumeration tests or seeing a picture is not enough to claim calibrated A/V timing.
 
 For a physical reconstructed A/V check, record all three values separately: the raw interpreted result, the automatic one-field offset shown in Settings, and the corrected primary result. A 25p→50i profile must show +20.000 ms automatic even for bottom-first order. A normal 50p profile must show 0.000 ms unless that exact profile has a manual override. Do not edit raw timestamps or reconstruction phase to force an expected answer.
+
+## UI, contact, and resolution regressions
+
+The Windows suite copies `MainWindow.xaml` and every theme dictionary into its output. Contract tests verify the six settings pages, collapsed reopen rail, Appearance/audio controls, Detection controls, About/Shortcuts content, compact result panel, removed top-left viewer popup, Mark Visual review gating, and exact review-button order. Theme tests compute sRGB relative luminance and require at least 4.5:1 for primary/secondary/muted panel text, control text, accent text, and history text in Graphite, Midnight, Light, High Contrast, Synthwave, Terminal, and Solar Flare.
+
+Core contact fixtures cover: approach→contact/settle (contact, not peak), fast post-peak contact, slow motion without contact (no candidate), broad camera movement rejection, reconstructed Top-approach/Bottom-contact, and progressive equivalent phase. One 1280×720 source sequence is downsampled to 320×180, 640×360, 960×540, and 1280×720; all must select the same physical contact index while confidence and score may differ.
+
+Separate invariant tests prove each analysis raster preserves media timestamp/raw value, temporal index, native-sample identity, field identity, timing observation, and compensation result. Synthetic same-resolution reconnect and changed-resolution reconnect produce the same phase. These tests distinguish **detector selection shift** from clock drift: raster may change evidence/confidence, but only a genuinely different chosen temporal position may change the result. Physical testing must additionally compare timestamp cadence/faults, audio continuity, conversion average/max, analysis time, selected field/index, and corrected result across at least 320×180, 640×360, and 960×540; never tune offsets per raster.

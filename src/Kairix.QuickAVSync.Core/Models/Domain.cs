@@ -186,7 +186,21 @@ public sealed record AudioChunk(
 }
 
 public sealed record AudioTransient(MediaTimestamp Timestamp, float Peak, float NoiseFloor);
-public sealed record VisualCandidate(MediaTimestamp Timestamp, int TemporalIndex, double Confidence, double MotionScore, VideoFrame Frame);
+public sealed record VisualDetectionTrace(
+    int ApproachPeakIndex,
+    int FinalContactIndex,
+    int PositionsAdvanced,
+    double ApproachEvidence,
+    double ContactEvidence,
+    double PostContactEvidence);
+
+public sealed record VisualCandidate(
+    MediaTimestamp Timestamp,
+    int TemporalIndex,
+    double Confidence,
+    double MotionScore,
+    VideoFrame Frame,
+    VisualDetectionTrace? Trace = null);
 public sealed record VisualDetectionOptions(int Sensitivity = 50)
 {
     public int ClampedSensitivity => Math.Clamp(Sensitivity, 0, 100);
@@ -362,6 +376,7 @@ public sealed class AppSettings
     public int ReviewWidth { get; set; } = 160;
     public int ReviewHeight { get; set; } = 90;
     public string Theme { get; set; } = "Graphite";
+    public string AudioDisplayStyle { get; set; } = "Mirrored";
     public bool SettingsPanelExpanded { get; set; } = true;
     public Dictionary<string, string> NativeFormatByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, bool> ReconstructFieldsByDevice { get; set; } = new(StringComparer.Ordinal);

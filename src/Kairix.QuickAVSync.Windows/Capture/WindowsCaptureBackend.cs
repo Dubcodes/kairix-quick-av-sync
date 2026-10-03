@@ -124,7 +124,7 @@ internal static class WindowsDeviceProperties
     [DllImport("setupapi.dll")] private static extern bool SetupDiDestroyDeviceInfoList(IntPtr deviceInfoSet);
 }
 
-public sealed class MediaFoundationCaptureSession : ICaptureSession
+public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePerformanceDiagnostics
 {
     private const int ValidationFrameCount = 3;
     private static readonly TimeSpan ValidationTimeout = TimeSpan.FromSeconds(3);
@@ -138,6 +138,11 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession
     public event EventHandler<VideoFrame>? VideoSampleReceived;
     public event EventHandler<AudioChunk>? AudioSampleReceived;
     public event EventHandler<CaptureStatusChangedEventArgs>? StatusChanged;
+    public CaptureProcessingDiagnostics GetProcessingDiagnostics()
+    {
+        var samples = Volatile.Read(ref _conversionSamples); var ticks = Interlocked.Read(ref _conversionTicks); var maximum = Interlocked.Read(ref _conversionMaximumTicks);
+        return new(samples, samples == 0 ? 0 : ticks * 1000d / Stopwatch.Frequency / samples, maximum * 1000d / Stopwatch.Frequency);
+    }
 
     private MediaFoundationCaptureSession(CaptureDeviceDescriptor device, CaptureOpenOptions options, DevicePairing pairing, IDiagnosticSink log, IMFSourceReader reader, CaptureFormat format, SourceFormat sourceFormat)
     { _device = device; _options = options; _pairing = pairing; _log = log; _reader = reader; CurrentFormat = format; _sourceFormat = sourceFormat; BuildConversionPlans(); }

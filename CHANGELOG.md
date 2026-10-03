@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Simplified the operator UI: tabbed right-edge Settings rail, concise input and ARMED/HOLD state, uncluttered viewer, ordered audio/visual review controls, and a right column containing only result, visual confidence, and compact session history. Technical timing/reconstruction diagnostics moved to About.
+- Added presentation-only Mirrored, Filled, and Line waveform styles; added Synthwave, Terminal, and Solar Flare themes; and added computed contrast tests across all seven themes.
+- Reworked visual clap selection into explicit approach and bounded contact/settle stages with trace diagnostics. Added real-observation-shaped contact regressions, reconstructed/progressive equivalence, broad-motion/slow-motion rejection, and four-raster selection invariance.
+- Instrumented each chosen event with resolution, raw timestamps/identities, raw and corrected results, approach/contact indices, runtime/conversion cost, and timestamp/audio health. Deterministic reconnect and metadata tests demonstrate that detection resolution cannot enter timing math; no per-resolution offset or unsupported settling delay was added.
 - Added automatic reconstructed capture-delay compensation at the measurement layer. Explicit 25p→50i profiles default to +20.000 ms and 29.97p→59.94i profiles use the exact 1001/60000-second field interval; the whole field pair shifts together while raw capture/reconstruction timestamps remain unchanged.
 - Added a visible Video timing offset setting with per-device/native-mode/reconstruction/order/rate manual overrides and Reset to automatic. Current results, review positions, detector expectation, work-window selection, and session history now consistently distinguish corrected timing from retained raw measurements.
 - Added independent, aspect-preserving detection and review resolution settings, live image-buffer memory estimates/warnings, resolution-aware detector detail, and matching HardwareProbe controls.

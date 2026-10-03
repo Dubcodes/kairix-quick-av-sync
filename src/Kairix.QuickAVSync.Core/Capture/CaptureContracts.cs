@@ -34,6 +34,13 @@ public interface ICaptureSession : IAsyncDisposable
     Task StopAsync(CancellationToken cancellationToken);
 }
 
+public sealed record CaptureProcessingDiagnostics(int Samples, double ConversionAverageMilliseconds, double ConversionMaximumMilliseconds);
+
+public interface ICapturePerformanceDiagnostics
+{
+    CaptureProcessingDiagnostics GetProcessingDiagnostics();
+}
+
 public interface IVisualClapDetector
 {
     Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken, VisualDetectionOptions? options = null);

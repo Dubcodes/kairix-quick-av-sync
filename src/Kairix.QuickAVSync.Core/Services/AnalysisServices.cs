@@ -87,28 +87,59 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
         }
         var measured = evidence.Skip(1).ToArray(); var baseline = Median(measured);
         var deviations = measured.Select(value => Math.Abs(value - baseline)).ToArray(); var spread = Math.Max(.0015, Median(deviations) * 1.4826);
-        var bestIndex = -1; var bestPeakIndex = -1; var bestScore = 0d;
-        for (var i = 1; i < frames.Count - 1; i++)
+        var bestIndex = -1; var bestPeakIndex = -1; var bestScore = 0d; var bestPostEvidence = 0d;
+        for (var peakIndex = 1; peakIndex < frames.Count - 2; peakIndex++)
         {
-            var proximity = Math.Exp(-Math.Abs(frames[i].Timestamp.Ticks100ns - expected.Ticks100ns) / (double)TimeSpan.FromMilliseconds(160).Ticks);
-            var previous = evidence[i - 1]; var peak = evidence[i]; var next = evidence[i + 1];
-            // A contact can be the low-motion image immediately after a strong final
-            // approach. Advance only when the measured rise/peak/drop supports it.
-            var hasRise = previous > baseline + spread * .5 && peak > Math.Max(baseline + spread, previous * 1.12);
-            var hasPostPeakDrop = next < peak * .52 && peak - next > Math.Max(.006, spread * .8);
-            var localFloor = Math.Max(baseline, (previous + next) * .38);
-            var transientness = Math.Max(0, peak - localFloor);
-            var score = transientness / spread * (.72 + .28 * proximity) * (hasRise && hasPostPeakDrop ? 3 : 1);
-            var candidateIndex = hasRise && hasPostPeakDrop ? i + 1 : i;
-            var currentDistance = bestIndex < 0 ? long.MaxValue : Math.Abs(frames[bestIndex].Timestamp.Ticks100ns - expected.Ticks100ns);
-            var candidateDistance = Math.Abs(frames[candidateIndex].Timestamp.Ticks100ns - expected.Ticks100ns);
-            if (score > bestScore + .01 || (Math.Abs(score - bestScore) <= .01 && candidateDistance < currentDistance)) { bestScore = score; bestPeakIndex = i; bestIndex = candidateIndex; }
+            var peak = evidence[peakIndex]; var previous = evidence[peakIndex - 1];
+            if (peak < evidenceThreshold || peak < baseline + spread || peak < previous * .95) continue;
+
+            // Stage 1: localized rapid approach. Expected time is deliberately a
+            // weak tie-breaker; it must not drag the result back onto approaching hands.
+            var proximity = Math.Exp(-Math.Abs(frames[peakIndex].Timestamp.Ticks100ns - expected.Ticks100ns) / (double)TimeSpan.FromMilliseconds(160).Ticks);
+            var approachScore = Math.Max(0, peak - Math.Max(baseline, previous * .55)) / spread * (.92 + .08 * proximity);
+
+            // A scene with no measurable lead-in is a contact onset rather than
+            // an approach peak (useful for cuts/test patterns and very fast claps).
+            // Select that onset itself when it immediately settles.
+            var nextEvidence = evidence[peakIndex + 1];
+            var followingEvidence = peakIndex + 2 < evidence.Length ? evidence[peakIndex + 2] : nextEvidence;
+            if (previous <= baseline + spread * .35 && nextEvidence <= peak * .72 && followingEvidence <= peak * .82 && approachScore >= scoreThreshold)
+            {
+                if (bestIndex < 0) { bestScore = approachScore; bestPeakIndex = peakIndex; bestIndex = peakIndex; bestPostEvidence = (nextEvidence + followingEvidence) / 2; }
+                continue;
+            }
+
+            // Stage 2: the earliest credible contact/settle image one to three
+            // temporal positions after the approach peak. A sharp drop followed by
+            // briefly lower motion is the deterministic contact evidence.
+            for (var contactIndex = peakIndex + 1; contactIndex <= Math.Min(frames.Count - 1, peakIndex + 3); contactIndex++)
+            {
+                var contact = evidence[contactIndex];
+                var post = contactIndex + 1 < evidence.Length ? evidence[contactIndex + 1] : contact;
+                var post2 = contactIndex + 2 < evidence.Length ? evidence[contactIndex + 2] : post;
+                var postMean = (post + post2) / 2;
+                var sharpDrop = contact <= peak * .72 && peak - contact >= Math.Max(.004, spread * .6);
+                var remainsLower = postMean <= peak * .82;
+                if (!sharpDrop || !remainsLower) continue;
+
+                var dropQuality = Math.Clamp((peak - contact) / Math.Max(peak, .0001), 0, 1);
+                var settleQuality = Math.Clamp((peak - postMean) / Math.Max(peak, .0001), 0, 1);
+                var score = approachScore * (.72 + .18 * dropQuality + .10 * settleQuality);
+                // The first qualified approach/contact pair is intentional: a
+                // later separation edge can be stronger but is not the clap contact.
+                if (bestIndex < 0 && score >= scoreThreshold)
+                {
+                    bestScore = score; bestPeakIndex = peakIndex; bestIndex = contactIndex; bestPostEvidence = postMean;
+                }
+                break; // earliest credible post-peak contact for this approach
+            }
         }
         if (bestIndex < 0 || bestPeakIndex < 0 || bestScore < scoreThreshold || evidence[bestPeakIndex] < evidenceThreshold) return null;
         var normalizedStrength = Math.Clamp(evidence[bestPeakIndex] / .2, 0, 1);
         var temporalConfidence = 1 - Math.Exp(-Math.Max(0, bestScore - 1.2) / 5);
         var confidence = Math.Clamp(.08 + .45 * temporalConfidence * Math.Sqrt(normalizedStrength) + .35 * normalizedStrength, .08, .94); var chosen = frames[bestIndex];
-        return new VisualCandidate(chosen.Timestamp, chosen.TemporalIndex, confidence, bestScore, chosen);
+        return new VisualCandidate(chosen.Timestamp, chosen.TemporalIndex, confidence, bestScore, chosen,
+            new(bestPeakIndex, bestIndex, bestIndex - bestPeakIndex, evidence[bestPeakIndex], evidence[bestIndex], bestPostEvidence));
     }, cancellationToken);
 
     private static double Median(IReadOnlyList<double> values)

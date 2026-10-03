@@ -11,7 +11,7 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Light", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Light", loaded.Theme); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Line", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Line", loaded.AudioDisplayStyle); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
@@ -434,4 +434,90 @@ public sealed class MediaFoundationInteropContractTests
 
     private static Type Interface(string name) => typeof(WindowsCaptureBackend).Assembly.GetType($"Kairix.QuickAVSync.Windows.Capture.{name}", true)!;
     private static MethodInfo[] DeclaredMethods(string name) => Interface(name).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).OrderBy(method => method.MetadataToken).ToArray();
+}
+
+public sealed class OperatorUiContractTests
+{
+    private static string Ui => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Ui", "MainWindow.xaml"));
+
+    [Fact]
+    public void SettingsAreTabbedAndCollapsedRailCanReopen()
+    {
+        foreach (var id in new[] { "AppearanceTab", "DetectionTab", "ReviewTab", "CaptureTab", "ShortcutsTab", "AboutTab", "OpenSettingsRailButton" }) Assert.Contains($"AutomationProperties.AutomationId=\"{id}\"", Ui);
+        Assert.Contains("TabStripPlacement=\"Right\"", Ui);
+        Assert.Contains("AudioDisplayStyleSelector", Ui);
+        Assert.Contains("AutomaticDetectionToggle", Ui);
+    }
+
+    [Fact]
+    public void ResultPanelAndVideoUseOnlyOperatorEssentials()
+    {
+        Assert.DoesNotContain("TIMING CORRECTION", Ui);
+        Assert.DoesNotContain("RAW MEASUREMENT", Ui);
+        Assert.DoesNotContain("TIMING QUALITY", Ui);
+        Assert.DoesNotContain("StringFormat=Detected:", Ui);
+        Assert.Contains("VISUAL CONFIDENCE", Ui);
+        Assert.Contains("SESSION HISTORY", Ui);
+    }
+
+    [Fact]
+    public void ReviewControlsHaveRequiredOrderAndAvailability()
+    {
+        var labels = new[] { "Pre A", "Pre V", "Mark Visual", "Nxt V", "Nxt A", "Resume Live" };
+        var prior = -1;
+        foreach (var label in labels) { var next = Ui.IndexOf($"Content=\"{label}\"", StringComparison.Ordinal); Assert.True(next > prior, label); prior = next; }
+        Assert.Contains("Content=\"Mark Visual\" Command=\"{Binding MarkVisualCommand}\" IsEnabled=\"{Binding IsInReview}\"", Ui);
+    }
+
+    [Theory]
+    [InlineData("Mirrored")]
+    [InlineData("Filled")]
+    [InlineData("Line")]
+    public void AudioDisplayStylesArePersistable(string style)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-style-{Guid.NewGuid():N}.json");
+        try { using var service = new SettingsService(path); service.Save(new() { AudioDisplayStyle = style }); Assert.Equal(style, service.Load().AudioDisplayStyle); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+}
+
+public sealed class ThemeContrastTests
+{
+    [Fact]
+    public void EveryThemeMaintainsOrdinaryTextContrast()
+    {
+        var files = Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "Themes"), "*.xaml");
+        Assert.Equal(7, files.Length);
+        foreach (var file in files)
+        {
+            var colors = ReadColors(file);
+            AssertContrast(file, colors, "PrimaryTextBrush", "PanelBackgroundBrush");
+            AssertContrast(file, colors, "SecondaryTextBrush", "PanelBackgroundBrush");
+            AssertContrast(file, colors, "MutedTextBrush", "PanelBackgroundBrush");
+            AssertContrast(file, colors, "ControlTextBrush", "ControlBackgroundBrush");
+            AssertContrast(file, colors, "AccentTextBrush", "AccentBrush");
+            AssertContrast(file, colors, "PrimaryTextBrush", "PanelSecondaryBrush");
+        }
+    }
+
+    private static Dictionary<string, string> ReadColors(string path)
+    {
+        var document = System.Xml.Linq.XDocument.Load(path); System.Xml.Linq.XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        return document.Descendants().Where(element => element.Name.LocalName == "SolidColorBrush").ToDictionary(element => element.Attribute(x + "Key")!.Value, element => element.Attribute("Color")!.Value);
+    }
+
+    private static void AssertContrast(string file, IReadOnlyDictionary<string, string> colors, string foreground, string background) =>
+        Assert.True(Contrast(colors[foreground], colors[background]) >= 4.5, $"{Path.GetFileNameWithoutExtension(file)} {foreground}/{background} contrast was {Contrast(colors[foreground], colors[background]):0.00}");
+
+    private static double Contrast(string first, string second)
+    {
+        var a = Luminance(first); var b = Luminance(second); return (Math.Max(a, b) + .05) / (Math.Min(a, b) + .05);
+    }
+
+    private static double Luminance(string color)
+    {
+        var hex = color.TrimStart('#'); if (hex.Length == 8) hex = hex[2..];
+        static double Channel(int value) { var normalized = value / 255d; return normalized <= .04045 ? normalized / 12.92 : Math.Pow((normalized + .055) / 1.055, 2.4); }
+        return .2126 * Channel(Convert.ToInt32(hex[..2], 16)) + .7152 * Channel(Convert.ToInt32(hex.Substring(2, 2), 16)) + .0722 * Channel(Convert.ToInt32(hex.Substring(4, 2), 16));
+    }
 }

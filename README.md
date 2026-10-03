@@ -14,7 +14,7 @@ First run:
 
 1. Download and run the self-contained EXE.
 2. Select the capture device and confirm that **Detected Capture** matches the Media Foundation mode actually delivered.
-3. Choose **Resolution** and **Format** under **Input Interpretation**, with **Pixel format** in the collapsible **Settings** column. These controls resolve to one exact native capture mode and are remembered per device.
+3. Choose **Resolution** and **Format** under **Input**, with **Pixel format** under **Settings → Capture**. These controls resolve to one exact native capture mode and are remembered per device.
 4. If a progressive capture frame contains two woven fields, enable **Reconstruct interlaced fields** and select the matching top-first or bottom-first interpretation.
 5. Clap and review the sync result. Manual timeline scrubbing and Audio/Visual corrections remain available.
 
@@ -39,22 +39,22 @@ When no working hardware backend is available, the app selects **Synthetic A/V t
 1. Select a video source. **Detected Capture** is read-only and always describes the authoritative Media Foundation output using the real raster, numeric rate/scan, and pixel format.
 2. Choose the interpretation **Resolution**, **Format**, and **Pixel format**. A valid combination reconnects to the matching exact native mode; unavailable combinations are not offered and explicit selection never silently falls back.
 3. For woven capture such as `1920×1080 · 25.000p · YUY2` containing a 50i source, enable **Reconstruct interlaced fields** and select `25.000p → 50.000i · Top first` or `Bottom first`. This changes review cadence, not the authoritative detected capture metadata.
-4. With all three automatic modes enabled, clap in front of the camera.
+4. Enable **Automatic detection**, **Audio trigger**, and **Visual clap match** under **Settings → Detection**. The main state reads **ARMED**, **HOLD**, or **AUTO OFF** truthfully.
 5. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
-6. Click or drag the timeline to scrub to the nearest real temporal image. Mouse wheel and Left/Right step one frame or field, while Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
-7. Drag the yellow **AUDIO** marker (or press A at the playhead) to correct Audio Zero inside the fixed event window. The result updates live without clearing the waveform, playhead, automatic candidate, or thumbnail.
+6. Click or drag the timeline to scrub to the nearest real temporal image. **Pre V/Nxt V**, mouse wheel, and Left/Right step one frame or field; Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
+7. Drag the yellow **AUDIO** marker or use **Pre A/Nxt A** (Ctrl+Left/Ctrl+Right) for deterministic 1.0 ms audio adjustments. Audio changes never move the visual playhead.
 8. Press Enter to commit the playhead as **MANUAL RESULT**. The automatic candidate remains available from its thumbnail for comparison.
 9. Clap again; the previous event moves into the three-item session history once.
 
 **Manual Clap** (Space) freezes a work window around the latest rolling-buffer position. Capture and rolling buffers continue while reviewing. Press H once to toggle Hold for new automatic detections; press it again to resume. Hold never stops capture or buffering and resets off at launch.
 
-The left side is split into a collapsible **Settings** column and an always-visible operational capture column beside the video. Settings provides independent **Detection resolution** (luma used by the detector) and **Review image resolution** (BGRA used by live preview, stepping, and thumbnails). These never change the native capture raster. Higher detection resolution examines more spatial detail; either higher raster increases rolling-buffer memory as frames arrive. The live image-buffer estimate warns above roughly 512 MB and more strongly above 1 GB without silently reducing quality. Graphite is the default theme; Midnight, Light, and High Contrast switch immediately and persist.
+The left side is split into a collapsible tabbed **Settings** column and an always-visible operational capture column beside the video. Its vertical rail groups Appearance, Detection, Review, Capture, Shortcuts, and About; a narrow rail remains when collapsed. Engineering timing/reconstruction data is confined to About. Detection and review rasters never change native capture or timestamp math. Graphite, Midnight, Light, High Contrast, Synthwave, Terminal, and Solar Flare switch immediately and persist. Mirrored, Filled, and Line waveform styles are presentation-only and never modify samples, detection, or timing.
 
 ## Video timing compensation
 
 When Kairix explicitly reconstructs two fields from one progressive woven frame, it assumes the capture device could not deliver that completed frame until both fields had arrived. The default **Video timing offset** is therefore one exact reconstructed field interval: +20.000 ms for 25p→50i and approximately +16.683 ms for 29.97p→59.94i. A positive setting represents known video delivery delay and is subtracted from the interpreted visual time for measurement. Both fields move earlier together, preserving their cadence; raw frame, field, hardware, and transport timestamps never change.
 
-This is a documented operating assumption based on observed Magewell Weave behavior, not a claim about every capture device. Settings shows the effective value and lets the operator save a manual override per device/native-format/reconstruction/order/rate profile. **Reset to automatic** restores one field interval for explicit reconstruction and 0.000 ms for normal progressive or native-interlaced capture. The primary result and review timeline use corrected timing, while the Current Result panel retains the raw measurement for diagnosis.
+This is a documented operating assumption based on observed Magewell Weave behavior, not a claim about every capture device. Settings shows the effective value and lets the operator save a manual override per device/native-format/reconstruction/order/rate profile. **Reset to automatic** restores one field interval for explicit reconstruction and 0.000 ms for normal progressive or native-interlaced capture. The primary result and review timeline use corrected timing. Raw/corrected engineering diagnostics remain under **Settings → About**; the normal result column contains only result, visual confidence, and compact session history.
 
 An explicitly selected resolution/rate/pixel-format combination is strict: Kairix either captures that exact negotiated size, rational rate, scan/layout, and pixel format or displays **REQUESTED CAPTURE FORMAT NOT ACCEPTED**. Initial unsaved detection may use Auto to discover a mode.
 
@@ -63,11 +63,11 @@ An explicitly selected resolution/rate/pixel-format combination is strict: Kairi
 | Key | Action |
 |---|---|
 | Space | Manual clap/current-buffer capture |
-| H | Toggle Hold Auto Detect |
+| H | Toggle ARMED/HOLD when Automatic detection is enabled |
 | Left / Right | Previous/next temporal frame or field |
 | Shift+Left / Shift+Right | Step five temporal images |
+| Ctrl+Left / Ctrl+Right | Move the audio mark earlier/later by 1.0 ms |
 | Enter | Set the current playhead as visual contact |
-| A | Move Audio Zero to the current temporal playhead |
 | R | Resume live view |
 | F5 | Reconnect selected source |
 
@@ -104,7 +104,7 @@ Self-contained is the simplest public download but includes the runtime. Framewo
 - Each native video sample has a stable native-sample identity and retains factual device timestamp, sample time, Source Reader timestamp, and monotonic host arrival observations. A reconstructed pair shares those observations. Only its first visual review timestamp is derived. Timing reports therefore distinguish reconstructed review cadence (for example 50 fields/s) from native transport cadence (25 samples/s), and never fabricate field-rate hardware observations.
 - Frame rates are rational. Progressive, interlaced, and unknown scan metadata remain distinct; known interlaced modes preserve full-frame/single-field layout and field order instead of silently assuming progressive timing.
 - Native capture and temporal interpretation are separate. Enabling reconstruction on a valid 25p or 29.97p progressive transport produces 50i or 59.94i field positions while **Detected Capture** remains the real progressive Media Foundation mode.
-- Visual analysis is deterministic multi-scale downscaled-luma motion analysis. Coarse evidence rejects broad camera/exposure changes, fine cells retain small localized motion, and temporal rise/peak/drop evidence distinguishes likely contact from final approach. A persisted 0–100 sensitivity control changes acceptance thresholds without inflating confidence or bypassing the broad-motion/flash/noise rejection gates. It remains advisory and manually overridable.
+- Visual analysis is deterministic multi-scale downscaled-luma motion analysis. Coarse evidence rejects broad camera/exposure changes and fine cells retain localized motion. Selection separates the rapid approach peak from a bounded one-to-three-position contact/settle search, chooses the earliest credible contact, and keeps expected-time proximity from forcing an approaching-hand frame. Sensitivity changes acceptance without bypassing rejection gates.
 - The Windows backend uses Media Foundation source readers for video and shared-mode WASAPI for audio. Pairing prefers exact device Container IDs, then hardware parents, and uses a unique-name fallback only when unambiguous; it never silently substitutes the default microphone.
 - Native capture has been physically validated on an XI100DUSB HDMI capture device and Logitech C920 UVC webcam. It is designed for standard Windows Media Foundation/UVC capture devices; hardware and driver compatibility may vary.
 - Native video is reduced directly from locked NV12, YUY2, UYVY, BGRA32, or RGB24 buffers to configurable luma-analysis and BGRA-review rasters (defaults 640×360 and 160×90). Packed and planar YUV analysis reads luma bytes directly without YUV-to-RGB conversion; reusable scaling maps avoid rebuilding source coordinates per frame. For woven reconstruction, even/odd source rows are selected before either downscale and bobbed independently. Luma remains the detector input; colour is used only for preview/review/thumbnail presentation. Audio is normalized from float32 or PCM16 to owned float samples.

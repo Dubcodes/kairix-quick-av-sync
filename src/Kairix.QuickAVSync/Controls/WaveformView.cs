@@ -13,6 +13,7 @@ public sealed class WaveformView : FrameworkElement
     public static readonly DependencyProperty VisualMarkerMsProperty = DependencyProperty.Register(nameof(VisualMarkerMs), typeof(double?), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty PlayheadMsProperty = DependencyProperty.Register(nameof(PlayheadMs), typeof(double), typeof(WaveformView), new FrameworkPropertyMetadata(0d, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty FrameTicksMsProperty = DependencyProperty.Register(nameof(FrameTicksMs), typeof(IReadOnlyList<double>), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty DisplayStyleProperty = DependencyProperty.Register(nameof(DisplayStyle), typeof(string), typeof(WaveformView), new FrameworkPropertyMetadata("Mirrored", FrameworkPropertyMetadataOptions.AffectsRender));
     public IReadOnlyList<float>? Samples { get => (IReadOnlyList<float>?)GetValue(SamplesProperty); set => SetValue(SamplesProperty, value); }
     public double HalfWindowMs { get => (double)GetValue(HalfWindowMsProperty); set => SetValue(HalfWindowMsProperty, value); }
     public double AudioMarkerMs { get => (double)GetValue(AudioMarkerMsProperty); set => SetValue(AudioMarkerMsProperty, value); }
@@ -20,6 +21,7 @@ public sealed class WaveformView : FrameworkElement
     public double? VisualMarkerMs { get => (double?)GetValue(VisualMarkerMsProperty); set => SetValue(VisualMarkerMsProperty, value); }
     public double PlayheadMs { get => (double)GetValue(PlayheadMsProperty); set => SetValue(PlayheadMsProperty, value); }
     public IReadOnlyList<double>? FrameTicksMs { get => (IReadOnlyList<double>?)GetValue(FrameTicksMsProperty); set => SetValue(FrameTicksMsProperty, value); }
+    public string DisplayStyle { get => (string)GetValue(DisplayStyleProperty); set => SetValue(DisplayStyleProperty, value); }
     public event EventHandler<double>? PlayheadSelected;
     public event EventHandler<double>? AudioPointPreviewed;
     public event EventHandler<double>? AudioPointCommitted;
@@ -86,13 +88,27 @@ public sealed class WaveformView : FrameworkElement
         }
         if (Samples is { Count: > 1 })
         {
-            var baseline = new Pen(gridBrush, 1); var pen = new Pen(ResourceBrush("WaveformBrush", Brushes.Cyan), 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47);
+            var baseline = new Pen(gridBrush, 1); var waveformBrush = ResourceBrush("WaveformBrush", Brushes.Cyan); var pen = new Pen(waveformBrush, 1); var mid = (ActualHeight - 18 + 42) / 2d; var amplitude = Math.Max(4, mid - 47);
             dc.DrawLine(baseline, new(0, mid), new(ActualWidth, mid));
-            for (var i = 0; i < Samples.Count; i++)
+            if (string.Equals(DisplayStyle, "Filled", StringComparison.Ordinal))
             {
-                var x = i / (double)Math.Max(1, Samples.Count - 1) * ActualWidth; var display = Math.Sqrt(Math.Clamp(Samples[i], 0, 1));
-                dc.DrawLine(pen, new(x, mid - display * amplitude), new(x, mid + display * amplitude));
+                var geometry = new StreamGeometry(); using (var context = geometry.Open())
+                {
+                    context.BeginFigure(new(0, mid), true, true);
+                    for (var i = 0; i < Samples.Count; i++) context.LineTo(WavePoint(i, -1), true, false);
+                    for (var i = Samples.Count - 1; i >= 0; i--) context.LineTo(WavePoint(i, 1), true, false);
+                }
+                geometry.Freeze(); var fill = waveformBrush.Clone(); fill.Opacity = .55; dc.DrawGeometry(fill, pen, geometry);
             }
+            else if (string.Equals(DisplayStyle, "Line", StringComparison.Ordinal))
+            {
+                for (var i = 1; i < Samples.Count; i++) dc.DrawLine(pen, WavePoint(i - 1, -1), WavePoint(i, -1));
+            }
+            else
+            {
+                for (var i = 0; i < Samples.Count; i++) dc.DrawLine(pen, WavePoint(i, -1), WavePoint(i, 1));
+            }
+            Point WavePoint(int index, int direction) { var x = index / (double)Math.Max(1, Samples.Count - 1) * ActualWidth; var display = Math.Sqrt(Math.Clamp(Samples[index], 0, 1)); return new(x, mid + direction * display * amplitude); }
         }
         Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, ResourceBrush("AudioMarkerBrush", Brushes.Gold), 2.5, "AUDIO", 2);
         if (AutoVisualMs is { } auto) Marker(dc, auto, ResourceBrush("AutoMarkerBrush", Brushes.DodgerBlue), 1.5, "AUTO", 12);

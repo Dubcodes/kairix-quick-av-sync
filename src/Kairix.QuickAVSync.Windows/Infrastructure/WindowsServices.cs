@@ -48,7 +48,8 @@ public sealed class SettingsService(string? path = null) : IDisposable
     }
     private static AppSettings Sanitize(AppSettings value)
     {
-        var themes = new HashSet<string>(["Graphite", "Midnight", "Light", "High Contrast"], StringComparer.Ordinal);
+        var themes = new HashSet<string>(["Graphite", "Midnight", "Light", "High Contrast", "Synthwave", "Terminal", "Solar Flare"], StringComparer.Ordinal);
+        var audioStyles = new HashSet<string>(["Mirrored", "Filled", "Line"], StringComparer.Ordinal);
         return new AppSettings
         {
             LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName,
@@ -60,6 +61,7 @@ public sealed class SettingsService(string? path = null) : IDisposable
             ReviewWidth = value.ReviewWidth is > 0 and <= 8192 ? value.ReviewWidth : 160,
             ReviewHeight = value.ReviewHeight is > 0 and <= 4320 ? value.ReviewHeight : 90,
             Theme = themes.Contains(value.Theme ?? "") ? value.Theme! : "Graphite",
+            AudioDisplayStyle = audioStyles.Contains(value.AudioDisplayStyle ?? "") ? value.AudioDisplayStyle! : "Mirrored",
             SettingsPanelExpanded = value.SettingsPanelExpanded,
             NativeFormatByDevice = new(value.NativeFormatByDevice ?? new(), StringComparer.Ordinal),
             ReconstructFieldsByDevice = new(value.ReconstructFieldsByDevice ?? new(), StringComparer.Ordinal),

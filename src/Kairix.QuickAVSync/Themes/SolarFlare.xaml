@@ -1,0 +1,9 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#120B08"/><SolidColorBrush x:Key="PanelBackgroundBrush" Color="#21130F"/><SolidColorBrush x:Key="PanelSecondaryBrush" Color="#301B14"/>
+  <SolidColorBrush x:Key="ControlBackgroundBrush" Color="#42251A"/><SolidColorBrush x:Key="ControlHoverBrush" Color="#593224"/><SolidColorBrush x:Key="ControlPressedBrush" Color="#70412D"/><SolidColorBrush x:Key="ControlTextBrush" Color="#FFF3E8"/>
+  <SolidColorBrush x:Key="PrimaryTextBrush" Color="#FFF3E8"/><SolidColorBrush x:Key="SecondaryTextBrush" Color="#F2CDB8"/><SolidColorBrush x:Key="MutedTextBrush" Color="#D9A98E"/><SolidColorBrush x:Key="BorderBrush" Color="#8A5940"/>
+  <SolidColorBrush x:Key="AccentBrush" Color="#FF8A3D"/><SolidColorBrush x:Key="AccentTextBrush" Color="#241006"/><SolidColorBrush x:Key="WarningBrush" Color="#FFD166"/><SolidColorBrush x:Key="DangerBrush" Color="#FF6257"/>
+  <SolidColorBrush x:Key="VideoBackgroundBrush" Color="#080301"/><SolidColorBrush x:Key="OverlayBackgroundBrush" Color="#E0120B08"/><SolidColorBrush x:Key="WaveformBrush" Color="#FFB14A"/><SolidColorBrush x:Key="GridBrush" Color="#704936"/>
+  <SolidColorBrush x:Key="AudioMarkerBrush" Color="#FFD166"/><SolidColorBrush x:Key="AutoMarkerBrush" Color="#77C8FF"/><SolidColorBrush x:Key="VisualMarkerBrush" Color="#FF6257"/><SolidColorBrush x:Key="PlayheadBrush" Color="#FFFFFF"/>
+  <SolidColorBrush x:Key="MemoryOtherBrush" Color="#80604E"/><SolidColorBrush x:Key="MemoryProcessBrush" Color="#FF8A3D"/><SolidColorBrush x:Key="PositiveBrush" Color="#FF8A3D"/>
+</ResourceDictionary>
