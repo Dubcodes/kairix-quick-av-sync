@@ -33,6 +33,14 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 
 Both existing win-x64 publish profiles must pass `scripts/smoke-test-windows.ps1`. It requires a live process with the exact title, a non-zero visible maximized top-level window handle, and a clean close.
 
+The shared distribution packager can be exercised locally with a traceable test identity:
+
+```powershell
+./scripts/package-windows.ps1 -BuildId dev-20261004-ee1e442 -SourceCommit ee1e442 -BuildChannel Development
+```
+
+It must produce two non-empty identified EXEs, a ZIP containing both variants plus README/LICENSE, and a three-entry `SHA256SUMS.txt` under `artifacts/package/`. On a `main` push, Windows CI invokes the packager only after all builds and tests succeed and uploads the result under an artifact name containing the full commit SHA. The development-release workflow is triggered by that completed CI run, downloads only that run's exact artifact, rechecks identity and checksums, and creates an idempotent public prerelease. A `v*` tag continues to be the only recommended-release trigger.
+
 ## Concurrency regression
 
 Run the Core suite repeatedly after changing event analysis:

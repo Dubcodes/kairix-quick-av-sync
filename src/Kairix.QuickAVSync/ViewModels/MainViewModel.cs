@@ -315,7 +315,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string ArmStateText => !AutoDetect ? "AUTO OFF" : IsHold ? "HOLD" : "ARMED";
     public bool IsInReview => _isReview;
     public string VersionText => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
-    public string BuildText => Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "development";
+    public string BuildText => Services.BuildIdentity.Current.BuildId;
+    public string BuildChannelText => $"{Services.BuildIdentity.Current.Channel} build";
+    public string BuildCommitText => $"Commit {Services.BuildIdentity.Current.ShortCommit}";
     public string AboutTimingDiagnosticsText => $"Detected capture: {DetectedCaptureText}\nInterpreted format: {InterpretationText}\nReview temporal rate: {ExpectedReviewTemporalRate:0.000}/s\nNative transport rate: {ExpectedCaptureTransportRate:0.000}/s\nTiming source: {TimingText}\n{TimestampPhaseText}\nVideo compensation: {VideoTimingOffsetModeText}\nRaw measurement: {RawMeasurementText}\nCorrected measurement: {(CurrentResult is { TimingComparable: true } result ? $"{result.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—")}";
     public string FieldReconstructionAboutText => CurrentFieldReconstruction is { } reconstruction
         ? $"One woven progressive frame contains two fields. Kairix extracts {reconstruction.FieldOrder.ToString().Replace("First", " first").ToLowerInvariant()} fields before downscaling. Field interval: {reconstruction.FieldIntervalTicks100ns / 10_000d:0.0000} ms. The capture timestamp is treated as the completed pair / second field; automatic compensation is one field interval."

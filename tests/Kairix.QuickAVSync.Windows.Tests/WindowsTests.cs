@@ -461,6 +461,14 @@ public sealed class OperatorUiContractTests
     }
 
     [Fact]
+    public void AboutShowsTraceableBuildIdentity()
+    {
+        Assert.Contains("{Binding BuildChannelText}", Ui);
+        Assert.Contains("{Binding BuildText}", Ui);
+        Assert.Contains("{Binding BuildCommitText}", Ui);
+    }
+
+    [Fact]
     public void ReviewControlsHaveRequiredOrderAndAvailability()
     {
         var labels = new[] { "Pre A", "Pre V", "Mark Visual", "Nxt V", "Nxt A", "Resume Live" };

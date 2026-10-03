@@ -23,3 +23,23 @@ jobs:
       - run: dotnet build Kairix.QuickAVSync.sln -c Release --no-restore -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Core.Tests/Kairix.QuickAVSync.Core.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Windows.Tests/Kairix.QuickAVSync.Windows.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
+      - name: Define development build identity
+        id: identity
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $shortSha = '${{ github.sha }}'.Substring(0, 7)
+          $buildId = "dev-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd'))-$shortSha"
+          "build_id=$buildId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Package both Windows variants
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -BuildId '${{ steps.identity.outputs.build_id }}' -SourceCommit '${{ github.sha }}' -BuildChannel Development
+      - name: Upload validated Windows packages
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kairix-Quick-AV-Sync-${{ github.sha }}-win-x64
+          path: artifacts/package/*
+          if-no-files-found: error
+          retention-days: 30

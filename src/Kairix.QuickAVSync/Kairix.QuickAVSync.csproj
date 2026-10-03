@@ -14,7 +14,25 @@
     <Product>Kairix Quick A/V Sync</Product>
     <Description>Windows audio/video synchronization measurement utility</Description>
     <Authors>Dubcodes</Authors>
+    <BuildId Condition="'$(BuildId)' == ''">local-development</BuildId>
+    <SourceCommit Condition="'$(SourceCommit)' == ''">unknown</SourceCommit>
+    <BuildChannel Condition="'$(BuildChannel)' == ''">Development</BuildChannel>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>BuildId</_Parameter1>
+      <_Parameter2>$(BuildId)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>SourceCommit</_Parameter1>
+      <_Parameter2>$(SourceCommit)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>BuildChannel</_Parameter1>
+      <_Parameter2>$(BuildChannel)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Kairix.QuickAVSync.Core\Kairix.QuickAVSync.Core.csproj" />

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added two-track public distribution: explicit, deliberately lagging `v*` recommended releases and automatic commit-identified development prereleases produced only after successful `main` Windows validation. CI now packages self-contained and framework-dependent Windows x64 EXEs, a combined ZIP, and verified SHA256 checksums, while About exposes build channel, build ID, and source commit.
 - Simplified the operator UI: tabbed right-edge Settings rail, concise input and ARMED/HOLD state, uncluttered viewer, ordered audio/visual review controls, and a right column containing only result, visual confidence, and compact session history. Technical timing/reconstruction diagnostics moved to About.
 - Added presentation-only Mirrored, Filled, and Line waveform styles; added Synthwave, Terminal, and Solar Flare themes; and added computed contrast tests across all seven themes.
 - Reworked visual clap selection into explicit approach and bounded contact/settle stages with trace diagnostics. Added real-observation-shaped contact regressions, reconstructed/progressive equivalence, broad-motion/slow-motion rejection, and four-raster selection invariance.
