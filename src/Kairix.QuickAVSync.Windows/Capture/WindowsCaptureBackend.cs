@@ -129,7 +129,8 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
     private const int ValidationFrameCount = 3;
     private static readonly TimeSpan ValidationTimeout = TimeSpan.FromSeconds(3);
     private readonly CaptureDeviceDescriptor _device; private readonly CaptureOpenOptions _options; private readonly DevicePairing _pairing; private readonly IDiagnosticSink _log;
-    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _nativeSampleCount; private int _validationStreak; private int _emptySampleCount; private int _audioState; private SourceFormat _sourceFormat;
+    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _nativeSampleCount; private int _validationStreak; private int _emptySampleCount; private int _consecutiveEmptySamples; private int _audioState; private SourceFormat _sourceFormat;
+    private long _audioChunkCount, _lastNativePayloadStopwatchTicks, _lastReadSampleReturnStopwatchTicks, _lastReadSampleEnteredStopwatchTicks, _lastAudioStopwatchTicks;
     private Dictionary<TemporalImageKind, NativeVideoConversionPlan> _conversionPlans = [];
     private long _conversionTicks; private long _conversionMaximumTicks; private int _conversionSamples;
     private TaskCompletionSource _firstVideoSample = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -143,6 +144,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
         var samples = Volatile.Read(ref _conversionSamples); var ticks = Interlocked.Read(ref _conversionTicks); var maximum = Interlocked.Read(ref _conversionMaximumTicks);
         return new(samples, samples == 0 ? 0 : ticks * 1000d / Stopwatch.Frequency / samples, maximum * 1000d / Stopwatch.Frequency);
     }
+    public CaptureRuntimeDiagnostics GetRuntimeDiagnostics() => new(Volatile.Read(ref _nativeSampleCount), Volatile.Read(ref _temporalIndex), Interlocked.Read(ref _audioChunkCount), Interlocked.Read(ref _lastNativePayloadStopwatchTicks), Interlocked.Read(ref _lastReadSampleReturnStopwatchTicks), Interlocked.Read(ref _lastAudioStopwatchTicks), Volatile.Read(ref _consecutiveEmptySamples));
 
     private MediaFoundationCaptureSession(CaptureDeviceDescriptor device, CaptureOpenOptions options, DevicePairing pairing, IDiagnosticSink log, IMFSourceReader reader, CaptureFormat format, SourceFormat sourceFormat)
     { _device = device; _options = options; _pairing = pairing; _log = log; _reader = reader; CurrentFormat = format; _sourceFormat = sourceFormat; BuildConversionPlans(); }
@@ -240,6 +242,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
 
     private void ForwardAudio(object? sender, AudioChunk chunk)
     {
+        Interlocked.Increment(ref _audioChunkCount); Interlocked.Exchange(ref _lastAudioStopwatchTicks, Stopwatch.GetTimestamp());
         if (CurrentFormat.AudioSampleRate != chunk.SampleRate) CurrentFormat = CurrentFormat with { AudioSampleRate = chunk.SampleRate };
         AudioSampleReceived?.Invoke(this, chunk);
     }
@@ -267,7 +270,8 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
         {
             while (!cancellationToken.IsCancellationRequested && _reader is not null)
             {
-                var hr = _reader.ReadSample(MediaFoundationNative.SourceReaderFirstVideoStream, 0, out _, out var flags, out var readerTimestamp, out var sample); var arrivalStopwatchTicks = Stopwatch.GetTimestamp(); hr.ThrowIfFailed();
+                Interlocked.Exchange(ref _lastReadSampleEnteredStopwatchTicks, Stopwatch.GetTimestamp());
+                var hr = _reader.ReadSample(MediaFoundationNative.SourceReaderFirstVideoStream, 0, out _, out var flags, out var readerTimestamp, out var sample); var arrivalStopwatchTicks = Stopwatch.GetTimestamp(); Interlocked.Exchange(ref _lastReadSampleReturnStopwatchTicks, arrivalStopwatchTicks); hr.ThrowIfFailed();
                 if ((flags & MediaFoundationNative.EndOfStream) != 0) throw new InvalidOperationException("Capture device ended the video stream.");
                 if ((flags & MediaFoundationNative.MediaTypeChanged) != 0) RefreshCurrentFormat();
                 if (sample is null) continue;
@@ -290,8 +294,8 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
                     if (bufferCount == 0)
                     {
                         Volatile.Write(ref _validationStreak, 0);
-                        var emptyCount = Interlocked.Increment(ref _emptySampleCount);
-                        if (emptyCount == 1 || emptyCount % 250 == 0) _log.Write("capture.sample", $"Media Foundation delivered timestamp-only samples without video data; count={emptyCount}");
+                        var emptyCount = Interlocked.Increment(ref _emptySampleCount); var consecutiveEmpty = Interlocked.Increment(ref _consecutiveEmptySamples);
+                        if (consecutiveEmpty == 1 || consecutiveEmpty % 250 == 0) _log.Write("capture.sample", $"Media Foundation delivered timestamp-only samples without video data; total={emptyCount} consecutive={consecutiveEmpty}");
                         continue;
                     }
                     var contiguousHr = sample.ConvertToContiguousBuffer(out var buffer);
@@ -312,7 +316,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
                             buffer.GetMaxLength(out var maximumLength).ThrowIfFailed();
                             _log.Write("capture.sample", $"first buffer currentLength={currentLength} maximumLength={maximumLength} expectedMinimum={Math.Abs(_sourceFormat.Stride) * _sourceFormat.Height}");
                         }
-                        var nativeSampleNumber = Interlocked.Increment(ref _nativeSampleCount);
+                        var nativeSampleNumber = Interlocked.Increment(ref _nativeSampleCount); Interlocked.Exchange(ref _lastNativePayloadStopwatchTicks, arrivalStopwatchTicks); Volatile.Write(ref _consecutiveEmptySamples, 0);
                         var validationStreak = Interlocked.Increment(ref _validationStreak);
                         if (_options.FieldReconstruction is { } reconstruction)
                         {

@@ -35,10 +35,12 @@ public interface ICaptureSession : IAsyncDisposable
 }
 
 public sealed record CaptureProcessingDiagnostics(int Samples, double ConversionAverageMilliseconds, double ConversionMaximumMilliseconds);
+public sealed record CaptureRuntimeDiagnostics(long NativePayloadCount, long TemporalFrameCount, long AudioChunkCount, long LastNativePayloadStopwatchTicks, long LastReadSampleReturnStopwatchTicks, long LastAudioStopwatchTicks, int ConsecutiveEmptySamples);
 
 public interface ICapturePerformanceDiagnostics
 {
     CaptureProcessingDiagnostics GetProcessingDiagnostics();
+    CaptureRuntimeDiagnostics GetRuntimeDiagnostics();
 }
 
 public interface IVisualClapDetector

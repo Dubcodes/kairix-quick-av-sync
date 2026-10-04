@@ -27,6 +27,38 @@ public sealed class SettingsTests
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
+    [Fact]
+    public void ReconstructionProfilesSurviveRestartAndRemainDeviceScoped()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try
+        {
+            using (var service = new SettingsService(path)) service.Save(new()
+            {
+                NativeFormatByDevice = new() { ["magewell"] = "1920x1080|25/1|p|Yuy2", ["other"] = "1920x1080|50/1|p|Nv12" },
+                ReconstructFieldsByDevice = new() { ["magewell"] = true, ["other"] = false },
+                ReconstructionFieldOrderByDevice = new() { ["magewell"] = "bottom", ["other"] = "top" }
+            });
+            using var restored = new SettingsService(path); var settings = restored.Load();
+            Assert.Equal("1920x1080|25/1|p|Yuy2", settings.NativeFormatByDevice["magewell"]); Assert.True(settings.ReconstructFieldsByDevice["magewell"]); Assert.Equal("bottom", settings.ReconstructionFieldOrderByDevice["magewell"]);
+            Assert.False(settings.ReconstructFieldsByDevice["other"]); Assert.Equal("top", settings.ReconstructionFieldOrderByDevice["other"]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void ExplicitlyDisablingReconstructionPersistsAcrossRestart()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try
+        {
+            using (var service = new SettingsService(path)) service.Save(new() { ReconstructFieldsByDevice = new() { ["magewell"] = false }, ReconstructionFieldOrderByDevice = new() { ["magewell"] = "top" } });
+            using var restored = new SettingsService(path); var settings = restored.Load();
+            Assert.False(settings.ReconstructFieldsByDevice["magewell"]); Assert.Equal("top", settings.ReconstructionFieldOrderByDevice["magewell"]);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
     [Fact] public void CorruptOrStaleProcessingSettingsFallBackSafely()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
