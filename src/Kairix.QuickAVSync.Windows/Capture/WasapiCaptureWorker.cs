@@ -59,8 +59,19 @@ internal sealed class WasapiCaptureWorker(AudioEndpointDescriptor endpoint, IDia
     }
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_cts is null) return; _cts.Cancel(); try { if (_task is not null) await _task.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); } catch (OperationCanceledException) { } catch (TimeoutException) { log.Write("capture.audio", "Audio worker did not exit within two seconds"); }
-        _task = null; _cts.Dispose(); _cts = null;
+        var cts = _cts; var task = _task;
+        if (cts is null || task is null) return;
+        cts.Cancel();
+        try { await task.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false); }
+        catch (TimeoutException)
+        {
+            const string message = "Audio worker did not exit within two seconds; retaining WASAPI task and its COM ownership until process shutdown.";
+            log.Write("capture.audio.shutdown", message);
+            throw new CaptureWorkerTerminationException(message);
+        }
+        // Run() owns every COM interface and releases them only from its finally.
+        // Clear and dispose this coordinator state only after that task has exited.
+        _task = null; _cts = null; cts.Dispose();
     }
     public async ValueTask DisposeAsync() => await StopAsync(CancellationToken.None).ConfigureAwait(false);
     private static long To100ns(long stopwatchTicks) => (long)(stopwatchTicks * (double)TimeSpan.TicksPerSecond / Stopwatch.Frequency);

@@ -56,6 +56,24 @@ public sealed class SettingsTests
     }
 }
 
+public sealed class ApplicationIconTests
+{
+    [Fact]
+    public void ApplicationIconIsReferencedAndContainsTheRequiredSizes()
+    {
+        var project = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Ui", "ApplicationProject.csproj"));
+        Assert.Contains("<ApplicationIcon>Assets\\Kairix.QuickAVSync.ico</ApplicationIcon>", project, StringComparison.Ordinal);
+
+        var icon = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Assets", "Kairix.QuickAVSync.ico"));
+        Assert.True(icon.Length > 22);
+        Assert.Equal((byte)0, icon[0]); Assert.Equal((byte)0, icon[1]); Assert.Equal((byte)1, icon[2]); Assert.Equal((byte)0, icon[3]);
+        var count = icon[4] | icon[5] << 8;
+        Assert.Equal(7, count);
+        var sizes = Enumerable.Range(0, count).Select(index => icon[6 + index * 16]).Select(size => size == 0 ? 256 : size).ToArray();
+        Assert.Equal([16, 24, 32, 48, 64, 128, 256], sizes);
+    }
+}
+
 public sealed class WindowsEnumerationTests
 {
     [Fact] public void AudioEndpointEnumerationIsDeterministicAndUnique()

@@ -360,8 +360,16 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_cts is null) return; StatusChanged?.Invoke(this, new(CaptureStatus.Stopping, "Stopping Windows capture")); _cts.Cancel();
-        if (_audioWorker is not null) { _audioWorker.AudioSampleReceived -= ForwardAudio; _audioWorker.StatusChanged -= ForwardStatus; await _audioWorker.DisposeAsync(); _audioWorker = null; }
+        var cts = _cts; var readTask = _readTask;
+        if (cts is null || readTask is null) return;
+        StatusChanged?.Invoke(this, new(CaptureStatus.Stopping, "Stopping Windows capture")); _firstVideoSample.TrySetCanceled(cts.Token); cts.Cancel();
+        Exception? audioFailure = null;
+        if (_audioWorker is not null)
+        {
+            _audioWorker.AudioSampleReceived -= ForwardAudio; _audioWorker.StatusChanged -= ForwardStatus;
+            try { await _audioWorker.DisposeAsync().ConfigureAwait(false); _audioWorker = null; }
+            catch (CaptureWorkerTerminationException ex) { audioFailure = ex; }
+        }
         var reader = _reader;
         if (reader is not null)
         {
@@ -373,13 +381,24 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
             catch (TimeoutException) { _log.Write("capture.shutdown", "Source-reader flush did not exit within two seconds"); }
             catch { }
         }
-        try { if (_readTask is not null) await _readTask.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false); } catch (OperationCanceledException) { } catch (TimeoutException) { _log.Write("capture.shutdown", "Read loop did not exit within three seconds"); }
-        _readTask = null; _cts.Dispose(); _cts = null; StatusChanged?.Invoke(this, new(CaptureStatus.Stopped, "Media Foundation capture stopped"));
+        try { await readTask.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false); }
+        catch (TimeoutException)
+        {
+            const string message = "Media Foundation read loop did not exit within three seconds; retaining SourceReader and MF lifetime until process shutdown.";
+            _log.Write("capture.shutdown", message); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, message));
+            throw new CaptureWorkerTerminationException(message);
+        }
+        // Only this completed path transfers ownership away from ReadLoop.  It is
+        // now safe for DisposeAsync to release the reader and call MFShutdown.
+        _readTask = null; _cts = null; cts.Dispose();
+        if (audioFailure is not null) throw audioFailure;
+        StatusChanged?.Invoke(this, new(CaptureStatus.Stopped, "Media Foundation capture stopped"));
     }
 
     public async ValueTask DisposeAsync()
     {
-        await StopAsync(CancellationToken.None).ConfigureAwait(false); LogConversionSummary("final", reset: false); if (_reader is not null) { Marshal.ReleaseComObject(_reader); _reader = null; }
+        await StopAsync(CancellationToken.None).ConfigureAwait(false);
+        LogConversionSummary("final", reset: false); if (_reader is not null) { Marshal.ReleaseComObject(_reader); _reader = null; }
         if (_mfStarted) { MediaFoundationNative.MFShutdown(); _mfStarted = false; }
     }
 

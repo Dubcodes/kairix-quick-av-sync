@@ -11,6 +11,7 @@ public sealed class RollingBufferTests
     [Fact] public void WrapsAndReturnsChronologically() { var b = new RollingBuffer<int>(3); foreach (var i in Enumerable.Range(1, 5)) b.Add(i); Assert.Equal([3, 4, 5], b.Snapshot()); }
     [Fact] public void ResizeKeepsNewest() { var b = new RollingBuffer<int>(5); foreach (var i in Enumerable.Range(1, 5)) b.Add(i); b.Resize(2); Assert.Equal([4, 5], b.Snapshot()); }
     [Fact] public void RangeUsesTimestamps() { var b = new RollingBuffer<(long Time, string Value)>(5, x => x.Time); b.Add((10, "a")); b.Add((20, "b")); b.Add((30, "c")); Assert.Equal(["b", "c"], b.Range(15, 30).Select(x => x.Value)); }
+    [Fact] public void ClearDropsAllRetainedReferencesWithoutChangingCapacity() { var b = new RollingBuffer<object>(3); b.Add(new()); b.Add(new()); b.Clear(); Assert.Empty(b.Snapshot()); Assert.Equal(3, b.Capacity); }
 }
 
 public sealed class SyncResultTests
@@ -40,9 +41,34 @@ public sealed class TransientDetectorTests
     [Theory] [InlineData(44100)] [InlineData(48000)] [InlineData(96000)] public void WorksAtDifferentRates(int rate) { var samples = Noise(rate / 4, .001f); Pulse(samples, rate / 10, .7f); Assert.Single(new TransientDetector().Process(Chunk(0, samples, rate))); }
     [Fact] public void TwoSeparatedImpulsesTriggerTwice() { var samples = Noise(48000, .001f); Pulse(samples, 1000, .8f); Pulse(samples, 20000, .8f); Assert.Equal(2, new TransientDetector().Process(Chunk(0, samples, 48000)).Count); }
     [Fact] public void SensitivityChangesWeakTransientAcceptanceWithoutChangingDefault() { var weak = Noise(4800, .001f); Pulse(weak, 1000, .03f); var low = new TransientDetector { Sensitivity = 0 }; var high = new TransientDetector { Sensitivity = 100 }; Assert.Empty(low.Process(Chunk(0, weak, 48000))); Assert.Single(high.Process(Chunk(0, weak, 48000))); }
+    [Fact]
+    public void FiveHundredIndependentEventCyclesRemainDeterministic()
+    {
+        for (var cycle = 0; cycle < 500; cycle++)
+        {
+            var samples = Noise(4_800, .002f); Pulse(samples, 1_000, .8f);
+            Assert.Single(new TransientDetector().Process(Chunk(cycle * 100_000L, samples, 48_000)));
+        }
+    }
     private static AudioChunk Chunk(long ticks, float[] samples, int rate) => new(new(ticks, TimingQuality.StreamTimestamp), samples, rate, 1);
     private static float[] Noise(int count, float level) => Enumerable.Range(0, count).Select(i => (i % 7 - 3) * level / 3).ToArray();
     private static void Pulse(float[] samples, int at, float level) { for (var i = 0; i < 40; i++) samples[at + i] = level * (float)Math.Exp(-i / 10d); }
+}
+
+public sealed class SyntheticCaptureLifetimeTests
+{
+    [Fact]
+    public async Task OneHundredStartStopCyclesLeaveNoActiveSyntheticSession()
+    {
+        for (var cycle = 0; cycle < 100; cycle++)
+        {
+            var backend = new SyntheticCaptureBackend();
+            var device = Assert.Single(await backend.EnumerateDevicesAsync(CancellationToken.None));
+            await using var session = await backend.OpenAsync(device, new(160, 90, PreferredPresentationWidth: 80, PreferredPresentationHeight: 45), CancellationToken.None);
+            await session.StartAsync(CancellationToken.None);
+            await session.StopAsync(CancellationToken.None);
+        }
+    }
 }
 
 public sealed class WorkWindowWaveformAndHistoryTests

@@ -41,6 +41,18 @@ The shared distribution packager can be exercised locally with a traceable test 
 
 It must produce two non-empty identified EXEs, a ZIP containing both variants plus README/LICENSE, and a three-entry `SHA256SUMS.txt` under `artifacts/package/`. On a `main` push, Windows CI creates the date component in the project's Pacific/Auckland timezone, invokes the packager only after all builds and tests succeed, and uploads the result under an artifact name containing the full commit SHA. The development-release workflow is triggered by that completed CI run, downloads only that run's exact artifact, rechecks identity and checksums, and creates an idempotent public prerelease. A `v*` tag continues to be the only recommended-release trigger.
 
+## Synthetic stability observation
+
+The capture-free probe deliberately uses the same bounded Core samples and synthetic session contract as the application. It writes CSV diagnostics only; it records no media and does not prove physical-device driver behavior.
+
+```powershell
+dotnet run --project tools/Kairix.QuickAVSync.StabilityProbe -c Release -- --duration 00:10:00 --sample-interval 00:00:30
+dotnet run --project tools/Kairix.QuickAVSync.StabilityProbe -c Release -- --duration 00:02:00 --detection 1280x720 --sample-interval 00:00:30
+dotnet run --project tools/Kairix.QuickAVSync.StabilityProbe -c Release -- --reconnect-cycles 100 --reconnect-pause 00:00:00.250
+```
+
+Review consecutive steady-state samples rather than startup allocation: video/audio counts must remain at their configured capacities (250/1000 in the probe), active tasks return to zero at completion, and thread/handle counts should settle rather than climb per sample or reconnect. Managed and LOH values are expected to move with GC; a single high value is not a leak verdict. CI runs the one-minute version as an early regression check. The icon source is `assets/icon/kairix-quick-av-sync.svg`; regenerate its tested multi-size ICO with `./scripts/generate-icon.ps1`.
+
 ## Concurrency regression
 
 Run the Core suite repeatedly after changing event analysis:

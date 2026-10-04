@@ -7,5 +7,7 @@
     <None Include="..\..\src\Kairix.QuickAVSync\Themes\*.xaml" Link="Themes\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\src\Kairix.QuickAVSync\App.xaml" Link="Ui\App.xaml" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\src\Kairix.QuickAVSync\MainWindow.xaml" Link="Ui\MainWindow.xaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\Kairix.QuickAVSync\Assets\Kairix.QuickAVSync.ico" Link="Assets\Kairix.QuickAVSync.ico" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\src\Kairix.QuickAVSync\Kairix.QuickAVSync.csproj" Link="Ui\ApplicationProject.csproj" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

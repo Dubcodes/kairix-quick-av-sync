@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon />
+    <ApplicationIcon>Assets\Kairix.QuickAVSync.ico</ApplicationIcon>
     <AssemblyName>Kairix.QuickAVSync</AssemblyName>
     <RootNamespace>Kairix.QuickAVSync</RootNamespace>
     <VersionPrefix>0.1.0</VersionPrefix>
@@ -37,6 +37,10 @@
   <ItemGroup>
     <ProjectReference Include="..\Kairix.QuickAVSync.Core\Kairix.QuickAVSync.Core.csproj" />
     <ProjectReference Include="..\Kairix.QuickAVSync.Windows\Kairix.QuickAVSync.Windows.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\Kairix.QuickAVSync.ico" />
   </ItemGroup>
 
 </Project>

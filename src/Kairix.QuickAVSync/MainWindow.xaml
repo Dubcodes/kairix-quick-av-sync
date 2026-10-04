@@ -1,4 +1,4 @@
-<Window x:Class="Kairix.QuickAVSync.MainWindow"
+<Window x:Class="Kairix.QuickAVSync.MainWindow" Icon="Assets/Kairix.QuickAVSync.ico"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:Kairix.QuickAVSync.Controls"

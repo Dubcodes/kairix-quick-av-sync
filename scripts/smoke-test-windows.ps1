@@ -8,10 +8,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
 
 if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
     throw "Executable not found: $ExePath"
 }
+
+$applicationIcon = [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path -LiteralPath $ExePath))
+if ($null -eq $applicationIcon -or $applicationIcon.Width -lt 16 -or $applicationIcon.Height -lt 16) { throw "Published executable does not expose a usable application icon: $ExePath" }
+$applicationIcon.Dispose()
 
 if (-not ('KairixWindowProbe' -as [type])) {
     Add-Type @'

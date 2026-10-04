@@ -10,7 +10,12 @@ namespace Kairix.QuickAVSync;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new(); private readonly AppLogger _shutdownLog = new(); private bool _closing; private bool _shutdownComplete;
-    public MainWindow() { InitializeComponent(); DataContext = _viewModel; Loaded += async (_, _) => await _viewModel.InitializeAsync(); }
+    public MainWindow() { InitializeComponent(); DataContext = _viewModel; Loaded += Window_Loaded; }
+    private async void Window_Loaded(object sender, RoutedEventArgs e)
+    {
+        try { await _viewModel.InitializeAsync(); }
+        catch (Exception ex) { _shutdownLog.Write("startup.failure", ex.ToString()); }
+    }
     private static bool EditingText() => Keyboard.FocusedElement is System.Windows.Controls.TextBox;
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {

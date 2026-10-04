@@ -30,6 +30,7 @@ Portable engine with no Windows Desktop dependency:
 - device ranking, conservative audio/video pairing, sync wording, and history;
 - deterministic synthetic backend and known-offset fixtures;
 - analysis-generation guard for stale-result rejection.
+- fixed-capacity rolling buffers clear overwritten and explicitly cleared references; snapshots are copies, not retained live storage.
 - platform-neutral input-signal provenance/authority/lock models, provider coordination, passive cadence analysis, and source-aware format recommendations.
 - platform-neutral capture-format classification that keeps common HD and conventional SD modes concise while retaining every driver mode for advanced access.
 
@@ -59,7 +60,7 @@ Passive source estimates never change capture or reconstruction settings. A stro
 
 ### `Kairix.QuickAVSync` (`net10.0-windows`, WPF)
 
-Views, custom waveform/sync controls, commands, presentation state, WPF image conversion, and composition of the Core and Windows backends. WPF remains the right V1 choice; this pass deliberately did not introduce another UI framework.
+Views, custom waveform/sync controls, commands, presentation state, WPF image conversion, and composition of the Core and Windows backends. WPF remains the right V1 choice; this pass deliberately did not introduce another UI framework. The view model owns each event-analysis, passive-analysis, debounced-reconnect, and capture lifetime: supersession cancels and awaits work, generation checks reject stale UI delivery, and capture callbacks are detached before a retiring session's buffers are cleared.
 
 ## Capture and timing flow
 
@@ -77,6 +78,8 @@ Fixed event reference + independently movable Audio/Auto/Manual/Playhead marks â
 ```
 
 Windows video prefers `MFSampleExtension_DeviceTimestamp`, which Microsoft defines as the QPC-epoch MFTIME domain in 100 ns units. WASAPI capture's QPC position is also delivered in 100 ns units. Those observations are comparable. `IMFSample::GetSampleTime` is retained as a stream-relative fallback but is not silently compared with endpoint QPC. See [capture backends](CAPTURE_BACKENDS.md).
+
+Native capture workers own their apartment-bound COM resources until their worker task exits. Normal stop first cancels, detaches forwarding handlers, flushes the source reader as appropriate, and awaits the worker. If that bounded wait expires, the backend reports a `CaptureWorkerTerminationException`, retains the worker/session lifetime, and does not release Source Reader, Media Foundation, or WASAPI objects from another thread. The caller logs the failure and does not reopen over the unresolved session.
 
 Explicit native-mode selection is strict. The Windows backend attempts only the exact stable mode ID and reads the active media type back after `SetCurrentMediaType`; disagreement in dimensions, rational rate, scan/layout/field order, or pixel format fails the open. Auto remains the only fallback path.
 

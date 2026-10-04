@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added explicit native-worker shutdown ownership: timed-out WASAPI/Media Foundation workers retain their own COM/session lifetime, report a typed failure, and block unsafe reopen instead of releasing native objects while a worker may still be live.
+- Coalesced settings reconnects, detached retiring capture callbacks before shared-state clearing, and made event/passive analysis tasks owned, cancellable, awaited, and generation-gated before UI delivery.
+- Added the multi-resolution Offset Timeline application icon, deterministic icon contract coverage, and a synthetic stability probe recording bounded buffers, memory/LOH, handles, threads, reconnects, and active work. CI now runs a short bounded probe; the documented longer observations remain diagnostic rather than a leak-free guarantee.
 - Replaced the remaining default WPF ComboBox surface with a single dynamic-resource Kairix template, including collapsed, focus, popup, item, hover, selection, pressed, and disabled states. The shared semantic control resources now cover settings controls across all seven themes.
 - Renamed waveform styles to Centered Fill, Centered Bars, Centered Line, Peak Fill, Peak Bars, and Peak Line. Existing persisted legacy names migrate safely.
 - Added independent display-only amplitude modes: Auto Gain, Linear, dB · 60 dB, and dB · 96 dB. Auto Gain is snapshot-wide, targets 90% height, and does not boost signals below -50 dBFS. Display settings never alter capture, detection, timing, markers, or results.
