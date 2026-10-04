@@ -13,3 +13,9 @@ public static class ReviewTimeline
 
     public static bool AcceptsAutomaticEvents(bool autoDetect, bool hold) => autoDetect && !hold;
 }
+
+public static class AutomaticEventPolicy
+{
+    public static bool CanStart(bool autoDetect, bool hold, bool autoSpike, bool manualReview, bool captureReady = true) =>
+        ReviewTimeline.AcceptsAutomaticEvents(autoDetect, hold) && autoSpike && !manualReview && captureReady;
+}

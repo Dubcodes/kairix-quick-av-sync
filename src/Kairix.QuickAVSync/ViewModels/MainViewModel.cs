@@ -28,11 +28,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly AnalysisGeneration _analysisGeneration = new();
     private readonly SessionHistoryService _history = new();
     private readonly ObservedSignalAnalyzer _signalAnalyzer = new();
+    private readonly LatestRequestTracker<string> _deviceSelectionRequests = new();
+    private readonly SingleFlightOperationGate _automaticAnalysisGate = new();
     private RollingBuffer<VideoFrame> _video = new(300, f => f.Timestamp.Ticks100ns);
     private RollingBuffer<AudioChunk> _audio = new(300, a => a.Timestamp.Ticks100ns);
     private ICaptureSession? _capture;
-    private CancellationTokenSource? _analysisCts, _signalAnalysisCts, _settingsReconnectCts;
-    private Task? _currentAnalysisTask, _signalAnalysisTask, _settingsReconnectTask;
+    private CaptureDeviceDescriptor? _activeCaptureDevice;
+    private readonly CaptureSessionRetirementCoordinator _captureRetirement = new();
+    private CancellationTokenSource? _analysisCts, _automaticAnalysisCts, _signalAnalysisCts, _settingsReconnectCts, _deviceSelectionCts;
+    private Task? _currentAnalysisTask, _automaticAnalysisTask, _signalAnalysisTask, _settingsReconnectTask, _deviceSelectionTask;
     private readonly DispatcherTimer _memoryTimer;
     private AppSettings _settings;
     private CaptureDeviceDescriptor? _selectedDevice;
@@ -54,6 +58,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private IReadOnlyList<VideoFrame> _reviewFrames = [];
     private int _playheadIndex;
     private EventReviewState? _review;
+    private EventReviewState? _automaticResult;
     private IReadOnlyList<float> _waveform = [];
     private IReadOnlyList<double> _reviewFrameTicks = [];
     private FrameTimingAnalysis? _timelineAnalysis;
@@ -73,6 +78,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly SemaphoreSlim _eventGate = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCts = new();
     private int _disposing;
+    private string _reconnectGateOwner = "idle";
+    private int _reconnectGateWaiters;
     private IReadOnlyList<CaptureFormatOption> _allCaptureFormats = [CaptureFormatOption.Auto];
     private CaptureStatus _captureStatus = CaptureStatus.Created;
     private string _captureStatusText = "CAPTURE NOT STARTED";
@@ -140,7 +147,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _reconstructInterlacedFields = _settings.ReconstructFieldsByDevice.GetValueOrDefault(value.Id);
             _observedSignal = null; RefreshInterpretationDisplay();
             SaveSettings(immediate: true);
-            if (!_suppressDeviceRefresh) _ = RefreshCaptureFormatsAsync(value);
+            if (!_suppressDeviceRefresh) RequestDeviceSelection(value);
         }
     }
     public ResolutionOption? SelectedResolution
@@ -252,8 +259,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string VideoTimingOffsetModeText => IsVideoTimingOffsetManual
         ? $"Manual profile override: {VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms\nApplied as {-VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms to visual timing."
         : $"Automatic reconstruction compensation: {VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms\n{(CurrentFieldReconstruction is null ? "No reconstructed-field delivery compensation." : "Capture card assumed to deliver the woven frame after both fields arrive.")}\nApplied as {-VideoTimingOffsetMilliseconds:+0.000;-0.000;0.000} ms to visual timing.";
-    public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; if (!value) IsHold = false; Changed(); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled)); CommandManager.InvalidateRequerySuggested(); SaveSettings(); } } }
-    public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; if (!value) IsHold = false; Changed(); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled)); CommandManager.InvalidateRequerySuggested(); SaveSettings(); } } }
+    public bool AutoDetect { get => _settings.AutoDetect; set { if (_settings.AutoDetect != value) { _settings.AutoDetect = value; if (!value) { IsHold = false; _automaticAnalysisCts?.Cancel(); } Changed(); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled)); CommandManager.InvalidateRequerySuggested(); SaveSettings(); } } }
+    public bool AutoSpike { get => _settings.AutoSpike; set { if (_settings.AutoSpike != value) { _settings.AutoSpike = value; if (!value) { IsHold = false; _automaticAnalysisCts?.Cancel(); } Changed(); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled)); CommandManager.InvalidateRequerySuggested(); SaveSettings(); } } }
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
     public int VisualSensitivity { get => Math.Clamp(_settings.VisualSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.VisualSensitivity != clamped) { _settings.VisualSensitivity = clamped; Changed(); SaveSettings(); } } }
     public int AudioSensitivity { get => Math.Clamp(_settings.AudioSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.AudioSensitivity != clamped) { _settings.AudioSensitivity = clamped; _transientDetector.Sensitivity = clamped; Changed(); SaveSettings(); } } }
@@ -304,19 +311,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public double AvailableFraction { get => _availableFraction; private set => Set(ref _availableFraction, value); }
     public IReadOnlyList<float> Waveform { get => _waveform; private set => Set(ref _waveform, value); }
     public IReadOnlyList<double> ReviewFrameTicks { get => _reviewFrameTicks; private set => Set(ref _reviewFrameTicks, value); }
-    public double AudioMarkerMs => _review?.AudioOffsetMs ?? 0;
-    public double? AutoVisualMs => _review?.AutoOffsetMs;
+    private EventReviewState? DisplayedResultState => _isReview ? _review : _automaticResult;
+    public double AudioMarkerMs => DisplayedResultState?.AudioOffsetMs ?? 0;
+    public double? AutoVisualMs => DisplayedResultState?.AutoOffsetMs;
     public double? VisualMarkerMs => _review?.ManualVisualOffsetMs;
     public double PlayheadMs => _review?.PlayheadOffsetMs ?? 0;
     public double PlayheadMeasurementMs => _review is null ? 0 : VideoTimingCompensation.Calculate(_review.AudioMark, _review.Playhead, _review.VideoTimingOffset).SignedMilliseconds;
-    public SyncResult? CurrentResult => _review?.CurrentResult;
-    public SyncResult? CurrentRawResult => _review?.CurrentRawResult;
-    public string ResultModeText => _review?.ResultMode switch { ReviewResultMode.Auto => "AUTO RESULT", ReviewResultMode.ManualPreview => "MANUAL PREVIEW", ReviewResultMode.ManualResult => "MANUAL RESULT", _ => "" };
+    public SyncResult? CurrentResult => DisplayedResultState?.CurrentResult;
+    public SyncResult? CurrentRawResult => DisplayedResultState?.CurrentRawResult;
+    public string ResultModeText => DisplayedResultState?.ResultMode switch { ReviewResultMode.Auto => "AUTO RESULT", ReviewResultMode.ManualPreview => "MANUAL PREVIEW", ReviewResultMode.ManualResult => "MANUAL RESULT", _ => "" };
     public string ResultText => _timelineAnalysis is { TimingValid: false } ? "TIMELINE TIMING INVALID" : CurrentResult?.Wording ?? "WAITING FOR CLAP";
     public string ResultSummaryText => string.IsNullOrEmpty(ResultModeText) ? ResultText : $"{ResultModeText}\n{ResultText}";
     public double SyncValue => _timelineAnalysis is not { TimingValid: false } && CurrentResult is { TimingComparable: true } result ? result.SignedMilliseconds : 0;
     public string TimelineIntegrityText => _timelineAnalysis?.Status ?? "TIMELINE · LIVE";
-    public string ConfidenceText => _review?.AutoCandidate is not { } candidate ? "—" : $"{candidate.Confidence:P0}";
+    public string ConfidenceText => DisplayedResultState?.AutoCandidate is not { } candidate ? "—" : $"{candidate.Confidence:P0}";
     public string ReviewPosition
     {
         get
@@ -331,15 +339,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     // Hold is session-only and must never overwrite the capture readiness state.
     public bool IsHold { get => _isHold; set { if (Set(ref _isHold, value)) Changed(nameof(ArmStateText)); } }
     public bool IsArmEnabled => AutoDetect && AutoSpike;
-    public string ArmStateText => !AutoDetect ? "AUTO OFF" : !AutoSpike ? "TRIGGER OFF" : IsHold ? "HOLD" : "ARMED";
+    public string ArmStateText => !AutoDetect ? "AUTO OFF" : !AutoSpike ? "TRIGGER OFF" : IsHold ? "HOLD" : _captureStatus != CaptureStatus.Running || _capture is null ? "WAITING FOR CAPTURE" : "ARMED";
     public bool IsInReview => _isReview;
-    public string ViewerStateText => _isReview ? "REVIEW PAUSED\nAuto result captured\nResume Live to return to the live viewer" : string.Empty;
+    public string ViewerStateText => _isReview ? "MANUAL REVIEW PAUSED\nResume Live to return to the live viewer" : string.Empty;
     public string RuntimeHealthText => _runtimeHealthText;
     public string VersionText => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
     public string BuildText => Services.BuildIdentity.Current.BuildId;
     public string BuildChannelText => $"{Services.BuildIdentity.Current.Channel} build";
     public string BuildCommitText => $"Commit {Services.BuildIdentity.Current.ShortCommit}";
-    public string AboutTimingDiagnosticsText => $"Detected capture: {DetectedCaptureText}\nInterpreted format: {InterpretationText}\nReview temporal rate: {ExpectedReviewTemporalRate:0.000}/s\nNative transport rate: {ExpectedCaptureTransportRate:0.000}/s\nTiming source: {TimingText}\n{TimestampPhaseText}\nVideo compensation: {VideoTimingOffsetModeText}\nRaw measurement: {RawMeasurementText}\nCorrected measurement: {(CurrentResult is { TimingComparable: true } result ? $"{result.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—")}";
+    public string AboutTimingDiagnosticsText => $"Detected capture: {DetectedCaptureText}\nInterpreted format: {InterpretationText}\nReview temporal rate: {ExpectedReviewTemporalRate:0.000}/s\nNative transport rate: {ExpectedCaptureTransportRate:0.000}/s\nTiming source: {TimingText}\n{TimestampPhaseText}\nVideo compensation: {VideoTimingOffsetModeText}\nRaw measurement: {RawMeasurementText}\nCorrected measurement: {(CurrentResult is { TimingComparable: true } result ? $"{result.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—")}\nCapture control: gate {Volatile.Read(ref _reconnectGateOwner)} · waiters {Volatile.Read(ref _reconnectGateWaiters)} · quarantined {_captureRetirement.Snapshots.Count} · retirement attempts {_captureRetirement.StopAttempts}";
     public string FieldReconstructionAboutText => CurrentFieldReconstruction is { } reconstruction
         ? $"One woven progressive frame contains two fields. Kairix extracts {reconstruction.FieldOrder.ToString().Replace("First", " first").ToLowerInvariant()} fields before downscaling. Field interval: {reconstruction.FieldIntervalTicks100ns / 10_000d:0.0000} ms. The capture timestamp is treated as the completed pair / second field; automatic compensation is one field interval."
         : "Field reconstruction is off. Native progressive/interlaced temporal positions use direct capture timing and no automatic reconstructed-field compensation.";
@@ -371,14 +379,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var hardwareCount = found.Count(d => d.Kind != CaptureDeviceKind.Synthetic); Status = hardwareCount == 0 ? "NO HARDWARE CAPTURE DEVICE — SYNTHETIC MODE" : $"{hardwareCount} CAPTURE DEVICE(S) FOUND";
     }
 
-    private async Task RefreshCaptureFormatsAsync(CaptureDeviceDescriptor device)
+    private async Task RefreshCaptureFormatsAsync(CaptureDeviceDescriptor device, CancellationToken cancellationToken = default)
     {
         var request = Interlocked.Increment(ref _formatRequest); var options = new List<CaptureFormatOption> { CaptureFormatOption.Auto };
         var backend = _backends.FirstOrDefault(candidate => candidate.Id == device.BackendId);
         if (backend is ICaptureFormatProvider provider)
         {
-            try { options.AddRange(await provider.EnumerateFormatsAsync(device, _lifetimeCts.Token)); }
-            catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { return; }
+            try { options.AddRange(await provider.EnumerateFormatsAsync(device, cancellationToken.CanBeCanceled ? cancellationToken : _lifetimeCts.Token)); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || Volatile.Read(ref _disposing) != 0) { return; }
             catch (Exception ex) { _log.Write("capture.format-list", $"device='{device.FriendlyName}' failed: {ex.Message}"); }
         }
         if (request != Volatile.Read(ref _formatRequest) || SelectedDevice?.Id != device.Id) return;
@@ -394,6 +402,35 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _selectedCaptureFormat = selected;
         RebuildInterpretationOptions(selected.Format);
         RefreshInterpretationDisplay();
+    }
+
+    private void RequestDeviceSelection(CaptureDeviceDescriptor device)
+    {
+        if (Volatile.Read(ref _disposing) != 0) return;
+        _settingsReconnectCts?.Cancel();
+        var request = _deviceSelectionRequests.Begin(device.Id);
+        var prior = _deviceSelectionCts; prior?.Cancel();
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        _deviceSelectionCts = cts;
+        _deviceSelectionTask = SelectDeviceAsync(device, request, cts);
+        ObserveTask(_deviceSelectionTask, "device.selection");
+    }
+
+    private async Task SelectDeviceAsync(CaptureDeviceDescriptor device, LatestRequestToken<string> request, CancellationTokenSource cts)
+    {
+        try
+        {
+            _log.Write("device.selection", $"generation={request.Generation} device='{device.FriendlyName}' action=begin");
+            await RefreshCaptureFormatsAsync(device, cts.Token).ConfigureAwait(true);
+            if (cts.IsCancellationRequested || !_deviceSelectionRequests.IsCurrent(request) || SelectedDevice?.Id != device.Id) return;
+            await ReconnectCoreAsync(device, request, cts.Token, "device-selection").ConfigureAwait(true);
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+        finally
+        {
+            if (ReferenceEquals(_deviceSelectionCts, cts)) _deviceSelectionCts = null;
+            cts.Dispose();
+        }
     }
 
     private void RebuildInterpretationOptions(CaptureFormat? preferred = null)
@@ -530,42 +567,48 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
-    public async Task ReconnectAsync()
+    public Task ReconnectAsync() => ReconnectCoreAsync(SelectedDevice, null, _lifetimeCts.Token, "reconnect");
+
+    private async Task ReconnectCoreAsync(CaptureDeviceDescriptor? requestedDevice, LatestRequestToken<string>? selectionRequest, CancellationToken operationToken, string gateOwner)
     {
         if (Volatile.Read(ref _disposing) != 0) return;
         _settingsReconnectCts?.Cancel();
-        await _reconnectGate.WaitAsync();
+        if (!await EnterReconnectGateAsync(gateOwner, TimeSpan.FromSeconds(5), operationToken)) { if (!operationToken.IsCancellationRequested) Status = "CAPTURE CONTROL BUSY · TRY AGAIN"; return; }
         try
         {
         if (Volatile.Read(ref _disposing) != 0) return;
-        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText;
+        if (selectionRequest is { } request && (!_deviceSelectionRequests.IsCurrent(request) || SelectedDevice?.Id != requestedDevice?.Id)) return;
+        _captureStatus = CaptureStatus.Starting; _captureStatusText = "RECONNECTING"; Status = _captureStatusText; Changed(nameof(ArmStateText));
         // Quiesce callbacks before clearing shared buffers.  A retiring capture must not
         // append data to the next session while its shutdown task is being awaited.
-        DetachCaptureHandlers();
+        DetachCaptureHandlers(_capture);
         await ClearCurrentMediaStateAsync(); await StopCaptureAsync(); _video.Clear(); _audio.Clear(); _observedSignal = null; _observedAnalysis = null; _observedDeliveredRate = null; RefreshInterpretationDisplay();
-        if (SelectedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
-        var backend = _backends.FirstOrDefault(b => b.Id == SelectedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
+        operationToken.ThrowIfCancellationRequested();
+        if (selectionRequest is { } latest && (!_deviceSelectionRequests.IsCurrent(latest) || SelectedDevice?.Id != requestedDevice?.Id)) return;
+        if (requestedDevice is null) { Status = "NO CAPTURE DEVICE"; return; }
+        if (requestedDevice.Kind != CaptureDeviceKind.Synthetic && _captureRetirement.IsDeviceQuarantined(requestedDevice.Id)) { _captureStatus = CaptureStatus.Failed; _captureStatusText = "CAPTURE SESSION STALLED · DEVICE HELD"; Status = _captureStatusText; return; }
+        var backend = _backends.FirstOrDefault(b => b.Id == requestedDevice.BackendId); if (backend is null) { Status = "CAPTURE BACKEND NOT AVAILABLE"; return; }
         try
         {
             var strictFormat = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id);
             var detection = SelectedDetectionResolution ?? new(_settings.DetectionWidth, _settings.DetectionHeight);
             var review = SelectedReviewResolution ?? new(_settings.ReviewWidth, _settings.ReviewHeight);
-            _capture = await backend.OpenAsync(SelectedDevice, new(detection.Width, detection.Height, PreferredNativeFormatId: _selectedCaptureFormat?.Id,
+            _capture = await backend.OpenAsync(requestedDevice, new(detection.Width, detection.Height, PreferredNativeFormatId: _selectedCaptureFormat?.Id,
                 PreferredPresentationWidth: review.Width, PreferredPresentationHeight: review.Height, RequirePreferredNativeFormat: strictFormat,
-                FieldReconstruction: CurrentFieldReconstruction), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
-            await _capture.StartAsync(_lifetimeCts.Token);
+                FieldReconstruction: CurrentFieldReconstruction), operationToken); _activeCaptureDevice = requestedDevice; _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
+            await _capture.StartAsync(operationToken);
             if (!strictFormat) ApplyDetectedCaptureDefaults(_capture.CurrentFormat);
-            ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInterpretationDisplay(); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}; detected='{DetectedCaptureText}' interpretation='{InterpretationText}'");
+            ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInterpretationDisplay(); if (requestedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {requestedDevice.FriendlyName} using {backend.Id}; detected='{DetectedCaptureText}' interpretation='{InterpretationText}'");
         }
-        catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { await StopCaptureAsync(); }
-        catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? "REQUESTED CAPTURE FORMAT NOT ACCEPTED" : "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; FormatText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? $"Requested: {_selectedCaptureFormat.Display}" : "Capture: Not negotiated"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); RefreshInterpretationDisplay(); }
+        catch (OperationCanceledException) when (operationToken.IsCancellationRequested || Volatile.Read(ref _disposing) != 0) { await StopCaptureAsync(); }
+        catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? "REQUESTED CAPTURE FORMAT NOT ACCEPTED" : "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; FormatText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? $"Requested: {_selectedCaptureFormat.Display}" : "Capture: Not negotiated"; _log.Write("capture", $"Open failed for {requestedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); RefreshInterpretationDisplay(); }
         }
-        finally { _reconnectGate.Release(); }
+        finally { ExitReconnectGate(gateOwner); }
     }
 
     private async Task ClearCurrentMediaStateAsync()
     {
-        Interlocked.Increment(ref _captureGeneration); await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync(); _isReview = false; Changed(nameof(IsInReview)); Changed(nameof(ViewerStateText)); _review = null; _reviewFrames = []; _playheadIndex = 0; _lastAudioEndTicks = long.MinValue; _audioContinuityFaults = 0; Interlocked.Exchange(ref _temporalVideoCount, 0); Interlocked.Exchange(ref _displayedPreviewCount, 0); Interlocked.Exchange(ref _audioChunkCount, 0); Interlocked.Exchange(ref _lastTemporalStopwatchTicks, 0); Interlocked.Exchange(ref _lastPreviewStopwatchTicks, 0); Interlocked.Exchange(ref _lastAudioStopwatchTicks, 0); Interlocked.Exchange(ref _videoStallReported, 0);
+        Interlocked.Increment(ref _captureGeneration); await CancelCurrentAnalysisAsync(); await CancelAutomaticAnalysisAsync(); await CancelSignalAnalysisAsync(); _isReview = false; Changed(nameof(IsInReview)); Changed(nameof(ViewerStateText)); _review = null; _automaticResult = null; _reviewFrames = []; _playheadIndex = 0; _lastAudioEndTicks = long.MinValue; _audioContinuityFaults = 0; Interlocked.Exchange(ref _temporalVideoCount, 0); Interlocked.Exchange(ref _displayedPreviewCount, 0); Interlocked.Exchange(ref _audioChunkCount, 0); Interlocked.Exchange(ref _lastTemporalStopwatchTicks, 0); Interlocked.Exchange(ref _lastPreviewStopwatchTicks, 0); Interlocked.Exchange(ref _lastAudioStopwatchTicks, 0); Interlocked.Exchange(ref _videoStallReported, 0);
         Interlocked.Exchange(ref _pendingPreview, null); VideoImage = null; AutoThumbnail = null; Waveform = []; ReviewFrameTicks = []; _timelineAnalysis = null; FormatText = "Format not negotiated"; TimingText = "TIMING NOT AVAILABLE"; NotifyMarkers();
     }
 
@@ -637,11 +680,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var captureGeneration = Volatile.Read(ref _captureGeneration);
         var priorEnd = Interlocked.Exchange(ref _lastAudioEndTicks, chunk.Timestamp.Ticks100ns + chunk.Duration.Ticks);
         if (priorEnd != long.MinValue && (chunk.Timestamp.Ticks100ns < priorEnd - TimeSpan.FromMilliseconds(1).Ticks || chunk.Timestamp.Ticks100ns > priorEnd + TimeSpan.FromMilliseconds(5).Ticks)) Interlocked.Increment(ref _audioContinuityFaults);
-        Interlocked.Increment(ref _audioChunkCount); Interlocked.Exchange(ref _lastAudioStopwatchTicks, System.Diagnostics.Stopwatch.GetTimestamp()); _audio.Add(chunk); if (!ReviewTimeline.AcceptsAutomaticEvents(AutoDetect, IsHold) || !AutoSpike) return;
+        Interlocked.Increment(ref _audioChunkCount); Interlocked.Exchange(ref _lastAudioStopwatchTicks, System.Diagnostics.Stopwatch.GetTimestamp()); _audio.Add(chunk); if (!AutomaticEventPolicy.CanStart(AutoDetect, IsHold, AutoSpike, _isReview, _captureStatus == CaptureStatus.Running)) return;
         foreach (var transient in _transientDetector.Process(chunk))
         {
             _log.Write($"Transient detected at {transient.Timestamp.Ticks100ns}; peak {transient.Peak:0.000}");
-            PostToUi(() => { if (captureGeneration != Volatile.Read(ref _captureGeneration)) return; if (_isReview) { _log.Write("viewer.state", $"automatic transient ignored while REVIEW is active audioTimestamp={transient.Timestamp.Ticks100ns} generation={captureGeneration}"); return; } StartOwnedTask(StartEventAsync(transient.Timestamp, audioFinalized: true), "review.analysis"); });
+            PostToUi(() => { if (captureGeneration != Volatile.Read(ref _captureGeneration)) return; TryStartAutomaticAnalysis(transient.Timestamp, captureGeneration); });
         }
     }
 
@@ -664,56 +707,101 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 CaptureStatus.Stopped => "CAPTURE STOPPED",
                 _ => _captureStatusText
             };
+            Changed(nameof(ArmStateText));
             if (!_isReview) Status = _captureStatusText;
             if (_capture is not null) TimingText = DescribeTiming(_capture.TimingQuality);
         });
     }
 
-    private async Task StartEventAsync(MediaTimestamp audioMark, bool audioFinalized)
+    private void TryStartAutomaticAnalysis(MediaTimestamp audioMark, int captureGeneration)
+    {
+        if (_isReview) { _log.Write("automatic.analysis", $"trigger ignored reason=manual-review audioTimestamp={audioMark.Ticks100ns} generation={captureGeneration}"); return; }
+        if (!_automaticAnalysisGate.TryEnter(out var lease)) { _log.Write("automatic.analysis", $"trigger ignored reason=analysis-busy audioTimestamp={audioMark.Ticks100ns} generation={captureGeneration}"); return; }
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        _automaticAnalysisCts = cts;
+        var task = RunAutomaticAnalysisAsync(audioMark, captureGeneration, cts, lease!);
+        _automaticAnalysisTask = task; ObserveTask(task, "automatic.analysis");
+    }
+
+    private async Task RunAutomaticAnalysisAsync(MediaTimestamp audioMark, int captureGeneration, CancellationTokenSource cts, IDisposable lease)
+    {
+        try
+        {
+            var cancellationToken = cts.Token; var offset = EffectiveVideoTimingOffset;
+            await Task.Delay(TimeSpan.FromMilliseconds(WorkWindowMilliseconds + Math.Max(0, offset.Milliseconds) + 40), cancellationToken).ConfigureAwait(true);
+            if (captureGeneration != Volatile.Read(ref _captureGeneration) || !AutomaticEventPolicy.CanStart(AutoDetect, IsHold, AutoSpike, _isReview, _captureStatus == CaptureStatus.Running)) return;
+            var half = TimeSpan.FromMilliseconds(WorkWindowMilliseconds); var videoSnapshot = _video.Snapshot(); var audioSnapshot = _audio.Snapshot();
+            var expectedReviewRate = ExpectedReviewTemporalRate; var expectedTransportRate = ExpectedCaptureTransportRate;
+            var built = await Task.Run(() =>
+            {
+                var expected = VideoTimingCompensation.ExpectedRawVisual(audioMark, offset);
+                var timeline = ReviewTimelineIntegrity.Build(videoSnapshot, expected, half, expectedReviewRate, expectedTransportRate);
+                var chunks = WorkWindowSelector.Around(audioSnapshot, item => item.Timestamp, audioMark, half + TimeSpan.FromMilliseconds(25));
+                return (Timeline: timeline, Waveform: _waveformBuilder.Build(chunks, audioMark, half, 900));
+            }, cancellationToken).ConfigureAwait(true);
+            if (captureGeneration != Volatile.Read(ref _captureGeneration) || _isReview) return;
+            if (!AutoVisual) { _log.Write("automatic.analysis", $"event rejected reason=visual-detection-disabled audioTimestamp={audioMark.Ticks100ns}"); return; }
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var candidate = await _visualDetector.DetectAsync(built.Timeline.Frames, VideoTimingCompensation.ExpectedRawVisual(audioMark, offset), cancellationToken, new(VisualSensitivity)).ConfigureAwait(true);
+            stopwatch.Stop(); var analyzed = built.Timeline.Frames.FirstOrDefault();
+            _log.Write("visual.analysis", $"mode=automatic frames={built.Timeline.Frames.Count} resolution={analyzed?.Width ?? 0}x{analyzed?.Height ?? 0} detail='{MotionVisualClapDetector.DetailDescription(analyzed?.Width ?? 0, analyzed?.Height ?? 0)}' sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))}");
+            if (candidate is null || !built.Timeline.Analysis.TimingValid || captureGeneration != Volatile.Read(ref _captureGeneration) || _isReview)
+            {
+                _log.Write("automatic.analysis", $"event rejected reason={(candidate is null ? "no-visual-candidate" : "timeline-invalid")} audioTimestamp={audioMark.Ticks100ns}; detector remains armed");
+                Status = AuthoritativeCaptureStatus(); return;
+            }
+            var resultState = new EventReviewState(audioMark, audioMark, offset); resultState.SetAutoCandidate(candidate);
+            if (!resultState.TryFinalize(out var result) || result is null) { _log.Write("automatic.analysis", $"event rejected reason=timing-not-comparable audioTimestamp={audioMark.Ticks100ns}; detector remains armed"); return; }
+            _automaticResult = resultState; _timelineAnalysis = built.Timeline.Analysis; AutoThumbnail = ToBitmap(candidate.Frame); Waveform = built.Waveform;
+            ReviewFrameTicks = built.Timeline.Frames.Select(frame => VideoTimingCompensation.CorrectedOffsetMilliseconds(audioMark, frame.Timestamp, offset)).ToArray();
+            _history.Add(new(DateTime.Now, result, candidate.Confidence, resultState.CurrentRawResult, offset.Milliseconds, offset.Source)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item);
+            UpdateEventDiagnostics(resultState, candidate, built.Timeline.Analysis, stopwatch.Elapsed.TotalMilliseconds);
+            Status = AuthoritativeCaptureStatus(); NotifyMarkers();
+            _log.Write("automatic.analysis", $"event committed audioTimestamp={audioMark.Ticks100ns} visualTimestamp={candidate.Timestamp.Ticks100ns} history={RecentResults.Count} state=LIVE detector=ARMED");
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+        catch (Exception ex) { _log.Write("automatic.analysis.failure", ex.ToString()); if (!_isReview) Status = AuthoritativeCaptureStatus(); }
+        finally
+        {
+            if (ReferenceEquals(_automaticAnalysisCts, cts)) { _automaticAnalysisCts = null; _automaticAnalysisTask = null; }
+            cts.Dispose(); lease.Dispose();
+        }
+    }
+
+    private void UpdateEventDiagnostics(EventReviewState review, VisualCandidate candidate, FrameTimingAnalysis timeline, double analysisMilliseconds)
+    {
+        var raw = SyncResult.Calculate(review.AudioMark, candidate.Timestamp); var corrected = VideoTimingCompensation.Calculate(review.AudioMark, candidate.Timestamp, review.VideoTimingOffset); var trace = candidate.Trace;
+        var detection = SelectedDetectionResolution ?? new(_settings.DetectionWidth, _settings.DetectionHeight); var presentation = SelectedReviewResolution ?? new(_settings.ReviewWidth, _settings.ReviewHeight); var processing = (_capture as ICapturePerformanceDiagnostics)?.GetProcessingDiagnostics();
+        LastEventDiagnosticsText = $"Detection {detection.Width}×{detection.Height} · review {presentation.Width}×{presentation.Height}\nAudio {review.AudioMark.Ticks100ns} · expected raw {review.ExpectedRawVisualTimestamp.Ticks100ns}\nChosen raw {candidate.Timestamp.Ticks100ns} · temporal {candidate.TemporalIndex} · native {candidate.Frame.NativeSampleIndex} · {FieldLabel(candidate.Frame)}\nRaw {raw.SignedMilliseconds:+0.000;-0.000;0.000} ms · compensation {review.VideoTimingOffset.Milliseconds:+0.000;-0.000;0.000} ms · corrected {corrected.SignedMilliseconds:+0.000;-0.000;0.000} ms\nScore {candidate.MotionScore:0.###} · confidence {candidate.Confidence:P0} · peak {trace?.ApproachPeakIndex.ToString() ?? "—"} · contact {trace?.FinalContactIndex.ToString() ?? "—"} · advanced {trace?.PositionsAdvanced.ToString() ?? "—"}\nAnalysis {analysisMilliseconds:0.0} ms · conversion avg/max {(processing is null ? "unavailable" : $"{processing.ConversionAverageMilliseconds:0.00}/{processing.ConversionMaximumMilliseconds:0.00} ms")} · timestamp source {candidate.Frame.TimingObservation?.PrimarySource.ToString() ?? candidate.Timestamp.Quality.ToString()}\nTimestamp faults: duplicate {timeline.Primary.DuplicateCount}, backwards {timeline.Primary.BackwardCount}, gaps {timeline.Primary.LargeGapCount}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
+        _log.Write("visual.event", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
+    }
+
+    private async Task StartManualReviewAsync(MediaTimestamp audioMark)
     {
         await _eventGate.WaitAsync(_lifetimeCts.Token).ConfigureAwait(true);
         try
         {
             await CancelCurrentAnalysisAsync().ConfigureAwait(true);
+            await CancelAutomaticAnalysisAsync().ConfigureAwait(true);
             if (Volatile.Read(ref _disposing) != 0) return;
             var generation = _analysisGeneration.Next();
             FinalizeCurrentEvent();
-            var review = new EventReviewState(audioMark, audioMark, EffectiveVideoTimingOffset); _review = review; AutoThumbnail = null; _isReview = true; Changed(nameof(IsInReview)); Changed(nameof(ViewerStateText)); Status = audioFinalized ? "REVIEW · ANALYSING" : "REVIEW · SELECT AUDIO MARK"; _log.Write("viewer.state", $"LIVE -> REVIEW reason={(audioFinalized ? "automatic-audio-transient" : "manual-review")} audioTimestamp={audioMark.Ticks100ns} generation={_captureGeneration}");
-            var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token); var task = RunEventAnalysisAsync(generation, review, audioFinalized, cts.Token);
+            var review = new EventReviewState(audioMark, audioMark, EffectiveVideoTimingOffset); _review = review; _isReview = true; Changed(nameof(IsInReview)); Changed(nameof(ViewerStateText)); Status = "REVIEW · SELECT AUDIO MARK"; _log.Write("viewer.state", $"LIVE -> MANUAL REVIEW audioTimestamp={audioMark.Ticks100ns} generation={_captureGeneration}");
+            var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token); var task = RunManualReviewAnalysisAsync(generation, review, cts.Token);
             _analysisCts = cts; _currentAnalysisTask = task; ObserveTask(task, "review.analysis");
         }
         finally { _eventGate.Release(); }
     }
 
-    private async Task RunEventAnalysisAsync(long generation, EventReviewState review, bool audioFinalized, CancellationToken cancellationToken)
+    private async Task RunManualReviewAnalysisAsync(long generation, EventReviewState review, CancellationToken cancellationToken)
     {
         try
         {
             await BuildEventSnapshotAsync(generation); if (!_analysisGeneration.IsCurrent(generation)) return; NotifyMarkers();
             await Task.Delay(TimeSpan.FromMilliseconds(WorkWindowMilliseconds + Math.Max(0, review.VideoTimingOffset.Milliseconds) + 40), cancellationToken);
             await BuildEventSnapshotAsync(generation); if (!_analysisGeneration.IsCurrent(generation)) return;
-            if (AutoVisual && audioFinalized)
-            {
-                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                var candidate = await _visualDetector.DetectAsync(_reviewFrames, review.ExpectedRawVisualTimestamp, cancellationToken, new(VisualSensitivity));
-                stopwatch.Stop(); var analyzed = _reviewFrames.FirstOrDefault();
-                _log.Write("visual.analysis", $"frames={_reviewFrames.Count} resolution={analyzed?.Width ?? 0}x{analyzed?.Height ?? 0} detail='{MotionVisualClapDetector.DetailDescription(analyzed?.Width ?? 0, analyzed?.Height ?? 0)}' sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))}");
-                if (candidate is not null && _analysisGeneration.IsCurrent(generation) && ReferenceEquals(_review, review))
-                {
-                    review.SetAutoCandidate(candidate); AutoThumbnail = ToBitmap(candidate.Frame);
-                    if (review.ResultMode == ReviewResultMode.Auto) _playheadIndex = Math.Max(0, _reviewFrames.IndexOf(candidate.Frame));
-                    var raw = SyncResult.Calculate(review.AudioMark, candidate.Timestamp);
-                    var corrected = VideoTimingCompensation.Calculate(review.AudioMark, candidate.Timestamp, review.VideoTimingOffset);
-                    var trace = candidate.Trace;
-                    var detection = SelectedDetectionResolution ?? new(_settings.DetectionWidth, _settings.DetectionHeight);
-                    var presentation = SelectedReviewResolution ?? new(_settings.ReviewWidth, _settings.ReviewHeight);
-                    var processing = (_capture as ICapturePerformanceDiagnostics)?.GetProcessingDiagnostics();
-                    LastEventDiagnosticsText = $"Detection {detection.Width}×{detection.Height} · review {presentation.Width}×{presentation.Height}\nAudio {review.AudioMark.Ticks100ns} · expected raw {review.ExpectedRawVisualTimestamp.Ticks100ns}\nChosen raw {candidate.Timestamp.Ticks100ns} · temporal {candidate.TemporalIndex} · native {candidate.Frame.NativeSampleIndex} · {FieldLabel(candidate.Frame)}\nRaw {raw.SignedMilliseconds:+0.000;-0.000;0.000} ms · compensation {review.VideoTimingOffset.Milliseconds:+0.000;-0.000;0.000} ms · corrected {corrected.SignedMilliseconds:+0.000;-0.000;0.000} ms\nScore {candidate.MotionScore:0.###} · confidence {candidate.Confidence:P0} · peak {trace?.ApproachPeakIndex.ToString() ?? "—"} · contact {trace?.FinalContactIndex.ToString() ?? "—"} · advanced {trace?.PositionsAdvanced.ToString() ?? "—"}\nAnalysis {stopwatch.Elapsed.TotalMilliseconds:0.0} ms · conversion avg/max {(processing is null ? "unavailable" : $"{processing.ConversionAverageMilliseconds:0.00}/{processing.ConversionMaximumMilliseconds:0.00} ms")} · timestamp source {candidate.Frame.TimingObservation?.PrimarySource.ToString() ?? candidate.Timestamp.Quality.ToString()}\nTimestamp faults: duplicate {_timelineAnalysis?.Primary.DuplicateCount ?? 0}, backwards {_timelineAnalysis?.Primary.BackwardCount ?? 0}, gaps {_timelineAnalysis?.Primary.LargeGapCount ?? 0}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
-                    _log.Write("visual.event", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
-                }
-            }
             if (!_analysisGeneration.IsCurrent(generation)) return;
-            Status = audioFinalized ? "REVIEW" : "REVIEW · SELECT AUDIO MARK"; _log.Write("viewer.state", $"REVIEW analysis complete generation={generation} frames={_reviewFrames.Count} autoCandidate={review.AutoCandidate is not null}"); ShowPlayhead(); NotifyMarkers();
+            Status = "REVIEW · SELECT AUDIO MARK"; _log.Write("viewer.state", $"MANUAL REVIEW snapshot complete generation={generation} frames={_reviewFrames.Count}"); ShowPlayhead(); NotifyMarkers();
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -726,7 +814,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void BeginManualClap()
     {
         var latest = _audio.Snapshot().LastOrDefault(); if (latest is null) return;
-        StartOwnedTask(StartEventAsync(new(latest.Timestamp.Ticks100ns + latest.Duration.Ticks / 2, latest.Timestamp.Quality, latest.Timestamp.ClockDomain), false), "review.start");
+        StartOwnedTask(StartManualReviewAsync(new(latest.Timestamp.Ticks100ns + latest.Duration.Ticks / 2, latest.Timestamp.Quality, latest.Timestamp.ClockDomain)), "review.start");
     }
     public void SelectAudioPoint(double relativeMs)
     {
@@ -773,7 +861,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private async Task ResumeLiveAsync()
     {
         await CancelCurrentAnalysisAsync().ConfigureAwait(true);
-        FinalizeCurrentEvent(); _isReview = false; Changed(nameof(IsInReview)); Changed(nameof(ViewerStateText)); _log.Write("viewer.state", $"REVIEW -> LIVE reason=resume-live generation={_captureGeneration}"); _review = null; _timelineAnalysis = null; Waveform = []; ReviewFrameTicks = []; AutoThumbnail = null; Status = AuthoritativeCaptureStatus(); NotifyMarkers();
+        FinalizeCurrentEvent(); _isReview = false; Changed(nameof(IsInReview)); Changed(nameof(ViewerStateText)); _log.Write("viewer.state", $"MANUAL REVIEW -> LIVE reason=resume-live generation={_captureGeneration}"); _review = null; _timelineAnalysis = null; Waveform = []; ReviewFrameTicks = []; Status = AuthoritativeCaptureStatus(); NotifyMarkers();
     }
     private void FinalizeCurrentEvent()
     {
@@ -787,11 +875,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         cts?.Cancel();
         if (task is not null)
         {
-            try { await task.ConfigureAwait(true); }
+            try { await task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(true); }
+            catch (TimeoutException) { _log.Write("review.analysis", "Cancellation did not complete within two seconds; stale generation guards will reject any later result."); ObserveTask(task, "review.analysis.late"); }
             catch (OperationCanceledException) { }
             catch (Exception ex) { _log.Write("review.analysis.failure", ex.ToString()); }
         }
         cts?.Dispose();
+    }
+    private async Task CancelAutomaticAnalysisAsync()
+    {
+        var cts = _automaticAnalysisCts; var task = _automaticAnalysisTask; _automaticAnalysisCts = null; _automaticAnalysisTask = null;
+        cts?.Cancel();
+        if (task is not null)
+        {
+            try { await task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(true); }
+            catch (TimeoutException) { _log.Write("automatic.analysis", "Cancellation did not complete within two seconds; capture-generation guards will reject any later result."); ObserveTask(task, "automatic.analysis.late"); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { _log.Write("automatic.analysis.failure", ex.ToString()); }
+        }
+        // The running task owns this CTS and the single-flight lease in its finally
+        // block, including after a bounded cancellation wait times out.
     }
     private async Task CancelSignalAnalysisAsync()
     {
@@ -799,7 +902,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         cts?.Cancel();
         if (task is not null)
         {
-            try { await task.ConfigureAwait(true); }
+            try { await task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(true); }
+            catch (TimeoutException) { _log.Write("input-signal.analysis", "Cancellation did not complete within two seconds; stale generation guards will reject any later result."); ObserveTask(task, "input-signal.analysis.late"); }
             catch (OperationCanceledException) { }
             catch (Exception ex) { _log.Write("input-signal.analysis.failure", ex.ToString()); }
         }
@@ -846,12 +950,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var nativeAge = AgeMilliseconds(now, diagnostics?.LastNativePayloadStopwatchTicks ?? 0);
         var readReturnAge = AgeMilliseconds(now, diagnostics?.LastReadSampleReturnStopwatchTicks ?? 0);
         var native = diagnostics?.NativePayloadCount ?? 0; var temporal = Interlocked.Read(ref _temporalVideoCount); var preview = Interlocked.Read(ref _displayedPreviewCount); var audio = diagnostics?.AudioChunkCount ?? Interlocked.Read(ref _audioChunkCount);
-        _runtimeHealthText = $"MODE: {(_isReview ? "REVIEW" : "LIVE")}\nVIDEO CAPTURE  native {native} · last payload {FormatAge(nativeAge)}\nVIDEO PIPELINE temporal {temporal} · last image {FormatAge(temporalAge)}\nPREVIEW displayed {preview} · last update {FormatAge(previewAge)}\nAUDIO chunks {audio} · last packet {FormatAge(audioAge)}\nReadSample last return {FormatAge(readReturnAge)} · empty {diagnostics?.ConsecutiveEmptySamples ?? 0}";
+        var loop = (_capture as ICapturePerformanceDiagnostics)?.GetLoopDiagnostics();
+        _runtimeHealthText = $"MODE: {(_isReview ? "MANUAL REVIEW" : "LIVE")}\nVIDEO CAPTURE  native {native} · last payload {FormatAge(nativeAge)}\nVIDEO PIPELINE temporal {temporal} · last image {FormatAge(temporalAge)}\nPREVIEW displayed {preview} · last update {FormatAge(previewAge)}\nAUDIO chunks {audio} · last packet {FormatAge(audioAge)}\nReadSample last return {FormatAge(readReturnAge)} · empty {diagnostics?.ConsecutiveEmptySamples ?? 0}\nCAPTURE THREAD id {loop?.ManagedWorkerThreadId.ToString() ?? "n/a"} · read {loop?.ReadTaskStatus.ToString() ?? "n/a"} · flush {loop?.FlushTaskStatus?.ToString() ?? "none"}\nLOOP ms read {loop?.ReadSampleAverageMilliseconds ?? 0:0.00}/{loop?.ReadSampleMaximumMilliseconds ?? 0:0.00} · processing {loop?.ProcessingAverageMilliseconds ?? 0:0.00}/{loop?.ProcessingMaximumMilliseconds ?? 0:0.00} · callback {loop?.CallbackAverageMilliseconds ?? 0:0.00}/{loop?.CallbackMaximumMilliseconds ?? 0:0.00} · buffer {loop?.NativeBufferHoldAverageMilliseconds ?? 0:0.00}/{loop?.NativeBufferHoldMaximumMilliseconds ?? 0:0.00}\nCONTROL gate {Volatile.Read(ref _reconnectGateOwner)} · waiters {Volatile.Read(ref _reconnectGateWaiters)} · quarantined {_captureRetirement.Snapshots.Count}";
         Changed(nameof(RuntimeHealthText));
         if (now - Interlocked.Read(ref _lastHeartbeatStopwatchTicks) >= System.Diagnostics.Stopwatch.Frequency * 5)
         {
             Interlocked.Exchange(ref _lastHeartbeatStopwatchTicks, now);
-            _log.Write("runtime.heartbeat", $"state={(_isReview ? "REVIEW" : "LIVE")} nativeVideo={native} temporalVideo={temporal} displayedPreview={preview} audioChunks={audio} lastNativeAgeMs={FormatAge(nativeAge)} lastTemporalAgeMs={FormatAge(temporalAge)} lastPreviewAgeMs={FormatAge(previewAge)} lastAudioAgeMs={FormatAge(audioAge)} readSampleReturnAgeMs={FormatAge(readReturnAge)} empty={diagnostics?.ConsecutiveEmptySamples ?? 0} review={_isReview} generation={_captureGeneration}");
+            _log.Write("runtime.heartbeat", $"state={(_isReview ? "MANUAL_REVIEW" : "LIVE")} nativeVideo={native} temporalVideo={temporal} displayedPreview={preview} audioChunks={audio} lastNativeAgeMs={FormatAge(nativeAge)} lastTemporalAgeMs={FormatAge(temporalAge)} lastPreviewAgeMs={FormatAge(previewAge)} lastAudioAgeMs={FormatAge(audioAge)} readSampleReturnAgeMs={FormatAge(readReturnAge)} empty={diagnostics?.ConsecutiveEmptySamples ?? 0} automaticAnalysis={_automaticAnalysisGate.IsActive} review={_isReview} generation={_captureGeneration} gateOwner='{Volatile.Read(ref _reconnectGateOwner)}' gateWaiters={Volatile.Read(ref _reconnectGateWaiters)} quarantined={_captureRetirement.Snapshots.Count} readTask={loop?.ReadTaskStatus.ToString() ?? "n/a"} flushTask={loop?.FlushTaskStatus?.ToString() ?? "none"} workerThread={loop?.ManagedWorkerThreadId.ToString() ?? "n/a"} readAvgMaxMs={loop?.ReadSampleAverageMilliseconds ?? 0:0.000}/{loop?.ReadSampleMaximumMilliseconds ?? 0:0.000} processingAvgMaxMs={loop?.ProcessingAverageMilliseconds ?? 0:0.000}/{loop?.ProcessingMaximumMilliseconds ?? 0:0.000} callbackAvgMaxMs={loop?.CallbackAverageMilliseconds ?? 0:0.000}/{loop?.CallbackMaximumMilliseconds ?? 0:0.000} bufferAvgMaxMs={loop?.NativeBufferHoldAverageMilliseconds ?? 0:0.000}/{loop?.NativeBufferHoldMaximumMilliseconds ?? 0:0.000}");
         }
         // A live audio worker plus one full second with no payload is abnormal for
         // the 25/50 fps hardware profiles. Review suppresses preview updates, not
@@ -947,36 +1052,61 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void RefreshPerformanceDisplay() { Changed(nameof(BufferEstimateText)); Changed(nameof(BufferEstimateWarning)); Changed(nameof(IsBufferEstimateHigh)); Changed(nameof(IsBufferEstimateVeryHigh)); }
     private async Task StopCaptureAsync()
     {
-        if (_capture is null) return;
-        DetachCaptureHandlers();
-        try { await _capture.DisposeAsync(); _capture = null; }
-        catch (CaptureWorkerTerminationException ex)
+        var retiring = _capture; if (retiring is null) return;
+        var device = _activeCaptureDevice; _capture = null; _activeCaptureDevice = null;
+        DetachCaptureHandlers(retiring);
+        var result = await _captureRetirement.RetireAsync(retiring, device?.Id ?? "unknown", device?.FriendlyName ?? "Unknown capture session", TimeSpan.FromSeconds(4));
+        if (result.Disposition == CaptureRetirementDisposition.Quarantined)
         {
-            // Retain the session reference: it still owns a native worker and is
-            // deliberately not safe to replace or release.
-            _log.Write("capture.shutdown.failure", ex.Message); throw;
+            _captureStatus = CaptureStatus.Failed; _captureStatusText = "CAPTURE SESSION STALLED"; Status = _captureStatusText; Changed(nameof(ArmStateText));
+            _log.Write("capture.quarantine", $"device='{result.DeviceName}' key='{result.DeviceKey}' reason='{result.Reason}' disposalTask={result.DisposalTaskStatus} quarantined={_captureRetirement.Snapshots.Count} retirementAttempts={_captureRetirement.StopAttempts}");
         }
     }
 
-    private void DetachCaptureHandlers()
+    private void DetachCaptureHandlers(ICaptureSession? capture)
     {
-        if (_capture is null) return;
-        _capture.VideoSampleReceived -= OnVideoFrame;
-        _capture.AudioSampleReceived -= OnAudio;
-        _capture.StatusChanged -= OnCaptureStatus;
+        if (capture is null) return;
+        capture.VideoSampleReceived -= OnVideoFrame;
+        capture.AudioSampleReceived -= OnAudio;
+        capture.StatusChanged -= OnCaptureStatus;
     }
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposing, 1) != 0) return;
         _log.Write("shutdown", "View model disposal started; canceling capture lifetime.");
-        _lifetimeCts.Cancel(); _memoryTimer.Stop(); _settingsReconnectCts?.Cancel(); SaveSettings(immediate: true);
-        await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync();
+        _lifetimeCts.Cancel(); _memoryTimer.Stop(); _settingsReconnectCts?.Cancel(); _deviceSelectionCts?.Cancel(); SaveSettings(immediate: true);
+        await CancelCurrentAnalysisAsync(); await CancelAutomaticAnalysisAsync(); await CancelSignalAnalysisAsync();
         var settingsTask = _settingsReconnectTask;
         if (settingsTask is not null) { try { await settingsTask; } catch (OperationCanceledException) { } }
-        await _reconnectGate.WaitAsync();
-        try { await StopCaptureAsync(); _log.Write("shutdown", "Capture disposal completed."); }
-        catch (CaptureWorkerTerminationException ex) { _log.Write("shutdown.failure", ex.Message); }
-        finally { _reconnectGate.Release(); _lifetimeCts.Dispose(); _settingsService.Dispose(); }
+        var selectionTask = _deviceSelectionTask;
+        if (selectionTask is not null) { try { await selectionTask.WaitAsync(TimeSpan.FromSeconds(2)); } catch (OperationCanceledException) { } catch (TimeoutException) { _log.Write("device.selection", "Selection cancellation did not complete within two seconds; generation guards will reject stale completion."); } }
+        if (await EnterReconnectGateAsync("shutdown", TimeSpan.FromSeconds(4)))
+        {
+            try { await StopCaptureAsync(); _log.Write("shutdown", $"Capture retirement completed; quarantined={_captureRetirement.Snapshots.Count}."); }
+            finally { ExitReconnectGate("shutdown"); }
+        }
+        else _log.Write("shutdown.failure", $"Reconnect gate remained owned by '{Volatile.Read(ref _reconnectGateOwner)}'; visible shutdown will continue without waiting indefinitely.");
+        _lifetimeCts.Dispose(); _settingsService.Dispose();
+    }
+
+    private async Task<bool> EnterReconnectGateAsync(string owner, TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _reconnectGateWaiters); _log.Write("capture.gate", $"owner='{owner}' action=wait current='{Volatile.Read(ref _reconnectGateOwner)}' waiters={Volatile.Read(ref _reconnectGateWaiters)}");
+        try
+        {
+            try
+            {
+                if (!await _reconnectGate.WaitAsync(timeout, cancellationToken).ConfigureAwait(true)) { _log.Write("capture.gate", $"owner='{owner}' action=timeout current='{Volatile.Read(ref _reconnectGateOwner)}'"); return false; }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { _log.Write("capture.gate", $"owner='{owner}' action=canceled current='{Volatile.Read(ref _reconnectGateOwner)}'"); return false; }
+            Volatile.Write(ref _reconnectGateOwner, owner); _log.Write("capture.gate", $"owner='{owner}' action=acquired"); return true;
+        }
+        finally { Interlocked.Decrement(ref _reconnectGateWaiters); }
+    }
+
+    private void ExitReconnectGate(string owner)
+    {
+        Volatile.Write(ref _reconnectGateOwner, "idle"); _reconnectGate.Release(); _log.Write("capture.gate", $"owner='{owner}' action=released");
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Changed(name); return true; }
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));

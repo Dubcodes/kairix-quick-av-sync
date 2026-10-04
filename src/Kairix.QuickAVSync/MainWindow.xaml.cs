@@ -36,8 +36,13 @@ public partial class MainWindow : Window
         _shutdownLog.Write("shutdown", "Window close requested; disposing application services.");
         try
         {
-            await _viewModel.DisposeAsync();
-            _shutdownLog.Write("shutdown", "Application services disposed; completing window close.");
+            var disposal = _viewModel.DisposeAsync().AsTask();
+            if (await Task.WhenAny(disposal, Task.Delay(TimeSpan.FromSeconds(4.5))) == disposal)
+            {
+                await disposal;
+                _shutdownLog.Write("shutdown", "Application services disposed; completing window close.");
+            }
+            else _shutdownLog.Write("shutdown.failure", "Application service disposal exceeded 4.5 seconds; completing visible shutdown while retained capture ownership remains quarantined.");
         }
         catch (Exception ex)
         {

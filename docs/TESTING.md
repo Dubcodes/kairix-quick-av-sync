@@ -63,9 +63,35 @@ Run the Core suite repeatedly after changing event analysis:
 
 The analysis-generation test proves the acceptance rule independently; application smoke testing should also trigger closely spaced synthetic/manual events and confirm no old thumbnail/result returns.
 
+Coordination tests separately prove that only the latest device-selection token remains current (including A→B→A), only one automatic analysis lease can be active, cancellation does not prematurely reopen the slot, and manual review/Hold/disabled detector states reject automatic events. Synthetic smoke testing must confirm automatic events add history while the viewer remains LIVE/ARMED, whereas manual Clap alone displays the Resume Live control.
+
+## Poisoned-session recovery regression
+
+Core fake-session tests must cover a disposal operation that never completes, reuse of exactly one retirement operation, a typed worker-termination failure, a normal clean disposal, independent Synthetic-like work after quarantine, and rejection of callbacks from the retired sender identity. Physical recovery testing is separate and must verify all of the following after an observed or deliberately simulated video-producer stall:
+
+1. WPF remains responsive and Settings/About can still be opened.
+2. Switching to Synthetic completes within the bounded retirement window.
+3. Exactly one quarantine and one hardware stop/Flush operation are recorded.
+4. Repeated Synthetic reconnects do not touch the quarantined hardware session.
+5. The visible app and process close within five seconds without forced COM release.
+
+Containment success is not a physical-stability pass. Publication requires both the recovery checks above and a documented 60–120 minute physical run with no video stall, valid cadence/timestamps, and bounded memory, handles, and threads. If the historical reference also fails in the same current setup, record that result and investigate environmental differences instead of inventing a first failing commit.
+
 ## Physical hardware
 
 Use the checklist in `CURRENT_STATE.md`. Save diagnostic text only. For each format record the card/driver identity, paired endpoint, Container IDs, pixel subtype, frame-rate rational, scan/field metadata, active video timestamp source, audio QPC status, discontinuities, reconnect behavior, and an external known-delay comparison.
+
+### Historical field evidence and regression baseline
+
+The primary known-good operational baseline is exactly `71cecc21bee4df5c0eccfc0be59a1f84c4d6f45c`, commit message `feat: add performance settings and themes`, whose field executable reported ProductVersion `0.1.0-alpha+71cecc21bee4df5c0eccfc0be59a1f84c4d6f45c`. The user confirmed that exact build ran in the real broadcast truck for an extended period/effectively the work day without the recurring video-freeze problem. Treat this as **historical field evidence**, not as a synthetic benchmark or proof of which later change caused a regression.
+
+Commit `1557718019fc24a9b7eda51c1947d87061ec51bd` remains useful earlier capture evidence, but it is not the primary known-good field build. Never label it as the known-good production baseline.
+
+Run the regression comparison from a detached worktree at `71cecc21bee4df5c0eccfc0be59a1f84c4d6f45c`; do not alter `main`. Use the same PC, capture card, USB connection, and source where possible. Record mode, native/temporal frames, audio chunks, timestamps/faults, memory, handles, threads, automatic events, and first-stall time. If `71cecc21…` is stable while current development stalls, that is direct regression evidence. If it also stalls in the same present setup, environmental, driver, or device-state differences become more plausible. Preserve both that result and the independent historical field evidence.
+
+The comparison was run on 2026-10-05 using the same current PC, XI100DUSB-HDMI path, source, and saved 1920×1080 25p YUY2/top-first reconstruction profile. The exact `71cecc21…` build reached Running at 12:36:15. Its 12:36:25 automatic event contained 30 frames, but every event window from 12:36:26 onward contained zero video frames. Audio transients continued and the WPF window remained responsive for more than two minutes. The build did not reach its 250-sample periodic log point, so the exact final native-frame count is unknown. Normal window close was not accepted after the stall and the detached test process was forcibly terminated. This same-setup reproduction increases the plausibility of a present environment/driver/device-state contribution; it does not prove root cause, rule out later regressions, or supersede the confirmed truck result.
+
+When reviewing changes after `71cecc21…`, prioritize capture lifetime and Source Reader ownership, stop/Flush/disposal/reconnect behavior, conversion and native-buffer ownership, rolling buffers, passive signal/preview/event analysis, settings auto-reconnect, watchdog diagnostics, generation guards, and field reconstruction.
 
 Enumerate all native modes without starting capture or saving media:
 

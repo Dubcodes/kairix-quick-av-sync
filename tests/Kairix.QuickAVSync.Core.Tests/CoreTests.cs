@@ -6,6 +6,154 @@ using Xunit.Abstractions;
 
 namespace Kairix.QuickAVSync.Core.Tests;
 
+public sealed class CaptureSessionRetirementCoordinatorTests
+{
+    [Fact]
+    public async Task NonTerminatingSessionIsQuarantinedWithoutBlockingIndependentSyntheticStart()
+    {
+        var stuck = FakeCaptureSession.NeverCompletes(); var coordinator = new CaptureSessionRetirementCoordinator();
+        var retirement = await coordinator.RetireAsync(stuck, "hardware", "Hardware", TimeSpan.FromMilliseconds(40));
+        var syntheticStarted = false; await Task.Run(() => syntheticStarted = true).WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(CaptureRetirementDisposition.Quarantined, retirement.Disposition); Assert.True(syntheticStarted); Assert.True(coordinator.IsDeviceQuarantined("hardware"));
+    }
+
+    [Fact]
+    public async Task RepeatedRetirementReusesOneTerminalOperationAndNeverRepeatsStop()
+    {
+        var stuck = FakeCaptureSession.NeverCompletes(); var coordinator = new CaptureSessionRetirementCoordinator();
+        var first = await coordinator.RetireAsync(stuck, "hardware", "Hardware", TimeSpan.FromMilliseconds(30));
+        var second = await coordinator.RetireAsync(stuck, "hardware", "Hardware", TimeSpan.FromMilliseconds(30));
+        Assert.Equal(CaptureRetirementDisposition.Quarantined, first.Disposition); Assert.Same(first, second); Assert.Equal(1, stuck.DisposeCalls); Assert.Equal(1, coordinator.StopAttempts); Assert.Single(coordinator.Snapshots);
+    }
+
+    [Fact]
+    public async Task WorkerTerminationFailureIsRetainedAndNormalSessionStillDisposes()
+    {
+        var coordinator = new CaptureSessionRetirementCoordinator(); var poisoned = FakeCaptureSession.Faults(new CaptureWorkerTerminationException("blocked native read")); var normal = FakeCaptureSession.Completes();
+        var failed = await coordinator.RetireAsync(poisoned, "hardware", "Hardware", TimeSpan.FromSeconds(1));
+        var clean = await coordinator.RetireAsync(normal, "synthetic", "Synthetic", TimeSpan.FromSeconds(1));
+        Assert.Equal(CaptureRetirementDisposition.Quarantined, failed.Disposition); Assert.Equal(CaptureRetirementDisposition.Disposed, clean.Disposition); Assert.False(coordinator.IsDeviceQuarantined("synthetic")); Assert.Equal(2, coordinator.StopAttempts);
+    }
+
+    [Fact]
+    public async Task RetiredSessionIdentityCannotMutateNewSessionState()
+    {
+        var retired = FakeCaptureSession.Faults(new CaptureWorkerTerminationException("stalled")); var current = FakeCaptureSession.Completes(); ICaptureSession? active = retired; var mutations = 0;
+        retired.VideoSampleReceived += (sender, _) => { if (ReferenceEquals(sender, active)) mutations++; };
+        active = null; var coordinator = new CaptureSessionRetirementCoordinator(); await coordinator.RetireAsync(retired, "hardware", "Hardware", TimeSpan.FromSeconds(1));
+        active = current; retired.EmitVideo();
+        Assert.Equal(0, mutations);
+    }
+
+    [Fact]
+    public async Task CleanRetirementIsWeakAndCollectible()
+    {
+        var coordinator = new CaptureSessionRetirementCoordinator();
+        var reference = await RetireCleanSessionAsync(coordinator);
+        for (var attempt = 0; attempt < 8 && reference.IsAlive; attempt++) { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); }
+        Assert.False(reference.IsAlive); Assert.Empty(coordinator.Snapshots);
+    }
+
+    [Fact]
+    public async Task QuarantineStronglyRetainsUnsafeOwnership()
+    {
+        var coordinator = new CaptureSessionRetirementCoordinator();
+        var reference = await RetireUnsafeSessionAsync(coordinator);
+        for (var attempt = 0; attempt < 3; attempt++) { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); }
+        Assert.True(reference.IsAlive); Assert.Single(coordinator.Snapshots);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static async Task<WeakReference> RetireCleanSessionAsync(CaptureSessionRetirementCoordinator coordinator)
+    {
+        var session = FakeCaptureSession.Completes(); var reference = new WeakReference(session);
+        await coordinator.RetireAsync(session, "synthetic", "Synthetic", TimeSpan.FromSeconds(1));
+        return reference;
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static async Task<WeakReference> RetireUnsafeSessionAsync(CaptureSessionRetirementCoordinator coordinator)
+    {
+        var session = FakeCaptureSession.Faults(new CaptureWorkerTerminationException("stalled")); var reference = new WeakReference(session);
+        await coordinator.RetireAsync(session, "hardware", "Hardware", TimeSpan.FromSeconds(1));
+        return reference;
+    }
+
+    private sealed class FakeCaptureSession(Func<ValueTask> dispose) : ICaptureSession
+    {
+        private readonly Func<ValueTask> _dispose = dispose; private int _disposeCalls;
+        public int DisposeCalls => Volatile.Read(ref _disposeCalls);
+        public CaptureFormat CurrentFormat { get; } = new(320, 180, Rational.From(50), ScanMode.Progressive, FieldOrder.Unknown);
+        public TimingQuality TimingQuality => TimingQuality.StreamTimestamp;
+        public event EventHandler<VideoFrame>? VideoSampleReceived;
+        public event EventHandler<AudioChunk>? AudioSampleReceived { add { } remove { } }
+        public event EventHandler<CaptureStatusChangedEventArgs>? StatusChanged { add { } remove { } }
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public ValueTask DisposeAsync() { Interlocked.Increment(ref _disposeCalls); return _dispose(); }
+        public void EmitVideo() => VideoSampleReceived?.Invoke(this, new(new(0, TimingQuality.StreamTimestamp), 1, 1, [0], 1));
+        public static FakeCaptureSession Completes() => new(() => ValueTask.CompletedTask);
+        public static FakeCaptureSession NeverCompletes() { var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); return new(() => new(completion.Task)); }
+        public static FakeCaptureSession Faults(Exception error) => new(() => ValueTask.FromException(error));
+    }
+}
+
+public sealed class OperationCoordinationTests
+{
+    [Theory]
+    [InlineData(true, false, true, false, true, true)]
+    [InlineData(false, false, true, false, true, false)]
+    [InlineData(true, true, true, false, true, false)]
+    [InlineData(true, false, false, false, true, false)]
+    [InlineData(true, false, true, true, true, false)]
+    [InlineData(true, false, true, false, false, false)]
+    public void AutomaticEventsRequireArmedLiveState(bool autoDetect, bool hold, bool autoSpike, bool manualReview, bool captureReady, bool expected) =>
+        Assert.Equal(expected, AutomaticEventPolicy.CanStart(autoDetect, hold, autoSpike, manualReview, captureReady));
+
+    [Fact]
+    public void LatestRequestWinsEvenWhenAnOlderRequestTargetsTheSameDevice()
+    {
+        var tracker = new LatestRequestTracker<string>();
+        var first = tracker.Begin("camera-a");
+        var second = tracker.Begin("camera-b");
+        var third = tracker.Begin("camera-a");
+
+        Assert.False(tracker.IsCurrent(first));
+        Assert.False(tracker.IsCurrent(second));
+        Assert.True(tracker.IsCurrent(third));
+        Assert.True(first.Generation < second.Generation && second.Generation < third.Generation);
+    }
+
+    [Fact]
+    public void SingleFlightRejectsBusyTriggersAndReadmitsOnlyAfterTheOperationActuallyExits()
+    {
+        var gate = new SingleFlightOperationGate();
+        Assert.True(gate.TryEnter(out var active));
+        Assert.True(gate.IsActive);
+        Assert.False(gate.TryEnter(out var rejected));
+        Assert.Null(rejected);
+
+        // Cancellation is intentionally not a release signal: the running task owns the lease.
+        Assert.False(gate.TryEnter(out _));
+        active!.Dispose();
+
+        Assert.False(gate.IsActive);
+        Assert.True(gate.TryEnter(out var next));
+        next!.Dispose();
+    }
+
+    [Fact]
+    public void SingleFlightLeaseCanBeDisposedRepeatedlyWithoutOpeningMultipleSlots()
+    {
+        var gate = new SingleFlightOperationGate();
+        Assert.True(gate.TryEnter(out var lease));
+        lease!.Dispose(); lease.Dispose();
+        Assert.True(gate.TryEnter(out var next));
+        Assert.False(gate.TryEnter(out _));
+        next!.Dispose();
+    }
+}
+
 public sealed class RollingBufferTests
 {
     [Fact] public void WrapsAndReturnsChronologically() { var b = new RollingBuffer<int>(3); foreach (var i in Enumerable.Range(1, 5)) b.Add(i); Assert.Equal([3, 4, 5], b.Snapshot()); }
@@ -360,6 +508,31 @@ public sealed class ClockCorrelationTests
 
 public sealed class SyntheticPipelineTests
 {
+    [Fact]
+    public async Task TwoAutomaticSyntheticEventsCommitWithoutAResumeBoundary()
+    {
+        var history = new SessionHistoryService(); var admission = new SingleFlightOperationGate();
+        for (var eventNumber = 0; eventNumber < 2; eventNumber++)
+        {
+            Assert.True(admission.TryEnter(out var lease));
+            try
+            {
+                var fixture = SyntheticFixture.Create(TimeSpan.FromMilliseconds(60));
+                var transient = fixture.Audio.SelectMany(new TransientDetector().Process).Single();
+                var candidate = await new MotionVisualClapDetector().DetectAsync(fixture.Video, transient.Timestamp, default);
+                Assert.NotNull(candidate);
+                var state = new EventReviewState(transient.Timestamp, transient.Timestamp, new(0, VideoTimingOffsetSource.Automatic)); state.SetAutoCandidate(candidate!);
+                Assert.True(state.TryFinalize(out var result));
+                history.Add(new(DateTime.UtcNow.AddSeconds(eventNumber), result!, candidate!.Confidence, state.CurrentRawResult, 0, VideoTimingOffsetSource.Automatic));
+            }
+            finally { lease!.Dispose(); }
+        }
+
+        Assert.Equal(2, history.Items.Count);
+        Assert.All(history.Items, item => Assert.Equal("AUDIO LEADS VIDEO BY 60 ms", item.Result.Wording));
+        Assert.False(admission.IsActive);
+    }
+
     [Fact]
     public async Task LiveSyntheticPatternSelectsDeclaredPositiveSixtyMillisecondContact()
     {

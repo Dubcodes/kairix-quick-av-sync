@@ -18,6 +18,12 @@ A backend must:
 
 The current implementation uses Media Foundation for video and MMDevice/WASAPI for the paired capture endpoint. Video device symbolic links are stable backend identities. PnP Container IDs associate separate USB video/audio functions where drivers publish them.
 
+The synchronous video worker records the managed worker ID and separately measures `ReadSample`, post-read processing, the synchronous subscriber callback, and native-buffer hold time. Only threshold crossings at 5/10/20/50 ms are logged. Runtime heartbeat diagnostics also include read/Flush task states, reconnect-gate owner/waiters, and quarantine count. If `ReadSample` and Flush both remain blocked, the Source Reader and Media Foundation lifetime are retained rather than released under the live worker.
+
+A poisoned session is terminal: later actions reuse its one stop operation and never create another blocked Flush task. Its handlers are detached and it is no longer active capture. The held physical device is reported as stalled and unavailable for in-process reopen; Synthetic and unrelated sources remain usable. This containment fixes the global application hang but does not claim to cure the native read stall. The 2026-10-04 physical matrix and historical-baseline comparison are documented in `CURRENT_STATE.md`.
+
+On 2026-10-05, matched physical A/B tests also stalled with the asynchronous Media Foundation callback API (25 native frames, one outstanding read) and FFmpeg's DirectShow input (590 frames / 23.6 seconds). Neither experiment is present in the production backend. The cross-API failure means a DirectShow switch is not currently evidence-based; see `CURRENT_STATE.md` for the exact limits and interpretation.
+
 The format catalog retains every directly supported native mode. The UI projects that catalog into separate Resolution, Format, and Pixel format controls and resolves the selection back to one stable native mode ID. Pixel formats are filtered to the selected raster and exact rational transport rate. Initial unsaved capture may use generic Auto ranking; an explicit operator selection always wins.
 
 Explicit capture-format requests are strict: unavailable, rejected, unverifiable, or post-negotiation-mismatched modes fail without trying the next candidate. Auto selection retains ranked fallback behavior.

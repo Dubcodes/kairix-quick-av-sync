@@ -129,10 +129,14 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
     private const int ValidationFrameCount = 3;
     private static readonly TimeSpan ValidationTimeout = TimeSpan.FromSeconds(3);
     private readonly CaptureDeviceDescriptor _device; private readonly CaptureOpenOptions _options; private readonly DevicePairing _pairing; private readonly IDiagnosticSink _log;
-    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _nativeSampleCount; private int _validationStreak; private int _emptySampleCount; private int _consecutiveEmptySamples; private int _audioState; private SourceFormat _sourceFormat;
+    private readonly object _stopGate = new();
+    private IMFSourceReader? _reader; private CancellationTokenSource? _cts; private Task? _readTask; private Task? _stopTask; private Task? _flushTask; private WasapiCaptureWorker? _audioWorker; private bool _mfStarted; private int _temporalIndex; private int _nativeSampleCount; private int _validationStreak; private int _emptySampleCount; private int _consecutiveEmptySamples; private int _audioState; private int _stopAttempts; private int _workerThreadId; private SourceFormat _sourceFormat;
+    private string _stopState = "running";
     private long _audioChunkCount, _lastNativePayloadStopwatchTicks, _lastReadSampleReturnStopwatchTicks, _lastReadSampleEnteredStopwatchTicks, _lastAudioStopwatchTicks;
     private Dictionary<TemporalImageKind, NativeVideoConversionPlan> _conversionPlans = [];
     private long _conversionTicks; private long _conversionMaximumTicks; private int _conversionSamples;
+    private long _readTicks, _readMaximumTicks, _processingTicks, _processingMaximumTicks, _callbackTicks, _callbackMaximumTicks, _bufferHoldTicks, _bufferHoldMaximumTicks;
+    private int _readSamples, _processingSamples, _callbackSamples, _bufferHoldSamples, _readSlowBucket, _processingSlowBucket, _callbackSlowBucket, _bufferSlowBucket;
     private TaskCompletionSource _firstVideoSample = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public CaptureFormat CurrentFormat { get; private set; }
     public TimingQuality TimingQuality { get; private set; } = TimingQuality.StreamTimestamp;
@@ -145,6 +149,12 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
         return new(samples, samples == 0 ? 0 : ticks * 1000d / Stopwatch.Frequency / samples, maximum * 1000d / Stopwatch.Frequency);
     }
     public CaptureRuntimeDiagnostics GetRuntimeDiagnostics() => new(Volatile.Read(ref _nativeSampleCount), Volatile.Read(ref _temporalIndex), Interlocked.Read(ref _audioChunkCount), Interlocked.Read(ref _lastNativePayloadStopwatchTicks), Interlocked.Read(ref _lastReadSampleReturnStopwatchTicks), Interlocked.Read(ref _lastAudioStopwatchTicks), Volatile.Read(ref _consecutiveEmptySamples));
+    public CaptureLoopDiagnostics GetLoopDiagnostics() => new(
+        Volatile.Read(ref _workerThreadId), _readTask?.Status ?? TaskStatus.RanToCompletion, _flushTask?.Status, Volatile.Read(ref _stopState), Volatile.Read(ref _stopAttempts),
+        Volatile.Read(ref _processingSamples), AverageMilliseconds(_readTicks, _readSamples), TicksToMilliseconds(Interlocked.Read(ref _readMaximumTicks)),
+        AverageMilliseconds(_processingTicks, _processingSamples), TicksToMilliseconds(Interlocked.Read(ref _processingMaximumTicks)),
+        AverageMilliseconds(_callbackTicks, _callbackSamples), TicksToMilliseconds(Interlocked.Read(ref _callbackMaximumTicks)),
+        AverageMilliseconds(_bufferHoldTicks, _bufferHoldSamples), TicksToMilliseconds(Interlocked.Read(ref _bufferHoldMaximumTicks)));
 
     private MediaFoundationCaptureSession(CaptureDeviceDescriptor device, CaptureOpenOptions options, DevicePairing pairing, IDiagnosticSink log, IMFSourceReader reader, CaptureFormat format, SourceFormat sourceFormat)
     { _device = device; _options = options; _pairing = pairing; _log = log; _reader = reader; CurrentFormat = format; _sourceFormat = sourceFormat; BuildConversionPlans(); }
@@ -227,7 +237,7 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
     {
         if (_readTask is not null) { await _firstVideoSample.Task.WaitAsync(cancellationToken).ConfigureAwait(false); return; }
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken); StatusChanged?.Invoke(this, new(CaptureStatus.Starting, "Waiting for first video frame"));
-        _readTask = Task.Run(() => ReadLoop(_cts.Token), _cts.Token);
+        Volatile.Write(ref _stopState, "running"); _readTask = Task.Run(() => ReadLoop(_cts.Token), _cts.Token);
         if (_options.IncludeAudio && _pairing.Endpoint is not null) { _audioWorker = new(_pairing.Endpoint, _log); _audioWorker.AudioSampleReceived += ForwardAudio; _audioWorker.StatusChanged += ForwardStatus; _ = _audioWorker.StartAsync(_cts.Token); }
         try
         {
@@ -265,86 +275,18 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
 
     private void ReadLoop(CancellationToken cancellationToken)
     {
+        Volatile.Write(ref _workerThreadId, Environment.CurrentManagedThreadId);
         MediaFoundationNative.CoInitializeEx(IntPtr.Zero, 0);
         try
         {
             while (!cancellationToken.IsCancellationRequested && _reader is not null)
             {
-                Interlocked.Exchange(ref _lastReadSampleEnteredStopwatchTicks, Stopwatch.GetTimestamp());
-                var hr = _reader.ReadSample(MediaFoundationNative.SourceReaderFirstVideoStream, 0, out _, out var flags, out var readerTimestamp, out var sample); var arrivalStopwatchTicks = Stopwatch.GetTimestamp(); Interlocked.Exchange(ref _lastReadSampleReturnStopwatchTicks, arrivalStopwatchTicks); hr.ThrowIfFailed();
+                var readStarted = Stopwatch.GetTimestamp(); Interlocked.Exchange(ref _lastReadSampleEnteredStopwatchTicks, readStarted);
+                var hr = _reader.ReadSample(MediaFoundationNative.SourceReaderFirstVideoStream, 0, out _, out var flags, out var readerTimestamp, out var sample); var arrivalStopwatchTicks = Stopwatch.GetTimestamp(); Interlocked.Exchange(ref _lastReadSampleReturnStopwatchTicks, arrivalStopwatchTicks); RecordDuration("ReadSample", arrivalStopwatchTicks - readStarted, ref _readTicks, ref _readMaximumTicks, ref _readSamples, ref _readSlowBucket); hr.ThrowIfFailed();
                 if ((flags & MediaFoundationNative.EndOfStream) != 0) throw new InvalidOperationException("Capture device ended the video stream.");
                 if ((flags & MediaFoundationNative.MediaTypeChanged) != 0) RefreshCurrentFormat();
                 if (sample is null) continue;
-                try
-                {
-                    var sampleTimeHr = sample.GetSampleTime(out var sampleTime); var deviceTime = sample.TryGetUInt64(MfGuids.DeviceTimestamp);
-                    var hasSampleTime = sampleTimeHr >= 0;
-                    var primarySource = deviceTime is not null ? VideoPrimaryTimestampSource.DeviceTimestamp
-                        : hasSampleTime ? VideoPrimaryTimestampSource.SampleTime
-                        : VideoPrimaryTimestampSource.ReaderTimestamp;
-                    var timestamp = deviceTime is { } qpc
-                        ? new MediaTimestamp((long)qpc, TimingQuality.DeviceHardware, "windows-qpc-100ns", (long)qpc)
-                        : new MediaTimestamp(hasSampleTime ? sampleTime : readerTimestamp, TimingQuality.StreamTimestamp, $"mf-stream:{_device.Id}", hasSampleTime ? sampleTime : readerTimestamp);
-                    var timingObservation = new VideoTimingObservation(primarySource, arrivalStopwatchTicks, Stopwatch.Frequency,
-                        deviceTime is { } device ? (long)device : null, hasSampleTime ? sampleTime : null, readerTimestamp);
-                    if (timestamp.Quality != TimingQuality) { TimingQuality = timestamp.Quality; _log.Write("capture.timing", $"source={timestamp.Quality} domain='{timestamp.ClockDomain}' raw={timestamp.RawValue}"); }
-                    var bufferCountHr = sample.GetBufferCount(out var bufferCount);
-                    if (_temporalIndex == 0 && Volatile.Read(ref _emptySampleCount) == 0) _log.Write("capture.sample", $"first sample timestamp={timestamp.Ticks100ns} quality={timestamp.Quality} raw={timestamp.RawValue?.ToString() ?? "unavailable"}; GetBufferCount {DescribeHr(bufferCountHr)} count={bufferCount}");
-                    bufferCountHr.ThrowIfFailed();
-                    if (bufferCount == 0)
-                    {
-                        Volatile.Write(ref _validationStreak, 0);
-                        var emptyCount = Interlocked.Increment(ref _emptySampleCount); var consecutiveEmpty = Interlocked.Increment(ref _consecutiveEmptySamples);
-                        if (consecutiveEmpty == 1 || consecutiveEmpty % 250 == 0) _log.Write("capture.sample", $"Media Foundation delivered timestamp-only samples without video data; total={emptyCount} consecutive={consecutiveEmpty}");
-                        continue;
-                    }
-                    var contiguousHr = sample.ConvertToContiguousBuffer(out var buffer);
-                    if (contiguousHr < 0 && bufferCount == 1)
-                    {
-                        _log.Write("capture.sample", $"ConvertToContiguousBuffer {DescribeHr(contiguousHr)}; falling back to the sample's sole native buffer");
-                        sample.GetBufferByIndex(0, out buffer).ThrowIfFailed();
-                    }
-                    else
-                    {
-                        contiguousHr.ThrowIfFailed();
-                    }
-                    try
-                    {
-                        if (_temporalIndex == 0)
-                        {
-                            buffer.GetCurrentLength(out var currentLength).ThrowIfFailed();
-                            buffer.GetMaxLength(out var maximumLength).ThrowIfFailed();
-                            _log.Write("capture.sample", $"first buffer currentLength={currentLength} maximumLength={maximumLength} expectedMinimum={Math.Abs(_sourceFormat.Stride) * _sourceFormat.Height}");
-                        }
-                        var nativeSampleNumber = Interlocked.Increment(ref _nativeSampleCount); Interlocked.Exchange(ref _lastNativePayloadStopwatchTicks, arrivalStopwatchTicks); Volatile.Write(ref _consecutiveEmptySamples, 0);
-                        var validationStreak = Interlocked.Increment(ref _validationStreak);
-                        if (_options.FieldReconstruction is { } reconstruction)
-                        {
-                            var positions = ReconstructedFieldTimestampModel.Reconstruct(timestamp, timingObservation, reconstruction);
-                            var converted = ExtractFrames(buffer, positions.Select(position => position.Kind));
-                            for (var index = 0; index < positions.Count; index++) PublishFrame(converted[index], positions[index], nativeSampleNumber);
-                            if (nativeSampleNumber <= 3) _log.Write("field.reconstruction", $"sample={nativeSampleNumber} assumption='capture timestamp represents second field/completed pair' intervalMs={reconstruction.FieldIntervalTicks100ns / 10_000d:0.###} first={positions[0].Kind}@{positions[0].Timestamp.Ticks100ns} second={positions[1].Kind}@{positions[1].Timestamp.Ticks100ns}");
-                        }
-                        else
-                        {
-                            var converted = ExtractFrames(buffer, [TemporalImageKind.ProgressiveFrame])[0];
-                            PublishFrame(converted, new(TemporalImageKind.ProgressiveFrame, timestamp, TimestampOrigin.DirectCapture, timingObservation), nativeSampleNumber);
-                        }
-                        if (nativeSampleNumber == 1)
-                        {
-                            _log.Write("capture.first-sample", $"Video payload received timestamp={timestamp.Ticks100ns} raw={timestamp.RawValue?.ToString() ?? "unavailable"} deviceTimestamp={(deviceTime is null ? "unavailable" : "available")} format='{CurrentFormat.Display}'");
-                        }
-                        if (validationStreak == ValidationFrameCount && !_firstVideoSample.Task.IsCompleted)
-                        {
-                            _firstVideoSample.TrySetResult();
-                            _log.Write("capture.validation", $"Media Foundation accepted after {ValidationFrameCount} consecutive payload-bearing frames");
-                            _log.Write("capture.coordinator", $"Media Foundation accepted for '{_device.FriendlyName}'");
-                            StatusChanged?.Invoke(this, new(CaptureStatus.Running, LiveStatus()));
-                        }
-                        else if (nativeSampleNumber % 250 == 0) { _log.Write("capture.samples", $"native={nativeSampleNumber} temporal={Volatile.Read(ref _temporalIndex)} latestTimestamp={timestamp.Ticks100ns}"); LogConversionSummary("periodic", reset: true); }
-                    }
-                    finally { Marshal.ReleaseComObject(buffer); }
-                }
+                try { ProcessSample(sample, readerTimestamp, arrivalStopwatchTicks); }
                 finally { Marshal.ReleaseComObject(sample); }
             }
         }
@@ -355,6 +297,50 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
         finally { MediaFoundationNative.CoUninitialize(); }
     }
 
+    private void ProcessSample(IMFSample sample, long readerTimestamp, long arrivalStopwatchTicks)
+    {
+        var processingStarted = arrivalStopwatchTicks;
+        try
+        {
+            var sampleTimeHr = sample.GetSampleTime(out var sampleTime); var deviceTime = sample.TryGetUInt64(MfGuids.DeviceTimestamp);
+            var hasSampleTime = sampleTimeHr >= 0;
+            var primarySource = deviceTime is not null ? VideoPrimaryTimestampSource.DeviceTimestamp : hasSampleTime ? VideoPrimaryTimestampSource.SampleTime : VideoPrimaryTimestampSource.ReaderTimestamp;
+            var timestamp = deviceTime is { } qpc ? new MediaTimestamp((long)qpc, TimingQuality.DeviceHardware, "windows-qpc-100ns", (long)qpc) : new MediaTimestamp(hasSampleTime ? sampleTime : readerTimestamp, TimingQuality.StreamTimestamp, $"mf-stream:{_device.Id}", hasSampleTime ? sampleTime : readerTimestamp);
+            var timingObservation = new VideoTimingObservation(primarySource, arrivalStopwatchTicks, Stopwatch.Frequency, deviceTime is { } device ? (long)device : null, hasSampleTime ? sampleTime : null, readerTimestamp);
+            if (timestamp.Quality != TimingQuality) { TimingQuality = timestamp.Quality; _log.Write("capture.timing", $"source={timestamp.Quality} domain='{timestamp.ClockDomain}' raw={timestamp.RawValue}"); }
+            var bufferCountHr = sample.GetBufferCount(out var bufferCount);
+            if (_temporalIndex == 0 && Volatile.Read(ref _emptySampleCount) == 0) _log.Write("capture.sample", $"first sample timestamp={timestamp.Ticks100ns} quality={timestamp.Quality} raw={timestamp.RawValue?.ToString() ?? "unavailable"}; GetBufferCount {DescribeHr(bufferCountHr)} count={bufferCount}");
+            bufferCountHr.ThrowIfFailed();
+            if (bufferCount == 0)
+            {
+                Volatile.Write(ref _validationStreak, 0); var emptyCount = Interlocked.Increment(ref _emptySampleCount); var consecutiveEmpty = Interlocked.Increment(ref _consecutiveEmptySamples);
+                if (consecutiveEmpty == 1 || consecutiveEmpty % 250 == 0) _log.Write("capture.sample", $"Media Foundation delivered timestamp-only samples without video data; total={emptyCount} consecutive={consecutiveEmpty}");
+                return;
+            }
+            var contiguousHr = sample.ConvertToContiguousBuffer(out var buffer);
+            if (contiguousHr < 0 && bufferCount == 1) { _log.Write("capture.sample", $"ConvertToContiguousBuffer {DescribeHr(contiguousHr)}; falling back to the sample's sole native buffer"); sample.GetBufferByIndex(0, out buffer).ThrowIfFailed(); }
+            else contiguousHr.ThrowIfFailed();
+            var bufferHoldStarted = Stopwatch.GetTimestamp();
+            try
+            {
+                if (_temporalIndex == 0) { buffer.GetCurrentLength(out var currentLength).ThrowIfFailed(); buffer.GetMaxLength(out var maximumLength).ThrowIfFailed(); _log.Write("capture.sample", $"first buffer currentLength={currentLength} maximumLength={maximumLength} expectedMinimum={Math.Abs(_sourceFormat.Stride) * _sourceFormat.Height}"); }
+                var nativeSampleNumber = Interlocked.Increment(ref _nativeSampleCount); Interlocked.Exchange(ref _lastNativePayloadStopwatchTicks, arrivalStopwatchTicks); Volatile.Write(ref _consecutiveEmptySamples, 0); var validationStreak = Interlocked.Increment(ref _validationStreak);
+                if (_options.FieldReconstruction is { } reconstruction)
+                {
+                    var positions = ReconstructedFieldTimestampModel.Reconstruct(timestamp, timingObservation, reconstruction); var converted = ExtractFrames(buffer, positions.Select(position => position.Kind));
+                    for (var index = 0; index < positions.Count; index++) PublishFrame(converted[index], positions[index], nativeSampleNumber);
+                    if (nativeSampleNumber <= 3) _log.Write("field.reconstruction", $"sample={nativeSampleNumber} assumption='capture timestamp represents second field/completed pair' intervalMs={reconstruction.FieldIntervalTicks100ns / 10_000d:0.###} first={positions[0].Kind}@{positions[0].Timestamp.Ticks100ns} second={positions[1].Kind}@{positions[1].Timestamp.Ticks100ns}");
+                }
+                else { var converted = ExtractFrames(buffer, [TemporalImageKind.ProgressiveFrame])[0]; PublishFrame(converted, new(TemporalImageKind.ProgressiveFrame, timestamp, TimestampOrigin.DirectCapture, timingObservation), nativeSampleNumber); }
+                if (nativeSampleNumber == 1) _log.Write("capture.first-sample", $"Video payload received timestamp={timestamp.Ticks100ns} raw={timestamp.RawValue?.ToString() ?? "unavailable"} deviceTimestamp={(deviceTime is null ? "unavailable" : "available")} format='{CurrentFormat.Display}'");
+                if (validationStreak == ValidationFrameCount && !_firstVideoSample.Task.IsCompleted) { _firstVideoSample.TrySetResult(); _log.Write("capture.validation", $"Media Foundation accepted after {ValidationFrameCount} consecutive payload-bearing frames"); _log.Write("capture.coordinator", $"Media Foundation accepted for '{_device.FriendlyName}'"); StatusChanged?.Invoke(this, new(CaptureStatus.Running, LiveStatus())); }
+                else if (nativeSampleNumber % 250 == 0) { _log.Write("capture.samples", $"native={nativeSampleNumber} temporal={Volatile.Read(ref _temporalIndex)} latestTimestamp={timestamp.Ticks100ns}"); LogConversionSummary("periodic", reset: true); }
+            }
+            finally { RecordDuration("native-buffer-hold", Stopwatch.GetTimestamp() - bufferHoldStarted, ref _bufferHoldTicks, ref _bufferHoldMaximumTicks, ref _bufferHoldSamples, ref _bufferSlowBucket); Marshal.ReleaseComObject(buffer); }
+        }
+        finally { RecordDuration("sample-processing", Stopwatch.GetTimestamp() - processingStarted, ref _processingTicks, ref _processingMaximumTicks, ref _processingSamples, ref _processingSlowBucket); }
+    }
+
     private void RefreshCurrentFormat()
     {
         if (_reader is null) return; _reader.GetCurrentMediaType(MediaFoundationNative.SourceReaderFirstVideoStream, out var type).ThrowIfFailed();
@@ -362,10 +348,26 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
         finally { Marshal.ReleaseComObject(type); }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        Task operation;
+        lock (_stopGate)
+        {
+            if (_stopTask is null)
+            {
+                Interlocked.Increment(ref _stopAttempts); Volatile.Write(ref _stopState, "stopping");
+                _stopTask = StopCoreAsync();
+            }
+            else _log.Write("capture.shutdown", $"Reusing terminal stop operation state={Volatile.Read(ref _stopState)} task={_stopTask.Status}; no additional Flush was started.");
+            operation = _stopTask;
+        }
+        return cancellationToken.CanBeCanceled ? operation.WaitAsync(cancellationToken) : operation;
+    }
+
+    private async Task StopCoreAsync()
     {
         var cts = _cts; var readTask = _readTask;
-        if (cts is null || readTask is null) return;
+        if (cts is null || readTask is null) { Volatile.Write(ref _stopState, "stopped"); return; }
         StatusChanged?.Invoke(this, new(CaptureStatus.Stopping, "Stopping Windows capture")); _firstVideoSample.TrySetCanceled(cts.Token); cts.Cancel();
         Exception? audioFailure = null;
         if (_audioWorker is not null)
@@ -375,27 +377,32 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
             catch (CaptureWorkerTerminationException ex) { audioFailure = ex; }
         }
         var reader = _reader;
+        var flushCompleted = true;
         if (reader is not null)
         {
+            _flushTask ??= Task.Run(() => reader.Flush(MediaFoundationNative.SourceReaderFirstVideoStream).ThrowIfFailed(), CancellationToken.None);
             try
             {
-                await Task.Run(() => reader.Flush(MediaFoundationNative.SourceReaderFirstVideoStream), CancellationToken.None)
-                    .WaitAsync(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
+                await _flushTask.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None).ConfigureAwait(false);
             }
-            catch (TimeoutException) { _log.Write("capture.shutdown", "Source-reader flush did not exit within two seconds"); }
-            catch { }
+            catch (TimeoutException) { flushCompleted = false; _log.Write("capture.shutdown", "Source-reader flush did not exit within two seconds"); }
+            catch (Exception ex) { _log.Write("capture.shutdown", $"Source-reader flush completed with failure: {ex.Message}"); }
         }
-        try { await readTask.WaitAsync(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false); }
-        catch (TimeoutException)
+        var readCompleted = true;
+        try { await readTask.WaitAsync(TimeSpan.FromSeconds(3), CancellationToken.None).ConfigureAwait(false); }
+        catch (TimeoutException) { readCompleted = false; }
+        if (!flushCompleted || !readCompleted)
         {
-            const string message = "Media Foundation read loop did not exit within three seconds; retaining SourceReader and MF lifetime until process shutdown.";
+            var message = $"Media Foundation stop did not complete safely; retaining SourceReader and MF lifetime until process shutdown (readTask={readTask.Status}, flushTask={_flushTask?.Status.ToString() ?? "none"}).";
+            Volatile.Write(ref _stopState, "quarantined");
             _log.Write("capture.shutdown", message); StatusChanged?.Invoke(this, new(CaptureStatus.Failed, message));
             throw new CaptureWorkerTerminationException(message);
         }
-        // Only this completed path transfers ownership away from ReadLoop.  It is
+        // Only this completed path transfers ownership away from ReadLoop. It is
         // now safe for DisposeAsync to release the reader and call MFShutdown.
         _readTask = null; _cts = null; cts.Dispose();
         if (audioFailure is not null) throw audioFailure;
+        Volatile.Write(ref _stopState, "stopped");
         StatusChanged?.Invoke(this, new(CaptureStatus.Stopped, "Media Foundation capture stopped"));
     }
 
@@ -506,11 +513,34 @@ public sealed class MediaFoundationCaptureSession : ICaptureSession, ICapturePer
     private void PublishFrame(ConvertedVideoFrame converted, ReconstructedFieldPosition position, long nativeSampleIndex)
     {
         var temporalIndex = Interlocked.Increment(ref _temporalIndex);
-        VideoSampleReceived?.Invoke(this, new(position.Timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, converted.Luma, temporalIndex,
-            TemporalImageKind: position.Kind, TimestampOrigin: position.TimestampOrigin, Stride: _options.PreferredAnalysisWidth,
-            PresentationBgra: converted.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight,
-            PresentationStride: _options.PreferredPresentationWidth * 4, TimingObservation: position.TimingObservation, NativeSampleIndex: nativeSampleIndex));
+        var callbackStarted = Stopwatch.GetTimestamp();
+        try
+        {
+            VideoSampleReceived?.Invoke(this, new(position.Timestamp, _options.PreferredAnalysisWidth, _options.PreferredAnalysisHeight, converted.Luma, temporalIndex,
+                TemporalImageKind: position.Kind, TimestampOrigin: position.TimestampOrigin, Stride: _options.PreferredAnalysisWidth,
+                PresentationBgra: converted.Bgra, PresentationWidth: _options.PreferredPresentationWidth, PresentationHeight: _options.PreferredPresentationHeight,
+                PresentationStride: _options.PreferredPresentationWidth * 4, TimingObservation: position.TimingObservation, NativeSampleIndex: nativeSampleIndex));
+        }
+        finally { RecordDuration("VideoSampleReceived-callback", Stopwatch.GetTimestamp() - callbackStarted, ref _callbackTicks, ref _callbackMaximumTicks, ref _callbackSamples, ref _callbackSlowBucket); }
     }
+
+    private void RecordDuration(string operation, long ticks, ref long totalTicks, ref long maximumTicks, ref int samples, ref int slowBucket)
+    {
+        Interlocked.Add(ref totalTicks, ticks); Interlocked.Increment(ref samples);
+        var priorMaximum = Interlocked.Read(ref maximumTicks);
+        while (ticks > priorMaximum && Interlocked.CompareExchange(ref maximumTicks, ticks, priorMaximum) != priorMaximum) priorMaximum = Interlocked.Read(ref maximumTicks);
+        var milliseconds = TicksToMilliseconds(ticks); var bucket = milliseconds >= 50 ? 4 : milliseconds >= 20 ? 3 : milliseconds >= 10 ? 2 : milliseconds >= 5 ? 1 : 0;
+        var priorBucket = Volatile.Read(ref slowBucket);
+        while (bucket > priorBucket)
+        {
+            var observed = Interlocked.CompareExchange(ref slowBucket, bucket, priorBucket);
+            if (observed == priorBucket) { _log.Write("capture.slow-path", $"operation={operation} elapsedMs={milliseconds:0.###} thresholdMs={(bucket == 4 ? 50 : bucket == 3 ? 20 : bucket == 2 ? 10 : 5)}"); break; }
+            priorBucket = observed;
+        }
+    }
+
+    private static double AverageMilliseconds(long ticks, int samples) => samples <= 0 ? 0 : TicksToMilliseconds(Interlocked.Read(ref ticks)) / samples;
+    private static double TicksToMilliseconds(long ticks) => ticks * 1000d / Stopwatch.Frequency;
 
     private unsafe IReadOnlyList<ConvertedVideoFrame> ExtractFrames(IMFMediaBuffer buffer, IEnumerable<TemporalImageKind> kinds)
     {

@@ -14,6 +14,20 @@ future Linux backend ───────┘                 │
                                              sync result
 ```
 
+## Poisoned capture-session containment
+
+Native safety and application availability are separate ownership problems. A capture session whose read worker or Source Reader Flush does not terminate must keep its COM objects alive; it must not remain the active application session.
+
+`CaptureSessionRetirementCoordinator` gives each session one terminal disposal operation. Clean sessions are tracked through weak keys so ordinary reconnects do not accumulate retained sessions. Unsafe sessions are held strongly in a quarantine that records device identity, reason, and task state. Before retirement, the view model clears its active reference and detaches all callbacks, so a late native callback cannot update the current rolling buffers or UI. The same quarantined physical device is not reopened in-process, but Synthetic and unaffected devices remain available.
+
+Reconnect and shutdown gate acquisition are bounded and diagnostic. Main-window close has an independent 4.5-second outer bound; it does not use `Environment.Exit` and does not release COM objects that may still be in use. The preferred future fallback, only if quarantined in-process ownership proves unable to provide reliable process recovery, is a small killable capture child process rather than forced thread termination or unsafe COM release.
+
+## Selection and event coordination
+
+Device selection is latest-request-wins. Every selection receives a monotonic token, cancels the previous selection operation, restores that device's saved format profile, and checks its token both before and after acquiring the reconnect gate. Startup uses the same saved-device/profile path and connects without requiring a button click.
+
+Automatic audio triggers use a single-flight lease. While one event is waiting for its work window or analyzing frames, later triggers are ignored rather than queued. Automatic success, rejection, cancellation, and failure all leave capture and preview live; only the explicit manual Clap command enters paused review. Cancellation does not release the single-flight slot until the old task has actually exited.
+
 ## Projects
 
 ### `Kairix.QuickAVSync.Core` (`net10.0`)
