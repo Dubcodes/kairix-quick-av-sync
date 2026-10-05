@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 
 namespace Kairix.QuickAVSync.Windows.Tests;
@@ -656,6 +657,9 @@ public sealed class OperatorUiContractTests
         Assert.Contains("AudioDisplayStyleSelector", Ui);
         Assert.Contains("AutomaticDetectionToggle", Ui);
         Assert.Contains("AudioSensitivitySlider", Ui);
+        Assert.Equal(2, Ui.Split("IsMoveToPointEnabled=\"True\"").Length - 1);
+        Assert.DoesNotContain("Content=\"Reconstruct fields\"", Ui);
+        Assert.DoesNotContain("{Binding ReconstructInterlacedFields}", Ui);
     }
 
     [Fact]
@@ -686,6 +690,7 @@ public sealed class OperatorUiContractTests
         Assert.Contains("Content=\"Mark Visual\" Command=\"{Binding MarkVisualCommand}\" IsEnabled=\"{Binding IsInReview}\"", Ui);
         Assert.Contains("Command=\"{Binding JumpAutoCommand}\"", Ui);
         Assert.DoesNotContain("{Binding ViewerStateText}", Ui);
+        Assert.Contains("A           Mark audio at playhead", Ui);
     }
 
     [Theory]
@@ -701,6 +706,26 @@ public sealed class OperatorUiContractTests
         try { using var service = new SettingsService(path); service.Save(new() { AudioDisplayStyle = style }); Assert.Equal(style, service.Load().AudioDisplayStyle); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
+}
+
+public sealed class KeyboardShortcutTests
+{
+    [Theory]
+    [InlineData(Key.Space, ModifierKeys.None, MainWindowShortcut.ManualClap)]
+    [InlineData(Key.Enter, ModifierKeys.None, MainWindowShortcut.MarkVisual)]
+    [InlineData(Key.Left, ModifierKeys.None, MainWindowShortcut.PreviousVideo)]
+    [InlineData(Key.Right, ModifierKeys.None, MainWindowShortcut.NextVideo)]
+    [InlineData(Key.Left, ModifierKeys.Shift, MainWindowShortcut.CoarsePreviousVideo)]
+    [InlineData(Key.Right, ModifierKeys.Shift, MainWindowShortcut.CoarseNextVideo)]
+    [InlineData(Key.Left, ModifierKeys.Control, MainWindowShortcut.PreviousAudio)]
+    [InlineData(Key.Right, ModifierKeys.Control, MainWindowShortcut.NextAudio)]
+    [InlineData(Key.Left, ModifierKeys.Control | ModifierKeys.Shift, MainWindowShortcut.PreviousAudio)]
+    [InlineData(Key.A, ModifierKeys.None, MainWindowShortcut.MarkAudioAtPlayhead)]
+    [InlineData(Key.H, ModifierKeys.None, MainWindowShortcut.ToggleHold)]
+    [InlineData(Key.R, ModifierKeys.None, MainWindowShortcut.LiveView)]
+    [InlineData(Key.F5, ModifierKeys.None, MainWindowShortcut.Reconnect)]
+    public void ShortcutRoutingMatchesOperatorContract(Key key, ModifierKeys modifiers, MainWindowShortcut expected) =>
+        Assert.Equal(expected, MainWindow.ResolveShortcut(key, modifiers));
 }
 
 public sealed class ThemeContrastTests

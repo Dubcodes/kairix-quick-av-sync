@@ -71,6 +71,11 @@ public static class CaptureFormatCatalog
             ?? available.FirstOrDefault();
     }
 
+    public static FieldReconstructionOptions? FieldReconstructionFor(InterpretationFormatOption? interpretation) =>
+        interpretation is { ReconstructFields: true, InterpretedFieldRate: { } fieldRate }
+            ? new(interpretation.TransportRate, fieldRate, interpretation.FieldOrder)
+            : null;
+
     private static bool IsRecommendedRate(double rate) => RecommendedRates.Any(candidate =>
         Math.Abs(candidate - rate) <= Math.Max(.025, candidate * .001));
 }

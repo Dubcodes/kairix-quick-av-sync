@@ -14,10 +14,10 @@ Raw captured timestamps are evidence and are never rewritten to produce a desire
 
 Result calculation and whole-timeline integrity are distinct. Whenever the selected audio and video timestamps have comparable clocks, Auto Result, Manual Preview, and Manual Result display their calculated value. An invalid whole timeline remains a separate timing warning and may exclude an automatic result from session history, but it does not replace a calculable displayed value. Existing `SyncResult.Calculate` and `VideoTimingCompensation.Calculate` clock-domain rules always apply.
 
-Automatic detection remains armed after an accepted result. Automatic admission depends only on Auto Detect, Auto Spike, Hold, and whether automatic analysis is already running; a displayed review is not an admission gate. The latest automatic event stays displayed until the next accepted event replaces it. Manual Clap enters Hold and opens explicit review. Hold suppresses new automatic events without stopping capture or rolling buffers, and returning to ARMED accepts the next event immediately.
+Automatic detection remains armed after an accepted result. Automatic admission depends only on Auto Detect, Auto Spike, Hold, and whether automatic analysis is already running; a displayed review is not an admission gate. A pending automatic event replaces the displayed event only after an accepted visual candidate. Rejection preserves the displayed review, waveform, frame, markers, thumbnail, and history. Manual Clap enters Hold and opens explicit review. Hold suppresses new automatic events without stopping capture or rolling buffers, and returning to ARMED accepts the next event immediately.
 
 ## Capture interpretation
 
-Authoritative capture metadata describes what the backend delivered. Explicit woven-field reconstruction creates two review positions at field cadence without fabricating native transport samples. Raw capture timing, interpreted field timing, and measurement compensation remain separate layers.
+Authoritative capture metadata describes what the backend delivered. The selected interpretation is the sole runtime truth for woven-field reconstruction; reconstructed format choices create two review positions at field cadence without fabricating native transport samples. Raw capture timing, interpreted field timing, and measurement compensation remain separate layers.
 
 Settings persist per applicable device/profile. Media is bounded in RAM, session history is limited to three results, and no captured media is written to disk.

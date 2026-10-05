@@ -7,6 +7,23 @@ using Kairix.QuickAVSync.Windows.Infrastructure;
 
 namespace Kairix.QuickAVSync;
 
+public enum MainWindowShortcut
+{
+    None,
+    ManualClap,
+    MarkVisual,
+    PreviousVideo,
+    NextVideo,
+    CoarsePreviousVideo,
+    CoarseNextVideo,
+    PreviousAudio,
+    NextAudio,
+    MarkAudioAtPlayhead,
+    ToggleHold,
+    LiveView,
+    Reconnect
+}
+
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new(); private readonly AppLogger _shutdownLog = new(); private bool _closing; private bool _shutdownComplete;
@@ -17,10 +34,45 @@ public partial class MainWindow : Window
         catch (Exception ex) { _shutdownLog.Write("startup.failure", ex.ToString()); }
     }
     private static bool EditingText() => Keyboard.FocusedElement is System.Windows.Controls.TextBox;
+    public static MainWindowShortcut ResolveShortcut(Key key, ModifierKeys modifiers) => key switch
+    {
+        Key.Space => MainWindowShortcut.ManualClap,
+        Key.Enter => MainWindowShortcut.MarkVisual,
+        Key.Left when (modifiers & ModifierKeys.Control) != 0 => MainWindowShortcut.PreviousAudio,
+        Key.Right when (modifiers & ModifierKeys.Control) != 0 => MainWindowShortcut.NextAudio,
+        Key.Left when (modifiers & ModifierKeys.Shift) != 0 => MainWindowShortcut.CoarsePreviousVideo,
+        Key.Right when (modifiers & ModifierKeys.Shift) != 0 => MainWindowShortcut.CoarseNextVideo,
+        Key.Left => MainWindowShortcut.PreviousVideo,
+        Key.Right => MainWindowShortcut.NextVideo,
+        Key.A => MainWindowShortcut.MarkAudioAtPlayhead,
+        Key.H => MainWindowShortcut.ToggleHold,
+        Key.R => MainWindowShortcut.LiveView,
+        Key.F5 => MainWindowShortcut.Reconnect,
+        _ => MainWindowShortcut.None
+    };
+
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
-        if (EditingText()) return; if (e.Key == Key.H) { if (!e.IsRepeat && _viewModel.IsArmEnabled) _viewModel.IsHold = !_viewModel.IsHold; e.Handled = true; return; } if (e.IsRepeat) return;
-        switch (e.Key) { case Key.Space: _viewModel.ManualClapCommand.Execute(null); e.Handled = true; break; case Key.Left: if ((Keyboard.Modifiers & ModifierKeys.Control) != 0) _viewModel.StepAudio(-1); else if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0) _viewModel.StepCoarse(-1); else _viewModel.StepPreviousCommand.Execute(null); e.Handled = true; break; case Key.Right: if ((Keyboard.Modifiers & ModifierKeys.Control) != 0) _viewModel.StepAudio(1); else if ((Keyboard.Modifiers & ModifierKeys.Shift) != 0) _viewModel.StepCoarse(1); else _viewModel.StepNextCommand.Execute(null); e.Handled = true; break; case Key.Enter: _viewModel.MarkVisualCommand.Execute(null); e.Handled = true; break; case Key.R: _viewModel.ResumeLiveCommand.Execute(null); e.Handled = true; break; case Key.F5: _viewModel.ReconnectCommand.Execute(null); e.Handled = true; break; }
+        if (EditingText()) return;
+        var shortcut = ResolveShortcut(e.Key, Keyboard.Modifiers);
+        if (shortcut == MainWindowShortcut.None) return;
+        e.Handled = true;
+        if (e.IsRepeat) return;
+        switch (shortcut)
+        {
+            case MainWindowShortcut.ManualClap: _viewModel.ManualClapCommand.Execute(null); break;
+            case MainWindowShortcut.MarkVisual: _viewModel.MarkVisualCommand.Execute(null); break;
+            case MainWindowShortcut.PreviousVideo: _viewModel.StepPreviousCommand.Execute(null); break;
+            case MainWindowShortcut.NextVideo: _viewModel.StepNextCommand.Execute(null); break;
+            case MainWindowShortcut.CoarsePreviousVideo: _viewModel.StepCoarse(-1); break;
+            case MainWindowShortcut.CoarseNextVideo: _viewModel.StepCoarse(1); break;
+            case MainWindowShortcut.PreviousAudio: _viewModel.StepAudio(-1); break;
+            case MainWindowShortcut.NextAudio: _viewModel.StepAudio(1); break;
+            case MainWindowShortcut.MarkAudioAtPlayhead: _viewModel.MarkAudioAtPlayhead(); break;
+            case MainWindowShortcut.ToggleHold when _viewModel.IsArmEnabled: _viewModel.IsHold = !_viewModel.IsHold; break;
+            case MainWindowShortcut.LiveView: _viewModel.ResumeLiveCommand.Execute(null); break;
+            case MainWindowShortcut.Reconnect: _viewModel.ReconnectCommand.Execute(null); break;
+        }
     }
     private void Window_KeyUp(object sender, KeyEventArgs e) { if (e.Key == Key.H) e.Handled = true; }
     private void Waveform_PlayheadSelected(object? sender, double relativeMs) => _viewModel.MovePlayheadTo(relativeMs);

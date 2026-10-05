@@ -13,4 +13,11 @@ public static class ReviewTimeline
 
     public static bool AcceptsAutomaticEvents(bool autoDetect, bool autoSpike, bool hold, bool analysisRunning) =>
         autoDetect && autoSpike && !hold && !analysisRunning;
+
+    public static bool TryAcceptAutomaticCandidate(EventReviewState pending, VisualCandidate? candidate)
+    {
+        if (candidate is null) return false;
+        pending.SetAutoCandidate(candidate);
+        return true;
+    }
 }

@@ -107,6 +107,30 @@ public sealed class CaptureFormatCatalogTests
     }
 
     [Fact]
+    public void SelectedInterpretationIsSoleReconstructionTruth()
+    {
+        var progressive = new InterpretationFormatOption(Rational.From(25), ScanMode.Progressive);
+        var top = new InterpretationFormatOption(Rational.From(25), ScanMode.Progressive, true, Rational.From(50), FieldOrder.TopFirst);
+        var bottom = top with { FieldOrder = FieldOrder.BottomFirst };
+
+        Assert.Null(CaptureFormatCatalog.FieldReconstructionFor(progressive));
+        Assert.Equal(FieldOrder.TopFirst, CaptureFormatCatalog.FieldReconstructionFor(top)!.FieldOrder);
+        Assert.Equal(FieldOrder.BottomFirst, CaptureFormatCatalog.FieldReconstructionFor(bottom)!.FieldOrder);
+    }
+
+    [Theory]
+    [InlineData(25, 1, false, "25p")]
+    [InlineData(25, 1, true, "25p → 50i · Top first")]
+    [InlineData(30000, 1001, false, "29.97p")]
+    [InlineData(30000, 1001, true, "29.97p → 59.94i · Top first")]
+    public void OperatorInterpretationLabelsAreCompact(int numerator, int denominator, bool reconstruct, string expected)
+    {
+        var rate = Rational.From(numerator, denominator);
+        var option = new InterpretationFormatOption(rate, ScanMode.Progressive, reconstruct, reconstruct ? Rational.From(numerator * 2, denominator) : null, FieldOrder.TopFirst);
+        Assert.Equal(expected, option.ToString());
+    }
+
+    [Fact]
     public void CuratedInputSignalsIncludeHdAndSdBroadcastSet()
     {
         string[] expected =

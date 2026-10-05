@@ -266,9 +266,19 @@ public sealed record InterpretationFormatOption(
 {
     public double ReviewTemporalRate => ReconstructFields ? InterpretedFieldRate?.Value ?? TransportRate.Value * 2 : CaptureFormatFormatter.TemporalRate(TransportRate, TransportScanMode, TransportInterlaceLayout);
     public string TransportDisplay => CaptureFormatFormatter.FormatRate(TransportRate, TransportScanMode, TransportInterlaceLayout);
+    public string CompactTransportDisplay => TransportScanMode switch
+    {
+        ScanMode.Progressive => $"{CompactRate(TransportRate)}p",
+        ScanMode.Interlaced when TransportInterlaceLayout == InterlaceLayout.FullFrame => $"{CompactRate(Rational.From(TransportRate.Numerator * 2, TransportRate.Denominator))}i",
+        ScanMode.Interlaced when TransportInterlaceLayout == InterlaceLayout.SingleField => $"{CompactRate(TransportRate)}i",
+        ScanMode.Interlaced => $"{CompactRate(TransportRate)} fps · interlaced",
+        _ => $"{CompactRate(TransportRate)} fps · scan unknown"
+    };
     public override string ToString() => !ReconstructFields
-        ? TransportDisplay
-        : $"{TransportDisplay} → {InterpretedFieldRate?.Value ?? TransportRate.Value * 2:0.000}i · {(FieldOrder == FieldOrder.BottomFirst ? "Bottom first" : "Top first")}";
+        ? CompactTransportDisplay
+        : $"{CompactTransportDisplay} → {CompactRate(InterpretedFieldRate ?? Rational.From(TransportRate.Numerator * 2, TransportRate.Denominator))}i · {(FieldOrder == FieldOrder.BottomFirst ? "Bottom first" : "Top first")}";
+
+    private static string CompactRate(Rational rate) => rate.Denominator == 1 ? rate.Numerator.ToString() : rate.Value.ToString("0.###");
 }
 
 public sealed record PixelFormatOption(VideoPixelFormat Value)
