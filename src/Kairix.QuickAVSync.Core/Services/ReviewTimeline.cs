@@ -12,4 +12,6 @@ public static class ReviewTimeline
     }
 
     public static bool AcceptsAutomaticEvents(bool autoDetect, bool hold) => autoDetect && !hold;
+
+    public static bool ReturnsLiveAfterAnalysis(bool automaticEvent) => automaticEvent;
 }

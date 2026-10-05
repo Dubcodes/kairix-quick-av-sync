@@ -713,7 +713,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 }
             }
             if (!_analysisGeneration.IsCurrent(generation)) return;
-            Status = audioFinalized ? "REVIEW" : "REVIEW · SELECT AUDIO MARK"; _log.Write("viewer.state", $"REVIEW analysis complete generation={generation} frames={_reviewFrames.Count} autoCandidate={review.AutoCandidate is not null}"); ShowPlayhead(); NotifyMarkers();
+            if (ReviewTimeline.ReturnsLiveAfterAnalysis(audioFinalized))
+            {
+                FinalizeCurrentEvent();
+                _isReview = false; Changed(nameof(IsInReview)); Changed(nameof(ViewerStateText));
+                Status = AuthoritativeCaptureStatus();
+                _log.Write("viewer.state", $"REVIEW -> LIVE reason=automatic-analysis-complete generation={generation} frames={_reviewFrames.Count} autoCandidate={review.AutoCandidate is not null}");
+                _reviewFrames = []; _playheadIndex = 0; Waveform = []; ReviewFrameTicks = [];
+                NotifyMarkers();
+            }
+            else
+            {
+                Status = "REVIEW · SELECT AUDIO MARK"; _log.Write("viewer.state", $"REVIEW analysis complete generation={generation} frames={_reviewFrames.Count} autoCandidate={review.AutoCandidate is not null}"); ShowPlayhead(); NotifyMarkers();
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
