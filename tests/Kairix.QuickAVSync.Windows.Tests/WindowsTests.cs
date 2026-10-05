@@ -18,18 +18,33 @@ public sealed class ManualReviewTimingPresentationTests
         [Frame(0, 0), Frame(0, 1)], 50);
 
     [Fact]
-    public void InvalidAutomaticResultRemainsSuppressedUntilManualReviewBegins()
+    public void InvalidAutomaticResultRemainsVisibleWithSeparateTimingWarning()
     {
         var review = ReviewWithAuto(80);
         Assert.Equal(ReviewResultMode.Auto, review.ResultMode);
-        Assert.Equal("TIMELINE TIMING INVALID", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
-        Assert.Equal(0, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+        Assert.Equal("AUDIO LEADS VIDEO BY 80 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(80, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+        Assert.Equal("AUTO RESULT · TIMING WARNING", ReviewMeasurementPresentation.ResultModeText(InvalidTimeline, review.ResultMode));
 
         ReviewMeasurementPresentation.EnterManualPreview(review);
 
         Assert.Equal(ReviewResultMode.ManualPreview, review.ResultMode);
         Assert.Equal("AUDIO LEADS VIDEO BY 80 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
         Assert.Equal(80, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+        Assert.Equal("MANUAL PREVIEW · TIMING WARNING", ReviewMeasurementPresentation.ResultModeText(InvalidTimeline, review.ResultMode));
+    }
+
+    [Fact]
+    public void InvalidTimelineHistoryPolicyDoesNotControlResultPresentation()
+    {
+        var review = ReviewWithAuto(80);
+        Assert.True(ReviewMeasurementPresentation.ExcludeInvalidAutomaticResultFromHistory(InvalidTimeline, review.ResultMode));
+        Assert.Equal("AUDIO LEADS VIDEO BY 80 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+
+        ReviewMeasurementPresentation.EnterManualPreview(review);
+
+        Assert.False(ReviewMeasurementPresentation.ExcludeInvalidAutomaticResultFromHistory(InvalidTimeline, review.ResultMode));
+        Assert.Equal("AUDIO LEADS VIDEO BY 80 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
     }
 
     [Fact]
@@ -665,11 +680,12 @@ public sealed class OperatorUiContractTests
     [Fact]
     public void ReviewControlsHaveRequiredOrderAndAvailability()
     {
-        var labels = new[] { "Pre A", "Pre V", "Mark Visual", "Nxt V", "Nxt A", "Resume Live" };
+        var labels = new[] { "Pre A", "Pre V", "Mark Visual", "Nxt V", "Nxt A", "Live View" };
         var prior = -1;
         foreach (var label in labels) { var next = Ui.IndexOf($"Content=\"{label}\"", StringComparison.Ordinal); Assert.True(next > prior, label); prior = next; }
         Assert.Contains("Content=\"Mark Visual\" Command=\"{Binding MarkVisualCommand}\" IsEnabled=\"{Binding IsInReview}\"", Ui);
         Assert.Contains("Command=\"{Binding JumpAutoCommand}\"", Ui);
+        Assert.DoesNotContain("{Binding ViewerStateText}", Ui);
     }
 
     [Theory]

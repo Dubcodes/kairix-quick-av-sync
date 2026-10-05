@@ -12,9 +12,9 @@ Raw captured timestamps are evidence and are never rewritten to produce a desire
 
 ## Automatic and manual measurement
 
-Automatic result validation and manual selected-point measurement are distinct. An invalid whole timeline can prevent a trusted automatic result. It does not prevent an operator from measuring an explicitly selected audio timestamp against an explicitly selected comparable video timestamp. Timeline-integrity warnings remain visible independently. Existing `SyncResult.Calculate` and `VideoTimingCompensation.Calculate` clock-domain rules always apply.
+Result calculation and whole-timeline integrity are distinct. Whenever the selected audio and video timestamps have comparable clocks, Auto Result, Manual Preview, and Manual Result display their calculated value. An invalid whole timeline remains a separate timing warning and may exclude an automatic result from session history, but it does not replace a calculable displayed value. Existing `SyncResult.Calculate` and `VideoTimingCompensation.Calculate` clock-domain rules always apply.
 
-Automatic detection remains armed after an accepted result. The latest automatic event stays displayed until the next accepted event replaces it. Manual review begins only through Manual Clap or an explicit review edit. Hold suppresses new automatic events without stopping capture or rolling buffers.
+Automatic detection remains armed after an accepted result. Automatic admission depends only on Auto Detect, Auto Spike, Hold, and whether automatic analysis is already running; a displayed review is not an admission gate. The latest automatic event stays displayed until the next accepted event replaces it. Manual Clap enters Hold and opens explicit review. Hold suppresses new automatic events without stopping capture or rolling buffers, and returning to ARMED accepts the next event immediately.
 
 ## Capture interpretation
 

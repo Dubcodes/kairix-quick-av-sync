@@ -77,8 +77,8 @@ public sealed class WorkWindowWaveformAndHistoryTests
     [Fact] public void WaveformPlacesImpulseNearCenter() { var samples = new float[480]; samples[240] = 1; var center = new MediaTimestamp(50_000, TimingQuality.StreamTimestamp); var chunk = new AudioChunk(new(0, TimingQuality.StreamTimestamp), samples, 48000, 1); var wave = new WaveformBuilder().Build([chunk], center, TimeSpan.FromMilliseconds(5), 100); Assert.InRange(Array.IndexOf(wave.ToArray(), wave.Max()), 49, 51); }
     [Fact] public void HistoryKeepsOnlyLatest() { var h = new SessionHistoryService(3); for (var i = 0; i < 5; i++) h.Add(new(DateTime.MinValue.AddSeconds(i), new(i, i.ToString()), null)); Assert.Equal([4d, 3d, 2d], h.Items.Select(x => x.Result.SignedMilliseconds)); }
     [Fact] public void TimelineMapsClickToNearestRealFrameWithoutChangingMarks() { var frames = Enumerable.Range(-2, 5).Select(i => new VideoFrame(new(i * 200_000, TimingQuality.StreamTimestamp), 1, 1, [0], i)).ToArray(); Assert.Equal(3, ReviewTimeline.NearestFrameIndex(frames, new(0, TimingQuality.StreamTimestamp), 21)); }
-    [Fact] public void HoldGateRequiresAutoDetectAndNoHold() { Assert.True(ReviewTimeline.AcceptsAutomaticEvents(true, false)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, true)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(false, false)); }
-    [Fact] public void ManualReviewAndActiveAnalysisBlockAutomaticReplacement() { Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, false, manualReview: true)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, false, analysisRunning: true)); Assert.True(ReviewTimeline.AcceptsAutomaticEvents(true, false, manualReview: false, analysisRunning: false)); }
+    [Fact] public void AutomaticAdmissionRequiresBothDetectorsArmedAndNoHoldOrAnalysis() { Assert.True(ReviewTimeline.AcceptsAutomaticEvents(true, true, false, false)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(false, true, false, false)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, false, false, false)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, true, true, false)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, true, false, true)); }
+    [Fact] public void HoldReturningToArmedImmediatelyAcceptsTheNextAutomaticEvent() { Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, true, true, false)); Assert.True(ReviewTimeline.AcceptsAutomaticEvents(true, true, false, false)); }
     [Fact]
     public void FiveAutomaticResultsReplaceTheDisplayedEventWithoutResumeLiveOrQueueing()
     {
@@ -86,8 +86,8 @@ public sealed class WorkWindowWaveformAndHistoryTests
         EventReviewState? displayed = null;
         for (var eventNumber = 1; eventNumber <= 5; eventNumber++)
         {
-            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, hold: false, manualReview: false, analysisRunning: false));
-            Assert.False(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, hold: false, manualReview: false, analysisRunning: true));
+            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, autoSpike: true, hold: false, analysisRunning: false));
+            Assert.False(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, autoSpike: true, hold: false, analysisRunning: true));
             var state = new EventReviewState(T(eventNumber * 1000), T(eventNumber * 1000));
             var frame = new VideoFrame(T(eventNumber * 1000 + eventNumber * 10), 1, 1, [0], eventNumber);
             state.SetAutoCandidate(new(frame.Timestamp, eventNumber, .9, 1, frame));
@@ -99,7 +99,7 @@ public sealed class WorkWindowWaveformAndHistoryTests
             displayed = state;
             Assert.Equal(result, state.CurrentResult);
             Assert.NotNull(state.AutoCandidate);
-            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, hold: false, manualReview: false, analysisRunning: false));
+            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, autoSpike: true, hold: false, analysisRunning: false));
         }
 
         Assert.Equal(5, history.Items.Count);

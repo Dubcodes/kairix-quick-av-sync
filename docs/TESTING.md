@@ -21,7 +21,7 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 1. Start the app and select **Synthetic A/V test · expected +60 ms (audio leads video)**.
 2. Confirm live motion and `READY TO CLAP`.
 3. Let clap 1 complete and confirm `+60 ms` / **AUDIO LEADS VIDEO BY 60 ms** remains displayed while the detector reads ARMED.
-4. Without Resume Live, let clap 2 complete and confirm it replaces clap 1; let clap 3 replace clap 2. Confirm the newest three finalized events remain bounded in history.
+4. Without using Live View, let clap 2 complete and confirm it replaces clap 1; let clap 3 replace clap 2. Confirm the newest three finalized events remain bounded in history.
 5. Click **Auto Candidate** and confirm navigation returns to that event's candidate without discarding the event.
 6. Scrub and verify the result changes to `MANUAL PREVIEW` and follows the white playhead; press Enter and verify it changes to `MANUAL RESULT`.
 7. Drag the yellow AUDIO marker or click Pre A/Nxt A and verify 1.0 ms Audio/result changes while the event window, waveform, visual playhead, Auto candidate, and thumbnail remain intact.

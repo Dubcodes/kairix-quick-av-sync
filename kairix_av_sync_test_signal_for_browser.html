@@ -367,7 +367,7 @@
       <p class="eyebrow">Practical repeatable test source</p>
       <h1>Kairix A/V Sync Test Signal</h1>
     </div>
-    <div id="audioLock" class="audio-lock" role="status">Audio locked · click anywhere once</div>
+    <div id="audioLock" class="audio-lock" role="status">AUDIO BLOCKED BY BROWSER</div>
   </header>
 
   <main id="stage" class="stage" aria-label="Visual sync target">
@@ -437,6 +437,8 @@
       const APPROACH_MS = 1000;
       const CUE_HOLD_MS = 105;
       const FLASH_MS = 42;
+      const CLAP_START_GAP_VMIN = 42;
+      const ORBIT_CUE_ANGLE_DEG = 270;
       const AUDIO_LOOKAHEAD_MS = 140;
       const RANDOM_OFFSETS = [-40, -20, 0, 20, 40];
 
@@ -457,7 +459,8 @@
 
       let cueMode = "clap";
       let selectedOffset = 0;
-      let eventOffset = 0;
+      let nextEventOffset = 0;
+      let lastEventOffset = 0;
       let intervalMs = 2000;
       let loopActive = true;
       let nextCueTimeMs = performance.now() + intervalMs;
@@ -478,8 +481,8 @@
         return { timing: `VIDEO +${Math.abs(offsetMs)} ms`, detail: `video leads audio by ${Math.abs(offsetMs)} ms`, className: "lag" };
       }
 
-      function renderOffset() {
-        const description = describeOffset(eventOffset);
+      function renderOffset(offset = nextEventOffset) {
+        const description = describeOffset(offset);
         timingStatus.textContent = description.timing;
         timingStatus.className = `status-value ${description.className}`;
         offsetStatus.textContent = description.detail;
@@ -517,7 +520,7 @@
 
       function scheduleAudioIfNeeded(now) {
         if (!loopActive || !nextCueTimeMs || !audioContext || audioContext.state !== "running") return;
-        const audioTimeMs = nextCueTimeMs - eventOffset;
+        const audioTimeMs = nextCueTimeMs - nextEventOffset;
         if (audioScheduledSerial !== eventSerial && audioTimeMs - now <= AUDIO_LOOKAHEAD_MS) {
           makeBeepAt(audioTimeMs);
           audioScheduledSerial = eventSerial;
@@ -528,28 +531,30 @@
         cancelScheduledAudio();
         lastCueTimeMs = null;
         eventSerial += 1;
-        eventOffset = chooseEventOffset();
+        nextEventOffset = chooseEventOffset();
         nextCueTimeMs = performance.now() + Math.max(APPROACH_MS + 100, delayMs);
-        renderOffset();
+        renderOffset(nextEventOffset);
       }
 
       function advanceCue() {
         lastCueTimeMs = nextCueTimeMs;
+        lastEventOffset = nextEventOffset;
         do { nextCueTimeMs += intervalMs; } while (nextCueTimeMs <= performance.now() + 4);
         eventSerial += 1;
         audioScheduledSerial = 0;
-        eventOffset = chooseEventOffset();
-        renderOffset();
+        nextEventOffset = chooseEventOffset();
       }
 
       function setVisualState(now) {
         const untilCue = loopActive && nextCueTimeMs ? nextCueTimeMs - now : null;
         const sinceLastCue = lastCueTimeMs == null ? Infinity : now - lastCueTimeMs;
-        const cueVisible = sinceLastCue >= 0 && sinceLastCue <= CUE_HOLD_MS;
+        const cueVisible = sinceLastCue >= 0 && sinceLastCue < CUE_HOLD_MS;
         const flashVisible = sinceLastCue >= 0 && sinceLastCue <= FLASH_MS;
+        const phase = cueVisible ? "last-cue-hold" : "next-cue-approach";
 
         stage.classList.toggle("cue", cueVisible);
         flash.style.opacity = flashVisible ? String(1 - sinceLastCue / FLASH_MS) : "0";
+        renderOffset(phase === "last-cue-hold" ? lastEventOffset : nextEventOffset);
 
         if (!loopActive || untilCue == null) countdownStatus.textContent = "Countdown idle";
         else if (cueVisible) countdownStatus.textContent = "CUE";
@@ -559,16 +564,19 @@
           clap.hidden = false;
           orbitMarker.style.opacity = "0";
           const approach = untilCue == null ? 0 : Math.min(1, Math.max(0, 1 - untilCue / APPROACH_MS));
-          const gapVmin = cueVisible ? 0 : Math.max(0, 42 * (1 - approach));
+          const gapVmin = phase === "last-cue-hold" ? 0 : CLAP_START_GAP_VMIN * (1 - approach);
           clapLeft.style.setProperty("--clap-gap", `${gapVmin}vmin`);
           clapRight.style.setProperty("--clap-gap", `${gapVmin}vmin`);
         } else {
           clap.hidden = true;
-          if (untilCue != null && untilCue <= APPROACH_MS && untilCue >= 0) {
+          if (phase === "last-cue-hold") {
+            orbitMarker.style.setProperty("--orbit-angle", `${ORBIT_CUE_ANGLE_DEG}deg`);
+            orbitMarker.style.opacity = "1";
+          } else if (untilCue != null && untilCue <= APPROACH_MS && untilCue >= 0) {
             const progress = 1 - untilCue / APPROACH_MS;
             orbitMarker.style.setProperty("--orbit-angle", `${-90 + 360 * progress}deg`);
             orbitMarker.style.opacity = "1";
-          } else orbitMarker.style.opacity = cueVisible ? "1" : "0";
+          } else orbitMarker.style.opacity = "0";
         }
       }
 
@@ -584,7 +592,7 @@
       function reflectAudioState() {
         const running = audioContext && audioContext.state === "running";
         audioLock.hidden = Boolean(running);
-        if (!running) audioLock.textContent = "Audio locked · click anywhere once";
+        if (!running) audioLock.textContent = "AUDIO BLOCKED BY BROWSER";
       }
 
       async function tryUnlockAudio() {
@@ -624,15 +632,16 @@
 
       function pulseNow() {
         cancelScheduledAudio();
-        eventOffset = chooseEventOffset();
-        renderOffset();
+        lastEventOffset = chooseEventOffset();
+        renderOffset(lastEventOffset);
         const now = performance.now();
         lastCueTimeMs = now;
-        if (audioContext && audioContext.state === "running") makeBeepAt(now - eventOffset);
+        if (audioContext && audioContext.state === "running") makeBeepAt(now - lastEventOffset);
         if (loopActive) {
           eventSerial += 1;
           audioScheduledSerial = 0;
           nextCueTimeMs = now + intervalMs;
+          nextEventOffset = chooseEventOffset();
         }
       }
 
@@ -642,7 +651,7 @@
         selectedOffset = button.dataset.offset === "random" ? "random" : Number(button.dataset.offset);
         document.querySelectorAll("[data-offset]").forEach(item => item.classList.toggle("active", item === button));
         if (loopActive) rebaseNextCue();
-        else { eventOffset = chooseEventOffset(); renderOffset(); }
+        else { nextEventOffset = chooseEventOffset(); renderOffset(nextEventOffset); }
       });
 
       document.getElementById("cueControls").addEventListener("click", event => {
@@ -673,8 +682,8 @@
       for (const eventName of ["pointerdown", "keydown"]) document.addEventListener(eventName, tryUnlockAudio, { passive: true });
 
       tryUnlockAudio();
-      eventOffset = chooseEventOffset();
-      renderOffset();
+      nextEventOffset = chooseEventOffset();
+      renderOffset(nextEventOffset);
       updateStageLabel();
       requestAnimationFrame(animationFrame);
     })();

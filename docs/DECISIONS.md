@@ -11,9 +11,9 @@ This concise log records durable project choices. Evidence and open questions be
 | Audio pairing | Prefer same-device Container ID, then cautious hardware/name evidence; never silently use the default microphone. |
 | Review cadence | Review is field-aware. Explicit reconstructed fields remain distinct from native transport samples. |
 | Automatic workflow | Detection is continuous; the newest accepted automatic result remains displayed and replaces the previous event. |
-| Manual workflow | Manual review is explicitly entered and its audio/video points are independently editable. |
-| Integrity vs measurement | Whole-timeline invalidity may reject automatic measurement while comparable manually selected points remain measurable; the warning stays visible. |
-| Hold | Suppresses new automatic events but does not stop capture or buffering. |
+| Manual workflow | Manual Clap enters Hold and opens explicit review; its audio/video points are independently editable. Live View clears the review without changing Hold/ARMED. |
+| Integrity vs measurement | Every calculable Auto Result, Manual Preview, and Manual Result stays visible. Whole-timeline invalidity is a separate warning and may exclude an automatic result from history. |
+| Hold | Suppresses new automatic events but does not stop capture or buffering. Once returned to ARMED, the next automatic event is immediately admissible even if a review is displayed. |
 | Persistence | Capture and presentation preferences persist per device/profile; Hold, media, and session history do not. |
 | History | Keep the newest three finalized results. |
 | Privacy | No telemetry, accounts, database, cloud dependency, or media persistence. |

@@ -105,7 +105,7 @@ WPF colors are semantic `DynamicResource` values supplied by Graphite, Midnight,
 
 The signed calculation remains `visual - audio`: positive is audio leads, negative is audio lags. Core returns `TIMING DOMAINS NOT CORRELATED` instead of a number when domains differ.
 
-`EventReviewState` owns the current event reference and keeps it fixed for the event lifetime. Audio correction, playhead preview, automatic visual selection, and committed manual visual selection are independent state transitions. Only a genuinely new event or Resume Live finalizes the current result for session history, and finalization is idempotent.
+`EventReviewState` owns the current event reference and keeps it fixed for the event lifetime. Audio correction, playhead preview, automatic visual selection, and committed manual visual selection are independent state transitions. Only a genuinely new event or Live View finalizes the current result for session history, and finalization is idempotent.
 
 A displayed automatic result does not pause the detector. After automatic analysis completes, the latest accepted event stays visible while the detector returns to ARMED; the next accepted clap finalizes/replaces that displayed event. Manual Clap and explicit marker/playhead edits enter manual review instead.
 
