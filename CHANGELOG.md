@@ -2,14 +2,17 @@
 
 ## Unreleased
 
+- Kept automatic detection armed while retaining the latest result, with each next accepted clap replacing the displayed event without Resume Live.
+- Fixed persistence of per-device field-reconstruction enable and field-order preferences, and retained direct Auto Candidate navigation.
+- Kept manual selected-point timing available when the surrounding timeline has an integrity warning, without weakening automatic validation or clock-domain comparability.
+- Added the standalone browser A/V sync test signal with immediate Sync/Clap/2-second-loop defaults and non-modal audio unlock handling.
+- Changed the browser Clap cue to a constant-speed approach, abrupt contact stop, brief hold, and clean reset.
 - Added explicit native-worker shutdown ownership: timed-out WASAPI/Media Foundation workers retain their own COM/session lifetime, report a typed failure, and block unsafe reopen instead of releasing native objects while a worker may still be live.
 - Coalesced settings reconnects, detached retiring capture callbacks before shared-state clearing, and made event/passive analysis tasks owned, cancellable, awaited, and generation-gated before UI delivery.
 - Added the multi-resolution Offset Timeline application icon, deterministic icon contract coverage, and a synthetic stability probe recording bounded buffers, memory/LOH, handles, threads, reconnects, and active work. CI now runs a short bounded probe; the documented longer observations remain diagnostic rather than a leak-free guarantee.
 - Replaced the remaining default WPF ComboBox surface with a single dynamic-resource Kairix template, including collapsed, focus, popup, item, hover, selection, pressed, and disabled states. The shared semantic control resources now cover settings controls across all seven themes.
 - Renamed waveform styles to Centered Fill, Centered Bars, Centered Line, Peak Fill, Peak Bars, and Peak Line. Existing persisted legacy names migrate safely.
 - Added independent display-only amplitude modes: Auto Gain, Linear, dB · 60 dB, and dB · 96 dB. Auto Gain is snapshot-wide, targets 90% height, and does not boost signals below -50 dBFS. Display settings never alter capture, detection, timing, markers, or results.
-
-## Unreleased
 
 - Replaced the abbreviated right-edge settings tabs and large hide button with a named, theme-aware left navigation strip and compact collapse control. Light is now the new-install default, all theme states and the outlined video playhead have expanded contrast contracts, and the high-level result column remains intentionally limited to current result, confidence, and session history.
 - Added persisted audio transient sensitivity beside visual detector controls, Peaks and Filled Peaks bottom-zero waveform modes, and a ±300 ms new-install work-window default that does not overwrite saved settings.

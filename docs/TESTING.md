@@ -20,16 +20,19 @@ On this mapped workspace drive, `dotnet` project graph operations can intermitte
 
 1. Start the app and select **Synthetic A/V test · expected +60 ms (audio leads video)**.
 2. Confirm live motion and `READY TO CLAP`.
-3. Wait for the generated event and confirm `+60 ms` / **AUDIO LEADS VIDEO BY 60 ms**. Positive means the audio transient occurred before the visual contact.
-4. Confirm the automatic thumbnail remains fixed while Left/Right changes the main viewer.
-5. Scrub and verify the result changes to `MANUAL PREVIEW` and follows the white playhead; press Enter and verify it changes to `MANUAL RESULT`.
-6. Drag the yellow AUDIO marker or click Pre A/Nxt A and verify 1.0 ms Audio/result changes while the event window, waveform, visual playhead, Auto candidate, and thumbnail remain intact.
-7. Press H once across the next event and confirm no new test appears while preview continues; press H again to resume automatic events.
-8. Click/drag the timeline and confirm the review playhead and manual-preview result change without changing the stored Auto candidate. Confirm marker labels remain readable when timestamps coincide.
-9. Press R, Space, and F5 to verify resume, manual capture, and reconnect.
-10. Close/reopen and verify preferences persist while history/media do not.
-11. Confirm Settings collapses to a narrow reopen rail; switch AP/DET/REV/CAP/KEY/? pages and verify engineering detail appears only in About.
-12. Switch all seven themes, all six waveform styles, and all four amplitude modes without restarting. Verify readable settings navigation, controls, history, marker labels, outlined video playhead, and result overlay; confirm display changes do not move any marker or result. Centered modes use the drawing-area midpoint; Peak modes use its bottom as zero and extend upward. Auto Gain should make a useful snapshot peak reach about 90% height while near-silence remains small.
+3. Let clap 1 complete and confirm `+60 ms` / **AUDIO LEADS VIDEO BY 60 ms** remains displayed while the detector reads ARMED.
+4. Without Resume Live, let clap 2 complete and confirm it replaces clap 1; let clap 3 replace clap 2. Confirm the newest three finalized events remain bounded in history.
+5. Click **Auto Candidate** and confirm navigation returns to that event's candidate without discarding the event.
+6. Scrub and verify the result changes to `MANUAL PREVIEW` and follows the white playhead; press Enter and verify it changes to `MANUAL RESULT`.
+7. Drag the yellow AUDIO marker or click Pre A/Nxt A and verify 1.0 ms Audio/result changes while the event window, waveform, visual playhead, Auto candidate, and thumbnail remain intact.
+8. Press H across the next clap and confirm no new event appears while capture, preview, and rolling buffers continue; press H again and confirm automatic replacement resumes.
+9. Use Manual Clap on a fixture/window with an invalid timeline. Confirm the integrity warning remains visible, moving the playhead updates the manual A/V number, moving Audio updates it again, and uncorrelated selected clocks still show no number.
+10. Click/drag the timeline and confirm the review playhead and manual-preview result change without changing the stored Auto candidate. Confirm marker labels remain readable when timestamps coincide.
+11. Enable reconstruction and choose a field order, reconnect/restart, and verify both per-device preferences persist.
+12. Press R, Space, and F5 to verify resume, manual capture, and reconnect.
+13. Close/reopen and verify preferences persist while history/media do not.
+14. Confirm Settings collapses to a narrow reopen rail; switch AP/DET/REV/CAP/KEY/? pages and verify engineering detail appears only in About.
+15. Switch all seven themes, all six waveform styles, and all four amplitude modes without restarting. Verify readable settings navigation, controls, history, marker labels, outlined video playhead, and result overlay; confirm display changes do not move any marker or result. Centered modes use the drawing-area midpoint; Peak modes use its bottom as zero and extend upward. Auto Gain should make a useful snapshot peak reach about 90% height while near-silence remains small.
 
 Both existing win-x64 publish profiles must pass `scripts/smoke-test-windows.ps1`. It requires a live process with the exact title, a non-zero visible maximized top-level window handle, and a clean close.
 

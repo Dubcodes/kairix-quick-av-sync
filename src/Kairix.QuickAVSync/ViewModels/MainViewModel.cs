@@ -15,6 +15,35 @@ using Kairix.QuickAVSync.Windows.Infrastructure;
 
 namespace Kairix.QuickAVSync.ViewModels;
 
+public static class ReviewMeasurementPresentation
+{
+    public static bool UsesSelectedPoints(ReviewResultMode mode) =>
+        mode is ReviewResultMode.ManualPreview or ReviewResultMode.ManualResult;
+
+    public static bool SuppressForInvalidTimeline(FrameTimingAnalysis? timeline, ReviewResultMode mode) =>
+        timeline is { TimingValid: false } && !UsesSelectedPoints(mode);
+
+    public static string ResultText(FrameTimingAnalysis? timeline, EventReviewState? review) =>
+        SuppressForInvalidTimeline(timeline, review?.ResultMode ?? ReviewResultMode.None)
+            ? "TIMELINE TIMING INVALID"
+            : review?.CurrentResult?.Wording ?? "WAITING FOR CLAP";
+
+    public static double SyncValue(FrameTimingAnalysis? timeline, EventReviewState? review) =>
+        !SuppressForInvalidTimeline(timeline, review?.ResultMode ?? ReviewResultMode.None)
+        && review?.CurrentResult is { TimingComparable: true } result
+            ? result.SignedMilliseconds
+            : 0;
+
+    public static string TimelineIntegrityText(FrameTimingAnalysis? timeline) =>
+        timeline?.Status ?? "TIMELINE · LIVE";
+
+    public static void EnterManualPreview(EventReviewState review)
+    {
+        if (review.ResultMode is ReviewResultMode.None or ReviewResultMode.Auto)
+            review.MovePlayhead(review.Playhead);
+    }
+}
+
 public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 {
     private readonly SettingsService _settingsService = new();
@@ -312,10 +341,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public SyncResult? CurrentResult => _review?.CurrentResult;
     public SyncResult? CurrentRawResult => _review?.CurrentRawResult;
     public string ResultModeText => _review?.ResultMode switch { ReviewResultMode.Auto => "AUTO RESULT", ReviewResultMode.ManualPreview => "MANUAL PREVIEW", ReviewResultMode.ManualResult => "MANUAL RESULT", _ => "" };
-    public string ResultText => _timelineAnalysis is { TimingValid: false } ? "TIMELINE TIMING INVALID" : CurrentResult?.Wording ?? "WAITING FOR CLAP";
+    public string ResultText => ReviewMeasurementPresentation.ResultText(_timelineAnalysis, _review);
     public string ResultSummaryText => string.IsNullOrEmpty(ResultModeText) ? ResultText : $"{ResultModeText}\n{ResultText}";
-    public double SyncValue => _timelineAnalysis is not { TimingValid: false } && CurrentResult is { TimingComparable: true } result ? result.SignedMilliseconds : 0;
-    public string TimelineIntegrityText => _timelineAnalysis?.Status ?? "TIMELINE · LIVE";
+    public double SyncValue => ReviewMeasurementPresentation.SyncValue(_timelineAnalysis, _review);
+    public string TimelineIntegrityText => ReviewMeasurementPresentation.TimelineIntegrityText(_timelineAnalysis);
     public string ConfidenceText => _review?.AutoCandidate is not { } candidate ? "—" : $"{candidate.Confidence:P0}";
     public string ReviewPosition
     {
@@ -757,13 +786,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     public void SelectAudioPoint(double relativeMs)
     {
-        if (_review is null) return; _review.MoveAudioMark(relativeMs, HalfWindow); NotifyMarkers();
+        if (_review is null) return; ReviewMeasurementPresentation.EnterManualPreview(_review); _review.MoveAudioMark(relativeMs, HalfWindow); NotifyMarkers();
         _log.Write($"Manual audio correction {relativeMs:+0.0;-0.0;0} ms");
     }
-    public void PreviewAudioPoint(double relativeMs) { if (_review is null) return; _review.MoveAudioMark(relativeMs, HalfWindow); NotifyMarkers(); }
+    public void PreviewAudioPoint(double relativeMs) { if (_review is null) return; ReviewMeasurementPresentation.EnterManualPreview(_review); _review.MoveAudioMark(relativeMs, HalfWindow); NotifyMarkers(); }
     public void StepAudio(double milliseconds)
     {
         if (_review is null) return;
+        ReviewMeasurementPresentation.EnterManualPreview(_review);
         _review.MoveAudioMark(_review.AudioOffsetMs + milliseconds, HalfWindow); NotifyMarkers();
         _log.Write("review.audio-step", $"deltaMs={milliseconds:+0.0;-0.0;0.0} selectedMs={_review.AudioOffsetMs:+0.0;-0.0;0.0}");
     }
@@ -784,7 +814,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         });
         if (!_analysisGeneration.IsCurrent(generation) || !ReferenceEquals(_review, review)) return;
         var priorPlayhead = review.Playhead; _reviewFrames = built.Timeline.Frames; _timelineAnalysis = built.Timeline.Analysis; _playheadIndex = _reviewFrames.Count == 0 ? 0 : FindNearest(_reviewFrames, priorPlayhead);
-        if (_reviewFrames.Count > 0) review.SetInitialPlayhead(_reviewFrames[_playheadIndex].Timestamp);
+        if (_reviewFrames.Count > 0)
+        {
+            review.SetInitialPlayhead(_reviewFrames[_playheadIndex].Timestamp);
+            if (_manualReview) ReviewMeasurementPresentation.EnterManualPreview(review);
+        }
         Waveform = built.Waveform; ReviewFrameTicks = _reviewFrames.Select(frame => VideoTimingCompensation.CorrectedOffsetMilliseconds(reference, frame.Timestamp, review.VideoTimingOffset)).ToArray();
         _log.Write("timeline.integrity", $"reviewDeclared={_timelineAnalysis.DeclaredTemporalRate:0.###} reviewObserved={_timelineAnalysis.Primary.ObservedRate:0.###} reviewMedianMs={_timelineAnalysis.Primary.MedianIntervalMilliseconds:0.###} transportDeclared={_timelineAnalysis.DeclaredTransportRate:0.###} transportObserved={_timelineAnalysis.CaptureTransport.ObservedRate:0.###} transportMedianMs={_timelineAnalysis.CaptureTransport.MedianIntervalMilliseconds:0.###} nativeSamples={_timelineAnalysis.NativeSamplesAnalyzed} rawFrames={built.Timeline.RawFrameCount} reviewFrames={_reviewFrames.Count} windowMs={half.TotalMilliseconds * 2:0.###} duplicateTimestamps={_timelineAnalysis.Primary.DuplicateCount} backwards={_timelineAnalysis.Primary.BackwardCount} gaps={_timelineAnalysis.Primary.LargeGapCount} nearIdentical={_timelineAnalysis.NearIdenticalConsecutiveImages} pairedRepeat={_timelineAnalysis.Content.PairedRepeatDetected} estimatedUniqueRate={_timelineAnalysis.Content.EstimatedUniqueImageRate?.ToString("0.###") ?? "unknown"} arrivalRate={_timelineAnalysis.Arrival.ObservedRate:0.###}");
         ShowPlayhead(); NotifyMarkers();
@@ -795,7 +829,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public void StepCoarse(int direction) => Step(direction * 5);
     public void MarkAudioAtPlayhead() { if (_review is not null && _reviewFrames.Count > 0) SelectAudioPoint(PlayheadMs); }
     private void MarkVisual() { if (_review is null || _reviewFrames.Count == 0) return; _review.CommitManualVisual(); _log.Write($"Manual visual mark {_review.ManualVisualMark!.Value.Ticks100ns}"); NotifyMarkers(); }
-    private void JumpToAuto() { if (_review?.AutoCandidate is not { } candidate || _reviewFrames.Count == 0) return; _playheadIndex = FindNearest(_reviewFrames, candidate.Timestamp); _review.ShowAutoCandidate(); ShowPlayhead(); NotifyMarkers(); }
+    private void JumpToAuto() { if (_review?.AutoCandidate is not { } candidate || _reviewFrames.Count == 0) return; _playheadIndex = FindNearest(_reviewFrames, candidate.Timestamp); _review.ShowAutoCandidate(); ReviewMeasurementPresentation.EnterManualPreview(_review); ShowPlayhead(); NotifyMarkers(); }
     private void ShowPlayhead() { if (_reviewFrames.Count > 0) VideoImage = ToBitmap(_reviewFrames[Math.Clamp(_playheadIndex, 0, _reviewFrames.Count - 1)]); Changed(nameof(ReviewPosition)); Changed(nameof(PlayheadMs)); }
     private async Task ResumeLiveAsync()
     {
@@ -804,7 +838,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void FinalizeCurrentEvent()
     {
-        if (_review is null || _timelineAnalysis is { TimingValid: false } || !_review.TryFinalize(out var result) || result is null) return;
+        if (_review is null || ReviewMeasurementPresentation.SuppressForInvalidTimeline(_timelineAnalysis, _review.ResultMode) || !_review.TryFinalize(out var result) || result is null) return;
         _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence, _review.CurrentRawResult, _review.VideoTimingOffset.Milliseconds, _review.VideoTimingOffset.Source)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item);
     }
     private async Task CancelCurrentAnalysisAsync()

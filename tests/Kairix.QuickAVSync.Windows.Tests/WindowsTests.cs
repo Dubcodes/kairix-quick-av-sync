@@ -2,6 +2,7 @@ using Kairix.QuickAVSync.Models;
 using Kairix.QuickAVSync.Services;
 using Kairix.QuickAVSync.Windows.Infrastructure;
 using Kairix.QuickAVSync.Windows.Capture;
+using Kairix.QuickAVSync.ViewModels;
 using System.IO;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
@@ -10,6 +11,124 @@ using System.Windows.Controls;
 using System.Windows.Media;
 
 namespace Kairix.QuickAVSync.Windows.Tests;
+
+public sealed class ManualReviewTimingPresentationTests
+{
+    private static readonly FrameTimingAnalysis InvalidTimeline = new FrameTimingAnalyzer().Analyze(
+        [Frame(0, 0), Frame(0, 1)], 50);
+
+    [Fact]
+    public void InvalidAutomaticResultRemainsSuppressedUntilManualReviewBegins()
+    {
+        var review = ReviewWithAuto(80);
+        Assert.Equal(ReviewResultMode.Auto, review.ResultMode);
+        Assert.Equal("TIMELINE TIMING INVALID", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(0, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+
+        ReviewMeasurementPresentation.EnterManualPreview(review);
+
+        Assert.Equal(ReviewResultMode.ManualPreview, review.ResultMode);
+        Assert.Equal("AUDIO LEADS VIDEO BY 80 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(80, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+    }
+
+    [Fact]
+    public void ManualClapSelectedPointsImmediatelyProducePreviewOnInvalidTimeline()
+    {
+        var review = new EventReviewState(T(0), T(0));
+        review.SetInitialPlayhead(T(-100));
+        ReviewMeasurementPresentation.EnterManualPreview(review);
+
+        Assert.Equal(ReviewResultMode.ManualPreview, review.ResultMode);
+        Assert.Equal("AUDIO LAGS VIDEO BY 100 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(-100, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+    }
+
+    [Fact]
+    public void AudioOnlyReviewActionLeavesAutomaticSuppressionAndUpdatesSelectedDifference()
+    {
+        var review = ReviewWithAuto(80);
+        ReviewMeasurementPresentation.EnterManualPreview(review);
+        review.MoveAudioMark(25, 300);
+
+        Assert.Equal(ReviewResultMode.ManualPreview, review.ResultMode);
+        Assert.Equal("AUDIO LEADS VIDEO BY 55 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(55, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+    }
+
+    [Fact]
+    public void VideoAndAudioMovementUpdateManualPreviewDespiteInvalidTimeline()
+    {
+        var review = ReviewWithAuto(80);
+        review.MovePlayhead(T(-100));
+        Assert.Equal("AUDIO LAGS VIDEO BY 100 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(-100, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+
+        review.MoveAudioMark(25, 300);
+        Assert.Equal("AUDIO LAGS VIDEO BY 125 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(-125, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+    }
+
+    [Fact]
+    public void ManualVisualCommitRetainsSelectedMeasurementOnInvalidTimeline()
+    {
+        var review = ReviewWithAuto(80);
+        review.MovePlayhead(T(45));
+        review.CommitManualVisual();
+
+        Assert.Equal(ReviewResultMode.ManualResult, review.ResultMode);
+        Assert.Equal("AUDIO LEADS VIDEO BY 45 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(45, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+        Assert.True(review.TryFinalize(out var result));
+        Assert.Equal(45, result!.SignedMilliseconds);
+    }
+
+    [Fact]
+    public void IntegrityWarningRemainsIndependentOfManualMeasurement()
+    {
+        var review = ReviewWithAuto(60);
+        ReviewMeasurementPresentation.EnterManualPreview(review);
+
+        Assert.Equal(InvalidTimeline.Status, ReviewMeasurementPresentation.TimelineIntegrityText(InvalidTimeline));
+        Assert.Contains("INVALID", ReviewMeasurementPresentation.TimelineIntegrityText(InvalidTimeline));
+        Assert.Equal("AUDIO LEADS VIDEO BY 60 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+    }
+
+    [Fact]
+    public void UncorrelatedSelectedPointsStillRefuseNumericMeasurement()
+    {
+        var audio = new MediaTimestamp(0, TimingQuality.StreamTimestamp, "audio-clock");
+        var video = new MediaTimestamp(800_000, TimingQuality.StreamTimestamp, "video-clock");
+        var review = new EventReviewState(audio, audio);
+        review.MovePlayhead(video);
+
+        Assert.Equal("TIMING DOMAINS NOT CORRELATED", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
+        Assert.Equal(0, ReviewMeasurementPresentation.SyncValue(InvalidTimeline, review));
+        Assert.False(review.TryFinalize(out _));
+    }
+
+    [Fact]
+    public void ValidAutomaticResultPresentationIsUnchanged()
+    {
+        var valid = new FrameTimingAnalyzer().Analyze([Frame(0, 0), Frame(200_000, 1), Frame(400_000, 2)], 50);
+        var review = ReviewWithAuto(40);
+
+        Assert.True(valid.TimingValid);
+        Assert.Equal("AUDIO LEADS VIDEO BY 40 ms", ReviewMeasurementPresentation.ResultText(valid, review));
+        Assert.Equal(40, ReviewMeasurementPresentation.SyncValue(valid, review));
+    }
+
+    private static EventReviewState ReviewWithAuto(double visualMilliseconds)
+    {
+        var review = new EventReviewState(T(0), T(0));
+        var frame = Frame((long)Math.Round(visualMilliseconds * 10_000), 1);
+        review.SetAutoCandidate(new(frame.Timestamp, frame.TemporalIndex, .9, 1, frame));
+        return review;
+    }
+
+    private static VideoFrame Frame(long ticks, int index) => new(new(ticks, TimingQuality.StreamTimestamp), 1, 1, [0], index);
+    private static MediaTimestamp T(double milliseconds) => new((long)Math.Round(milliseconds * 10_000), TimingQuality.StreamTimestamp);
+}
 
 public sealed class SettingsTests
 {

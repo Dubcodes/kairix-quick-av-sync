@@ -559,8 +559,7 @@
           clap.hidden = false;
           orbitMarker.style.opacity = "0";
           const approach = untilCue == null ? 0 : Math.min(1, Math.max(0, 1 - untilCue / APPROACH_MS));
-          const eased = 1 - Math.pow(1 - approach, 3);
-          const gapVmin = Math.max(0, 42 * (1 - eased));
+          const gapVmin = cueVisible ? 0 : Math.max(0, 42 * (1 - approach));
           clapLeft.style.setProperty("--clap-gap", `${gapVmin}vmin`);
           clapRight.style.setProperty("--clap-gap", `${gapVmin}vmin`);
         } else {

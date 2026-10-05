@@ -107,6 +107,10 @@ The signed calculation remains `visual - audio`: positive is audio leads, negati
 
 `EventReviewState` owns the current event reference and keeps it fixed for the event lifetime. Audio correction, playhead preview, automatic visual selection, and committed manual visual selection are independent state transitions. Only a genuinely new event or Resume Live finalizes the current result for session history, and finalization is idempotent.
 
+A displayed automatic result does not pause the detector. After automatic analysis completes, the latest accepted event stays visible while the detector returns to ARMED; the next accepted clap finalizes/replaces that displayed event. Manual Clap and explicit marker/playhead edits enter manual review instead.
+
+Timeline integrity and selected-point measurement are separate concepts. `FrameTimingAnalysis` can invalidate an entire event for trusted automatic measurement while retaining its diagnostic status. In Manual Preview or Manual Result, `EventReviewState` calculates from the explicitly selected audio and video timestamps through the existing clock-correlation and video-compensation rules. A comparable pair therefore remains measurable even when the surrounding timeline is invalid; uncorrelated selected clocks still return no number. `TimelineIntegrityText` remains independently visible.
+
 ## Concurrency and ownership
 
 - Capture workers never wait for WPF rendering or visual analysis.
