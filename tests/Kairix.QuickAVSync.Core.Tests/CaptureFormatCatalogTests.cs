@@ -73,6 +73,40 @@ public sealed class CaptureFormatCatalogTests
     }
 
     [Fact]
+    public void SavedReconstructionAndFieldOrderWinDuringStartupEnumeration()
+    {
+        var transport = Format(1920, 1080, 25, 1);
+        InterpretationFormatOption[] options =
+        [
+            new(transport.FrameRate, transport.ScanMode),
+            new(transport.FrameRate, transport.ScanMode, true, Rational.From(50), FieldOrder.TopFirst),
+            new(transport.FrameRate, transport.ScanMode, true, Rational.From(50), FieldOrder.BottomFirst)
+        ];
+
+        var selected = CaptureFormatCatalog.SelectInterpretation(options, transport, null, reconstructFields: true, FieldOrder.BottomFirst);
+
+        Assert.NotNull(selected);
+        Assert.True(selected.ReconstructFields);
+        Assert.Equal(FieldOrder.BottomFirst, selected.FieldOrder);
+    }
+
+    [Fact]
+    public void ExplicitReconstructionOffSelectsNormalInterpretation()
+    {
+        var transport = Format(1920, 1080, 25, 1);
+        InterpretationFormatOption[] options =
+        [
+            new(transport.FrameRate, transport.ScanMode),
+            new(transport.FrameRate, transport.ScanMode, true, Rational.From(50), FieldOrder.TopFirst)
+        ];
+
+        var selected = CaptureFormatCatalog.SelectInterpretation(options, transport, null, reconstructFields: false, FieldOrder.TopFirst);
+
+        Assert.NotNull(selected);
+        Assert.False(selected.ReconstructFields);
+    }
+
+    [Fact]
     public void CuratedInputSignalsIncludeHdAndSdBroadcastSet()
     {
         string[] expected =

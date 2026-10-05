@@ -11,7 +11,6 @@ public static class ReviewTimeline
         return Enumerable.Range(0, frames.Count).MinBy(index => Math.Abs(frames[index].Timestamp.Ticks100ns - target));
     }
 
-    public static bool AcceptsAutomaticEvents(bool autoDetect, bool hold) => autoDetect && !hold;
-
-    public static bool ReturnsLiveAfterAnalysis(bool automaticEvent) => automaticEvent;
+    public static bool AcceptsAutomaticEvents(bool autoDetect, bool hold, bool manualReview = false, bool analysisRunning = false) =>
+        autoDetect && !hold && !manualReview && !analysisRunning;
 }

@@ -55,6 +55,22 @@ public static class CaptureFormatCatalog
             option.Format is { } format && IsNormallyVisible(format)).ToArray();
     }
 
+    public static InterpretationFormatOption? SelectInterpretation(
+        IEnumerable<InterpretationFormatOption> options,
+        CaptureFormat? preferred,
+        InterpretationFormatOption? prior,
+        bool reconstructFields,
+        FieldOrder savedOrder)
+    {
+        var available = options.ToArray();
+        bool MatchesRequestedMode(InterpretationFormatOption value) =>
+            value.ReconstructFields == reconstructFields && (!value.ReconstructFields || value.FieldOrder == savedOrder);
+        return available.FirstOrDefault(value => preferred is not null && value.TransportRate == preferred.FrameRate && value.TransportScanMode == preferred.ScanMode && value.TransportInterlaceLayout == preferred.InterlaceLayout && MatchesRequestedMode(value))
+            ?? available.FirstOrDefault(value => prior is not null && value.TransportRate == prior.TransportRate && value.TransportScanMode == prior.TransportScanMode && value.TransportInterlaceLayout == prior.TransportInterlaceLayout && MatchesRequestedMode(value))
+            ?? available.FirstOrDefault(MatchesRequestedMode)
+            ?? available.FirstOrDefault();
+    }
+
     private static bool IsRecommendedRate(double rate) => RecommendedRates.Any(candidate =>
         Math.Abs(candidate - rate) <= Math.Max(.025, candidate * .001));
 }

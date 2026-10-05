@@ -550,6 +550,7 @@ public sealed class OperatorUiContractTests
         var prior = -1;
         foreach (var label in labels) { var next = Ui.IndexOf($"Content=\"{label}\"", StringComparison.Ordinal); Assert.True(next > prior, label); prior = next; }
         Assert.Contains("Content=\"Mark Visual\" Command=\"{Binding MarkVisualCommand}\" IsEnabled=\"{Binding IsInReview}\"", Ui);
+        Assert.Contains("Command=\"{Binding JumpAutoCommand}\"", Ui);
     }
 
     [Theory]

@@ -78,14 +78,16 @@ public sealed class WorkWindowWaveformAndHistoryTests
     [Fact] public void HistoryKeepsOnlyLatest() { var h = new SessionHistoryService(3); for (var i = 0; i < 5; i++) h.Add(new(DateTime.MinValue.AddSeconds(i), new(i, i.ToString()), null)); Assert.Equal([4d, 3d, 2d], h.Items.Select(x => x.Result.SignedMilliseconds)); }
     [Fact] public void TimelineMapsClickToNearestRealFrameWithoutChangingMarks() { var frames = Enumerable.Range(-2, 5).Select(i => new VideoFrame(new(i * 200_000, TimingQuality.StreamTimestamp), 1, 1, [0], i)).ToArray(); Assert.Equal(3, ReviewTimeline.NearestFrameIndex(frames, new(0, TimingQuality.StreamTimestamp), 21)); }
     [Fact] public void HoldGateRequiresAutoDetectAndNoHold() { Assert.True(ReviewTimeline.AcceptsAutomaticEvents(true, false)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, true)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(false, false)); }
-    [Fact] public void AutomaticAnalysisReturnsLiveWhileManualAnalysisKeepsReviewOpen() { Assert.True(ReviewTimeline.ReturnsLiveAfterAnalysis(true)); Assert.False(ReviewTimeline.ReturnsLiveAfterAnalysis(false)); }
+    [Fact] public void ManualReviewAndActiveAnalysisBlockAutomaticReplacement() { Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, false, manualReview: true)); Assert.False(ReviewTimeline.AcceptsAutomaticEvents(true, false, analysisRunning: true)); Assert.True(ReviewTimeline.AcceptsAutomaticEvents(true, false, manualReview: false, analysisRunning: false)); }
     [Fact]
-    public void FiveAutomaticResultsRemainAvailableAndCanRunSequentiallyWithoutResumeLive()
+    public void FiveAutomaticResultsReplaceTheDisplayedEventWithoutResumeLiveOrQueueing()
     {
         var history = new SessionHistoryService(10);
+        EventReviewState? displayed = null;
         for (var eventNumber = 1; eventNumber <= 5; eventNumber++)
         {
-            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, hold: false));
+            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, hold: false, manualReview: false, analysisRunning: false));
+            Assert.False(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, hold: false, manualReview: false, analysisRunning: true));
             var state = new EventReviewState(T(eventNumber * 1000), T(eventNumber * 1000));
             var frame = new VideoFrame(T(eventNumber * 1000 + eventNumber * 10), 1, 1, [0], eventNumber);
             state.SetAutoCandidate(new(frame.Timestamp, eventNumber, .9, 1, frame));
@@ -94,13 +96,15 @@ public sealed class WorkWindowWaveformAndHistoryTests
             Assert.NotNull(result);
             history.Add(new(DateTime.MinValue.AddSeconds(eventNumber), result!, state.AutoCandidate!.Confidence));
 
-            Assert.True(ReviewTimeline.ReturnsLiveAfterAnalysis(automaticEvent: true));
+            displayed = state;
             Assert.Equal(result, state.CurrentResult);
             Assert.NotNull(state.AutoCandidate);
+            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(autoDetect: true, hold: false, manualReview: false, analysisRunning: false));
         }
 
         Assert.Equal(5, history.Items.Count);
         Assert.Equal([50d, 40d, 30d, 20d, 10d], history.Items.Select(item => item.Result.SignedMilliseconds));
+        Assert.Equal(50, displayed!.CurrentResult!.SignedMilliseconds);
     }
     [Fact] public void AudioCorrectionKeepsFixedEventReferenceAndAutoCandidate() { var state = StateWithAuto(); var reference = state.EventReference; var candidate = state.AutoCandidate; state.MoveAudioMark(35, 250); Assert.Equal(reference, state.EventReference); Assert.Same(candidate, state.AutoCandidate); Assert.Equal(35, state.AudioOffsetMs); Assert.Equal(80, state.AutoOffsetMs); }
     [Fact] public void AudioCorrectionClampsAtRetainedWindowEdge() { var state = StateWithAuto(); state.MoveAudioMark(900, 250); Assert.Equal(250, state.AudioOffsetMs); state.MoveAudioMark(-900, 250); Assert.Equal(-250, state.AudioOffsetMs); }
@@ -108,6 +112,7 @@ public sealed class WorkWindowWaveformAndHistoryTests
     [Fact] public void ManualCommitUsesManualVisualWithoutDestroyingAuto() { var state = StateWithAuto(); state.MovePlayhead(T(-30)); state.CommitManualVisual(); Assert.Equal(ReviewResultMode.ManualResult, state.ResultMode); Assert.Equal(-30, state.CurrentResult!.SignedMilliseconds); Assert.NotNull(state.AutoCandidate); }
     [Fact] public void MovingAudioUpdatesCommittedManualResult() { var state = StateWithAuto(); state.MovePlayhead(T(60)); state.CommitManualVisual(); state.MoveAudioMark(25, 250); Assert.Equal(35, state.CurrentResult!.SignedMilliseconds); Assert.Equal("AUDIO LEADS VIDEO BY 35 ms", state.CurrentResult.Wording); }
     [Fact] public void ShowingAutoForComparisonDoesNotLoseManualResult() { var state = StateWithAuto(); state.MovePlayhead(T(45)); state.CommitManualVisual(); state.ShowAutoCandidate(); Assert.Equal(ReviewResultMode.ManualResult, state.ResultMode); Assert.Equal(45, state.CurrentResult!.SignedMilliseconds); Assert.Equal(80, state.PlayheadOffsetMs); }
+    [Fact] public void AutoCandidateNavigationUsesExistingEventWithoutChangingCommittedResult() { var state = StateWithAuto(); var candidate = state.AutoCandidate; state.MovePlayhead(T(-20)); state.CommitManualVisual(); var result = state.CurrentResult; state.ShowAutoCandidate(); Assert.Same(candidate, state.AutoCandidate); Assert.Equal(80, state.PlayheadOffsetMs); Assert.Equal(result, state.CurrentResult); }
     [Fact] public void EventCanBeFinalizedOnlyOnce() { var state = StateWithAuto(); Assert.True(state.TryFinalize(out var result)); Assert.NotNull(result); Assert.False(state.TryFinalize(out _)); }
     private static EventReviewState StateWithAuto() { var state = new EventReviewState(T(0), T(0)); var frame = new VideoFrame(T(80), 1, 1, [0], 4); state.SetAutoCandidate(new(T(80), 4, .5, 5, frame)); return state; }
     private static MediaTimestamp T(double milliseconds) => new((long)(milliseconds * 10_000), TimingQuality.StreamTimestamp);
