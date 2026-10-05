@@ -1,0 +1,684 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Kairix A/V Sync Test Signal</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #05070a;
+      --panel: #0c1118;
+      --panel-2: #111923;
+      --line: #273446;
+      --muted: #96a4b5;
+      --text: #f4f7fb;
+      --accent: #58d7ff;
+      --accent-2: #31f5a5;
+      --warning: #ffd166;
+      --stage-min: min(58vh, 680px);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      min-height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+
+    body {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto auto;
+      overflow-x: hidden;
+    }
+
+    button, a { font: inherit; }
+
+    .header {
+      position: relative;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 74px;
+      padding: 14px clamp(18px, 3vw, 42px);
+      background: linear-gradient(180deg, #101722, #090d13);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand { min-width: 0; }
+
+    .eyebrow {
+      margin: 0 0 3px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(19px, 2.2vw, 30px);
+      line-height: 1.08;
+      letter-spacing: -.02em;
+    }
+
+    .audio-lock {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      padding: 7px 10px;
+      color: #211a00;
+      background: var(--warning);
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      box-shadow: 0 0 0 1px #ffffff2a, 0 5px 24px #0008;
+    }
+
+    .audio-lock[hidden] { display: none; }
+
+    .audio-lock::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      background: #382a00;
+      border-radius: 50%;
+    }
+
+    .stage {
+      position: relative;
+      isolation: isolate;
+      min-height: var(--stage-min);
+      overflow: hidden;
+      background:
+        radial-gradient(circle at center, #172332 0%, #080c12 42%, #030507 78%),
+        #05070a;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      opacity: .2;
+      background-image:
+        linear-gradient(#7ba0c415 1px, transparent 1px),
+        linear-gradient(90deg, #7ba0c415 1px, transparent 1px);
+      background-size: clamp(34px, 5vw, 76px) clamp(34px, 5vw, 76px);
+      mask-image: radial-gradient(circle at center, black, transparent 75%);
+    }
+
+    .crosshair {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: .88;
+    }
+
+    .crosshair::before,
+    .crosshair::after {
+      content: "";
+      position: absolute;
+      background: #d8eeff5c;
+      box-shadow: 0 0 8px #58d7ff33;
+    }
+
+    .crosshair::before { top: 0; bottom: 0; left: 50%; width: 1px; }
+    .crosshair::after { left: 0; right: 0; top: 50%; height: 1px; }
+
+    .target {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: min(52vmin, 440px);
+      aspect-ratio: 1;
+      transform: translate(-50%, -50%);
+    }
+
+    .rings {
+      position: absolute;
+      inset: 0;
+      border: clamp(2px, .35vmin, 4px) solid #e8f7ff;
+      border-radius: 50%;
+      box-shadow: 0 0 26px #58d7ff4d, inset 0 0 26px #58d7ff26;
+    }
+
+    .rings::before, .rings::after {
+      content: "";
+      position: absolute;
+      border: 1px solid #d9f4ff80;
+      border-radius: 50%;
+    }
+
+    .rings::before { inset: 20%; }
+    .rings::after { inset: 40%; background: #f5fbff; box-shadow: 0 0 30px #fff9; }
+
+    .orbit-marker {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: clamp(22px, 4.8vmin, 46px);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: var(--accent-2);
+      box-shadow: 0 0 20px #31f5a5, 0 0 52px #31f5a577;
+      transform: translate(-50%, -50%) rotate(var(--orbit-angle, -90deg)) translateX(calc(min(26vmin, 220px) - 1px));
+      opacity: 0;
+    }
+
+    .clap { position: absolute; inset: 0; pointer-events: none; }
+
+    .clap-block {
+      position: absolute;
+      top: 50%;
+      width: clamp(80px, 18vmin, 180px);
+      height: clamp(130px, 32vmin, 310px);
+      margin-top: calc(clamp(130px, 32vmin, 310px) / -2);
+      background: #fff;
+      border: clamp(4px, .7vmin, 8px) solid #c7e5f5;
+      box-shadow: 0 0 32px #fff8, 0 0 80px #58d7ff44;
+      will-change: transform;
+    }
+
+    .clap-left { left: 50%; transform: translateX(calc(-100% - var(--clap-gap, 42vmin))); }
+    .clap-right { right: 50%; transform: translateX(calc(100% + var(--clap-gap, 42vmin))); }
+
+    .contact-line {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: clamp(5px, .8vmin, 9px);
+      height: clamp(150px, 36vmin, 350px);
+      transform: translate(-50%, -50%) scaleY(0);
+      background: #fff;
+      box-shadow: 0 0 22px #fff, 0 0 70px var(--accent);
+      opacity: 0;
+    }
+
+    .flash {
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      pointer-events: none;
+      background: #fff;
+      mix-blend-mode: screen;
+      opacity: 0;
+    }
+
+    .stage-label {
+      position: absolute;
+      left: clamp(14px, 2vw, 28px);
+      bottom: clamp(12px, 2vw, 22px);
+      z-index: 3;
+      padding: 6px 9px;
+      color: #c8d4e0;
+      background: #030507aa;
+      border: 1px solid #39485a;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: clamp(10px, 1.1vw, 13px);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .status {
+      position: relative;
+      z-index: 5;
+      display: grid;
+      grid-template-columns: minmax(160px, .8fr) minmax(240px, 1.5fr) minmax(170px, .9fr);
+      align-items: stretch;
+      background: #090d13;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .status-card {
+      min-width: 0;
+      padding: 14px clamp(16px, 2vw, 28px);
+      border-right: 1px solid var(--line);
+    }
+
+    .status-card:last-child { border-right: 0; }
+
+    .status-label {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    .status-value {
+      display: block;
+      overflow: hidden;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: clamp(16px, 2.2vw, 25px);
+      font-weight: 800;
+      line-height: 1.18;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .status-value.sync { color: var(--accent-2); }
+    .status-value.lead { color: var(--warning); }
+    .status-value.lag { color: #ff91aa; }
+
+    .controls {
+      position: relative;
+      z-index: 5;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px 18px;
+      padding: 16px clamp(18px, 3vw, 42px) 18px;
+      background: var(--panel);
+    }
+
+    .control-group { min-width: 0; }
+
+    .control-title {
+      display: block;
+      margin: 0 0 7px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    .button-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .control-button {
+      min-height: 36px;
+      padding: 7px 11px;
+      color: #cbd5e1;
+      background: var(--panel-2);
+      border: 1px solid #344256;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .control-button:hover { border-color: #6b829d; color: #fff; }
+    .control-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .control-button.active { color: #021116; background: var(--accent); border-color: var(--accent); }
+    .control-button.stop.active { color: #081a12; background: var(--accent-2); border-color: var(--accent-2); }
+
+    .secondary-row {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .secondary-row a { color: #a8b7c8; text-decoration: none; }
+    .secondary-row a:hover { color: #fff; text-decoration: underline; }
+
+    .stage.cue .contact-line { opacity: 1; transform: translate(-50%, -50%) scaleY(1); }
+    .stage.cue .rings { border-color: #fff; box-shadow: 0 0 45px #fff, inset 0 0 35px #fff6; }
+
+    @media (max-width: 860px) {
+      :root { --stage-min: min(53vh, 560px); }
+      .status { grid-template-columns: 1fr 1fr; }
+      .status-card:nth-child(2) { border-right: 0; }
+      .status-card:last-child { grid-column: 1 / -1; border-top: 1px solid var(--line); }
+      .controls { grid-template-columns: 1fr; }
+      .secondary-row { grid-column: 1; }
+    }
+
+    @media (max-width: 520px) {
+      .header { align-items: flex-start; flex-direction: column; gap: 9px; }
+      .audio-lock { font-size: 9px; }
+      .status { grid-template-columns: 1fr; }
+      .status-card { border-right: 0; border-bottom: 1px solid var(--line); }
+      .status-card:last-child { grid-column: 1; border-top: 0; border-bottom: 0; }
+    }
+
+    :fullscreen body { grid-template-rows: auto minmax(0, 1fr) auto auto; height: 100vh; overflow: hidden; }
+    :fullscreen .header { min-height: 58px; padding-block: 9px; }
+    :fullscreen .controls { padding-block: 10px; }
+    :fullscreen .control-title { margin-bottom: 4px; }
+    :fullscreen .control-button { min-height: 31px; padding-block: 5px; }
+    :fullscreen .secondary-row { display: none; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <p class="eyebrow">Practical repeatable test source</p>
+      <h1>Kairix A/V Sync Test Signal</h1>
+    </div>
+    <div id="audioLock" class="audio-lock" role="status">Audio locked · click anywhere once</div>
+  </header>
+
+  <main id="stage" class="stage" aria-label="Visual sync target">
+    <div class="crosshair" aria-hidden="true"></div>
+    <div class="target" aria-hidden="true">
+      <div class="rings"></div>
+      <div id="orbitMarker" class="orbit-marker"></div>
+      <div id="clap" class="clap">
+        <div id="clapLeft" class="clap-block clap-left"></div>
+        <div id="clapRight" class="clap-block clap-right"></div>
+      </div>
+      <div class="contact-line"></div>
+    </div>
+    <div id="flash" class="flash" aria-hidden="true"></div>
+    <div id="stageLabel" class="stage-label">Clap · loop 2.0 s</div>
+  </main>
+
+  <section class="status" aria-label="Signal status">
+    <div class="status-card"><span class="status-label">Timing</span><span id="timingStatus" class="status-value sync">IN SYNC</span></div>
+    <div class="status-card"><span class="status-label">Expected offset</span><span id="offsetStatus" class="status-value">0 ms · simultaneous</span></div>
+    <div class="status-card"><span class="status-label">Next visual contact</span><span id="countdownStatus" class="status-value">Cue in 2.00 s</span></div>
+  </section>
+
+  <section class="controls" aria-label="Test signal controls">
+    <div class="control-group">
+      <span class="control-title">Offset</span>
+      <div id="offsetControls" class="button-row">
+        <button class="control-button active" type="button" data-offset="0">Sync</button>
+        <button class="control-button" type="button" data-offset="20">Audio +20</button>
+        <button class="control-button" type="button" data-offset="40">Audio +40</button>
+        <button class="control-button" type="button" data-offset="-20">Video +20</button>
+        <button class="control-button" type="button" data-offset="-40">Video +40</button>
+        <button class="control-button" type="button" data-offset="random">Random</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <span class="control-title">Cue</span>
+      <div id="cueControls" class="button-row">
+        <button class="control-button" type="button" data-cue="orbit">Orbit</button>
+        <button class="control-button active" type="button" data-cue="clap">Clap</button>
+        <button id="pulseButton" class="control-button" type="button">Pulse now</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <span class="control-title">Loop</span>
+      <div id="loopControls" class="button-row">
+        <button id="loopButton" class="control-button stop active" type="button" aria-pressed="true">Stop loop</button>
+        <button class="control-button" type="button" data-interval="1">1.0 s</button>
+        <button class="control-button active" type="button" data-interval="2">2.0 s</button>
+        <button class="control-button" type="button" data-interval="5">5.0 s</button>
+        <button id="fullscreenButton" class="control-button" type="button">Fullscreen</button>
+      </div>
+    </div>
+
+    <div class="secondary-row">
+      <span>Positive values mean audio leads video. Use a camera or complete signal path to observe the result.</span>
+      <a href="https://buymeacoffee.com/dubcodes" target="_blank" rel="noopener noreferrer">Buy me a coffee</a>
+    </div>
+  </section>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const APPROACH_MS = 1000;
+      const CUE_HOLD_MS = 105;
+      const FLASH_MS = 42;
+      const AUDIO_LOOKAHEAD_MS = 140;
+      const RANDOM_OFFSETS = [-40, -20, 0, 20, 40];
+
+      const stage = document.getElementById("stage");
+      const orbitMarker = document.getElementById("orbitMarker");
+      const clap = document.getElementById("clap");
+      const clapLeft = document.getElementById("clapLeft");
+      const clapRight = document.getElementById("clapRight");
+      const flash = document.getElementById("flash");
+      const audioLock = document.getElementById("audioLock");
+      const timingStatus = document.getElementById("timingStatus");
+      const offsetStatus = document.getElementById("offsetStatus");
+      const countdownStatus = document.getElementById("countdownStatus");
+      const stageLabel = document.getElementById("stageLabel");
+      const loopButton = document.getElementById("loopButton");
+      const pulseButton = document.getElementById("pulseButton");
+      const fullscreenButton = document.getElementById("fullscreenButton");
+
+      let cueMode = "clap";
+      let selectedOffset = 0;
+      let eventOffset = 0;
+      let intervalMs = 2000;
+      let loopActive = true;
+      let nextCueTimeMs = performance.now() + intervalMs;
+      let lastCueTimeMs = null;
+      let eventSerial = 1;
+      let audioContext = null;
+      let audioScheduledSerial = 0;
+      const activeSources = new Set();
+
+      function chooseEventOffset() {
+        if (selectedOffset !== "random") return Number(selectedOffset);
+        return RANDOM_OFFSETS[Math.floor(Math.random() * RANDOM_OFFSETS.length)];
+      }
+
+      function describeOffset(offsetMs) {
+        if (offsetMs === 0) return { timing: "IN SYNC", detail: "0 ms · simultaneous", className: "sync" };
+        if (offsetMs > 0) return { timing: `AUDIO +${offsetMs} ms`, detail: `audio leads video by ${offsetMs} ms`, className: "lead" };
+        return { timing: `VIDEO +${Math.abs(offsetMs)} ms`, detail: `video leads audio by ${Math.abs(offsetMs)} ms`, className: "lag" };
+      }
+
+      function renderOffset() {
+        const description = describeOffset(eventOffset);
+        timingStatus.textContent = description.timing;
+        timingStatus.className = `status-value ${description.className}`;
+        offsetStatus.textContent = description.detail;
+      }
+
+      function updateStageLabel() {
+        stageLabel.textContent = `${cueMode === "clap" ? "Clap" : "Orbit"} · ${loopActive ? `loop ${(intervalMs / 1000).toFixed(1)} s` : "loop stopped"}`;
+      }
+
+      function cancelScheduledAudio() {
+        for (const source of activeSources) {
+          try { source.stop(); } catch (_) { /* already stopped */ }
+        }
+        activeSources.clear();
+        audioScheduledSerial = 0;
+      }
+
+      function makeBeepAt(targetTimeMs) {
+        if (!audioContext || audioContext.state !== "running") return;
+        const delaySeconds = Math.max(0, (targetTimeMs - performance.now()) / 1000);
+        const start = audioContext.currentTime + delaySeconds;
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = "square";
+        oscillator.frequency.setValueAtTime(1450, start);
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.32, start + 0.002);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.035);
+        oscillator.connect(gain).connect(audioContext.destination);
+        oscillator.start(start);
+        oscillator.stop(start + 0.04);
+        activeSources.add(oscillator);
+        oscillator.addEventListener("ended", () => activeSources.delete(oscillator), { once: true });
+      }
+
+      function scheduleAudioIfNeeded(now) {
+        if (!loopActive || !nextCueTimeMs || !audioContext || audioContext.state !== "running") return;
+        const audioTimeMs = nextCueTimeMs - eventOffset;
+        if (audioScheduledSerial !== eventSerial && audioTimeMs - now <= AUDIO_LOOKAHEAD_MS) {
+          makeBeepAt(audioTimeMs);
+          audioScheduledSerial = eventSerial;
+        }
+      }
+
+      function rebaseNextCue(delayMs = intervalMs) {
+        cancelScheduledAudio();
+        lastCueTimeMs = null;
+        eventSerial += 1;
+        eventOffset = chooseEventOffset();
+        nextCueTimeMs = performance.now() + Math.max(APPROACH_MS + 100, delayMs);
+        renderOffset();
+      }
+
+      function advanceCue() {
+        lastCueTimeMs = nextCueTimeMs;
+        do { nextCueTimeMs += intervalMs; } while (nextCueTimeMs <= performance.now() + 4);
+        eventSerial += 1;
+        audioScheduledSerial = 0;
+        eventOffset = chooseEventOffset();
+        renderOffset();
+      }
+
+      function setVisualState(now) {
+        const untilCue = loopActive && nextCueTimeMs ? nextCueTimeMs - now : null;
+        const sinceLastCue = lastCueTimeMs == null ? Infinity : now - lastCueTimeMs;
+        const cueVisible = sinceLastCue >= 0 && sinceLastCue <= CUE_HOLD_MS;
+        const flashVisible = sinceLastCue >= 0 && sinceLastCue <= FLASH_MS;
+
+        stage.classList.toggle("cue", cueVisible);
+        flash.style.opacity = flashVisible ? String(1 - sinceLastCue / FLASH_MS) : "0";
+
+        if (!loopActive || untilCue == null) countdownStatus.textContent = "Countdown idle";
+        else if (cueVisible) countdownStatus.textContent = "CUE";
+        else countdownStatus.textContent = `Cue in ${Math.max(0, untilCue / 1000).toFixed(2)} s`;
+
+        if (cueMode === "clap") {
+          clap.hidden = false;
+          orbitMarker.style.opacity = "0";
+          const approach = untilCue == null ? 0 : Math.min(1, Math.max(0, 1 - untilCue / APPROACH_MS));
+          const eased = 1 - Math.pow(1 - approach, 3);
+          const gapVmin = Math.max(0, 42 * (1 - eased));
+          clapLeft.style.setProperty("--clap-gap", `${gapVmin}vmin`);
+          clapRight.style.setProperty("--clap-gap", `${gapVmin}vmin`);
+        } else {
+          clap.hidden = true;
+          if (untilCue != null && untilCue <= APPROACH_MS && untilCue >= 0) {
+            const progress = 1 - untilCue / APPROACH_MS;
+            orbitMarker.style.setProperty("--orbit-angle", `${-90 + 360 * progress}deg`);
+            orbitMarker.style.opacity = "1";
+          } else orbitMarker.style.opacity = cueVisible ? "1" : "0";
+        }
+      }
+
+      function animationFrame(now) {
+        if (loopActive && nextCueTimeMs) {
+          scheduleAudioIfNeeded(now);
+          if (now >= nextCueTimeMs) advanceCue();
+        }
+        setVisualState(now);
+        requestAnimationFrame(animationFrame);
+      }
+
+      function reflectAudioState() {
+        const running = audioContext && audioContext.state === "running";
+        audioLock.hidden = Boolean(running);
+        if (!running) audioLock.textContent = "Audio locked · click anywhere once";
+      }
+
+      async function tryUnlockAudio() {
+        try {
+          const wasRunning = audioContext && audioContext.state === "running";
+          if (!audioContext) {
+            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextClass) { audioLock.textContent = "Audio unavailable in this browser"; return; }
+            audioContext = new AudioContextClass({ latencyHint: "interactive" });
+            audioContext.addEventListener("statechange", reflectAudioState);
+          }
+          if (audioContext.state !== "running") await audioContext.resume();
+          reflectAudioState();
+          if (!wasRunning && audioContext.state === "running" && loopActive) rebaseNextCue();
+        } catch (_) { reflectAudioState(); }
+      }
+
+      function startLoop() {
+        loopActive = true;
+        loopButton.textContent = "Stop loop";
+        loopButton.classList.add("active");
+        loopButton.setAttribute("aria-pressed", "true");
+        rebaseNextCue();
+        updateStageLabel();
+      }
+
+      function stopLoop() {
+        loopActive = false;
+        nextCueTimeMs = null;
+        lastCueTimeMs = null;
+        cancelScheduledAudio();
+        loopButton.textContent = "Start loop";
+        loopButton.classList.remove("active");
+        loopButton.setAttribute("aria-pressed", "false");
+        updateStageLabel();
+      }
+
+      function pulseNow() {
+        cancelScheduledAudio();
+        eventOffset = chooseEventOffset();
+        renderOffset();
+        const now = performance.now();
+        lastCueTimeMs = now;
+        if (audioContext && audioContext.state === "running") makeBeepAt(now - eventOffset);
+        if (loopActive) {
+          eventSerial += 1;
+          audioScheduledSerial = 0;
+          nextCueTimeMs = now + intervalMs;
+        }
+      }
+
+      document.getElementById("offsetControls").addEventListener("click", event => {
+        const button = event.target.closest("[data-offset]");
+        if (!button) return;
+        selectedOffset = button.dataset.offset === "random" ? "random" : Number(button.dataset.offset);
+        document.querySelectorAll("[data-offset]").forEach(item => item.classList.toggle("active", item === button));
+        if (loopActive) rebaseNextCue();
+        else { eventOffset = chooseEventOffset(); renderOffset(); }
+      });
+
+      document.getElementById("cueControls").addEventListener("click", event => {
+        const button = event.target.closest("[data-cue]");
+        if (!button) return;
+        cueMode = button.dataset.cue;
+        document.querySelectorAll("[data-cue]").forEach(item => item.classList.toggle("active", item === button));
+        if (loopActive) rebaseNextCue();
+        updateStageLabel();
+      });
+
+      document.getElementById("loopControls").addEventListener("click", event => {
+        const intervalButton = event.target.closest("[data-interval]");
+        if (!intervalButton) return;
+        intervalMs = Number(intervalButton.dataset.interval) * 1000;
+        document.querySelectorAll("[data-interval]").forEach(item => item.classList.toggle("active", item === intervalButton));
+        if (loopActive) rebaseNextCue();
+        updateStageLabel();
+      });
+
+      loopButton.addEventListener("click", () => loopActive ? stopLoop() : startLoop());
+      pulseButton.addEventListener("click", pulseNow);
+      fullscreenButton.addEventListener("click", async () => {
+        if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+        else await document.exitFullscreen();
+      });
+      document.addEventListener("fullscreenchange", () => { fullscreenButton.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen"; });
+      for (const eventName of ["pointerdown", "keydown"]) document.addEventListener(eventName, tryUnlockAudio, { passive: true });
+
+      tryUnlockAudio();
+      eventOffset = chooseEventOffset();
+      renderOffset();
+      updateStageLabel();
+      requestAnimationFrame(animationFrame);
+    })();
+  </script>
+</body>
+</html>

@@ -44,6 +44,10 @@ dotnet run --project src/Kairix.QuickAVSync -c Release
 
 When no working hardware backend is available, the app selects **Synthetic A/V test · expected +60 ms (audio leads video)**. Every five seconds it emits an audio transient followed exactly 60 ms later by one unambiguous visual contact onset and brief hold. Kairix defines positive results as audio leading video, so the expected automatic result is `+60 ms` / **AUDIO LEADS VIDEO BY 60 ms**. This deterministic calibration pattern exercises detection, timeline, review, override, and history without a capture card.
 
+## Browser A/V Sync Test Signal
+
+Download [kairix_av_sync_test_signal_for_browser.html](kairix_av_sync_test_signal_for_browser.html) and open it locally in a modern browser for a practical, repeatable test source. It starts with **Sync**, **Clap**, and a **2 second loop**: point the camera or complete system under test at the target, then select known audio- or video-lead offsets to check measurement consistency. Browser autoplay rules may require one click anywhere on the page before the cue is audible; the visual signal starts immediately.
+
 ## Workflow
 
 1. Select a video source. **Detected Capture** is read-only and always describes the authoritative Media Foundation output using the real raster, numeric rate/scan, and pixel format.
