@@ -42,7 +42,7 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset, Capture
     private async Task RunAsync(CancellationToken ct)
     {
         StatusChanged?.Invoke(this, new(CaptureStatus.Running, "Synthetic source running"));
-        var frame = 0; var nextAudioClap = 3.0;
+        var frame = 0; var nextAudioClap = 1.0;
         try
         {
             while (!ct.IsCancellationRequested)
@@ -53,7 +53,7 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset, Capture
                     options?.PreferredAnalysisWidth ?? 640, options?.PreferredAnalysisHeight ?? 360,
                     options?.PreferredPresentationWidth ?? 160, options?.PreferredPresentationHeight ?? 90));
                 AudioSampleReceived?.Invoke(this, CreateAudio(now, nextAudioClap, _random));
-                if (now.TotalSeconds > nextAudioClap + Math.Max(2, audioToVideoOffset.TotalSeconds + 1)) nextAudioClap += 5;
+                if (now.TotalSeconds > nextAudioClap + Math.Max(.5, audioToVideoOffset.TotalSeconds + .3)) nextAudioClap += 2;
                 await Task.Delay(20, ct).ConfigureAwait(false);
             }
         }
@@ -62,34 +62,40 @@ public sealed class SyntheticCaptureSession(TimeSpan audioToVideoOffset, Capture
     }
     public static VideoFrame CreateFrame(TimeSpan now, double visualClapSeconds, int frame, int width = 640, int height = 360, int presentationWidth = 160, int presentationHeight = 90)
     {
-        var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4]; var relativeSeconds = now.TotalSeconds - visualClapSeconds;
+        var luma = new byte[width * height]; var bgra = new byte[presentationWidth * presentationHeight * 4];
+        var relativeSeconds = (now.Ticks - TimeSpan.FromSeconds(visualClapSeconds).Ticks) / (double)TimeSpan.TicksPerSecond;
         for (var y = 0; y < height; y++) for (var x = 0; x < width; x++)
         {
-            var background = 22 + x * 22 / width + y * 12 / height;
-            var hands = IsHandPixel(x, y, width, height, relativeSeconds);
-            luma[y * width + x] = (byte)(hands ? 205 : background);
+            luma[y * width + x] = CueLuma(x, y, width, height, relativeSeconds);
         }
         for (var y = 0; y < presentationHeight; y++) for (var x = 0; x < presentationWidth; x++)
         {
-            var hands = IsHandPixel(x, y, presentationWidth, presentationHeight, relativeSeconds);
+            var value = CueLuma(x, y, presentationWidth, presentationHeight, relativeSeconds);
             var offset = (y * presentationWidth + x) * 4;
-            bgra[offset] = hands ? (byte)114 : (byte)(68 + x * 20 / presentationWidth);
-            bgra[offset + 1] = hands ? (byte)164 : (byte)(44 + y * 20 / presentationHeight);
-            bgra[offset + 2] = hands ? (byte)224 : (byte)(24 + x * 26 / presentationWidth);
+            bgra[offset] = value; bgra[offset + 1] = value; bgra[offset + 2] = value;
             bgra[offset + 3] = 255;
         }
         return new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, luma, frame, Stride: width, PresentationBgra: bgra, PresentationWidth: presentationWidth, PresentationHeight: presentationHeight, PresentationStride: presentationWidth * 4, NativeSampleIndex: frame);
     }
-    private static bool IsHandPixel(int x, int y, int width, int height, double relativeSeconds)
+    private static byte CueLuma(int x, int y, int width, int height, double relativeSeconds)
     {
-        if (relativeSeconds is < 0 or >= .16) return false;
-        var centerX = width / 2d; var centerY = height / 2d; var handWidth = Math.Max(3, width * .11); var handHeight = Math.Max(3, height * .20);
-        if (Math.Abs(y - centerY) > handHeight / 2) return false;
-        // The deterministic source is a calibration pattern, not a hand-motion
-        // simulation: one unambiguous visual contact appears at the declared
-        // timestamp and holds briefly so the detector cannot choose an earlier
-        // approach/settle edge.
-        return Math.Abs(x - centerX) <= handWidth;
+        var background = 22 + x * 22 / width + y * 12 / height;
+        var flash = relativeSeconds is >= -1e-9 and < .10;
+        var baselineGap = width * .24;
+        var gap = relativeSeconds switch
+        {
+            < -.12 => baselineGap,
+            < -1e-9 => baselineGap * (-relativeSeconds / .12),
+            < .14 => 0,
+            _ => baselineGap
+        };
+        var centerX = width / 2d; var centerY = height / 2d; var blockWidth = Math.Max(3, width * .075); var blockHeight = Math.Max(3, height * .20);
+        var leftCenter = centerX - gap / 2 - blockWidth / 2; var rightCenter = centerX + gap / 2 + blockWidth / 2;
+        var block = Math.Abs(y - centerY) <= blockHeight / 2
+            && (Math.Abs(x - leftCenter) <= blockWidth / 2 || Math.Abs(x - rightCenter) <= blockWidth / 2);
+        var flashRegion = x >= width / 5 && x < width * 4 / 5 && y >= height / 5 && y < height * 4 / 5;
+        if (flash && flashRegion && !block) background = Math.Min(255, background + 120);
+        return (byte)(block ? 220 : background);
     }
     internal static AudioChunk CreateAudio(TimeSpan now, double audioClapSeconds, Random random)
     {
@@ -119,15 +125,10 @@ public static class SyntheticFixture
             audio.Add(new(MediaTimestamp.FromTimeSpan(TimeSpan.FromMilliseconds(i * 20), TimingQuality.StreamTimestamp, "synthetic-common"), samples, rate, 1));
         }
         var cadence = (videoFrameRate ?? Rational.From(200)).FrameDuration;
-        // Keep the synthetic contact visible past the analysis window so the
-        // deterministic fixture has one unambiguous visual onset.
-        var contactDuration = TimeSpan.FromSeconds(1);
         for (var frame = 0; ; frame++)
         {
             var now = TimeSpan.FromTicks(cadence.Ticks * frame); if (now > TimeSpan.FromSeconds(2)) break;
-            var pixels = new byte[width * height]; Array.Fill(pixels, (byte)30);
-            if (now >= visualAt && now < visualAt + contactDuration) Array.Fill(pixels, (byte)230, 1_000, 1_500);
-            video.Add(new(MediaTimestamp.FromTimeSpan(now, TimingQuality.StreamTimestamp, "synthetic-common"), width, height, pixels, frame, Stride: width));
+            video.Add(SyntheticCaptureSession.CreateFrame(now, visualAt.TotalSeconds, frame, width, height, 16, 9) with { PresentationBgra = null, PresentationWidth = 0, PresentationHeight = 0, PresentationStride = 0 });
         }
         return (audio, video, MediaTimestamp.FromTimeSpan(audioAt, TimingQuality.StreamTimestamp, "synthetic-common"), MediaTimestamp.FromTimeSpan(visualAt, TimingQuality.StreamTimestamp, "synthetic-common"));
     }

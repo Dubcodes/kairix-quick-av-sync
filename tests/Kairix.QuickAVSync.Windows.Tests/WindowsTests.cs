@@ -19,6 +19,15 @@ public sealed class ManualReviewTimingPresentationTests
         [Frame(0, 0), Frame(0, 1)], 50);
 
     [Fact]
+    public void AudioCandidateHasExplicitLabelWithoutInventingResult()
+    {
+        var review = new EventReviewState(T(0), T(0)); review.SetAudioCandidate(T(20));
+        Assert.Equal("AUDIO CANDIDATE", ReviewMeasurementPresentation.ResultModeText(null, review.ResultMode));
+        Assert.Equal("VISUAL NOT FOUND", ReviewMeasurementPresentation.ResultText(null, review));
+        Assert.Equal(0, ReviewMeasurementPresentation.SyncValue(null, review));
+    }
+
+    [Fact]
     public void InvalidAutomaticResultRemainsVisibleWithSeparateTimingWarning()
     {
         var review = ReviewWithAuto(80);
@@ -151,7 +160,38 @@ public sealed class SettingsTests
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualSensitivity = 77, AudioSensitivity = 68, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Filled Peaks", AudioDisplayAmplitude = "dB · 96 dB", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(68, loaded.AudioSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Peak Fill", loaded.AudioDisplayStyle); Assert.Equal("dB · 96 dB", loaded.AudioDisplayAmplitude); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualDetector = VisualDetectorKind.FlashTestSignal, VisualSensitivity = 77, AudioSensitivity = 68, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Filled Peaks", AudioDisplayAmplitude = "dB · 96 dB", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(VisualDetectorKind.FlashTestSignal, loaded.VisualDetector); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(68, loaded.AudioSensitivity); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Peak Fill", loaded.AudioDisplayStyle); Assert.Equal("dB · 96 dB", loaded.AudioDisplayAmplitude); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("history", json, StringComparison.OrdinalIgnoreCase); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void MissingDetectorSettingDefaultsToHumanClap()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try { File.WriteAllText(path, "{\"VisualSensitivity\":65}"); using var service = new SettingsService(path); Assert.Equal(VisualDetectorKind.HumanClap, service.Load().VisualDetector); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData(VisualDetectorKind.HumanClap)]
+    [InlineData(VisualDetectorKind.FlashTestSignal)]
+    public void DetectorSelectionPersists(VisualDetectorKind detector)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try { using var service = new SettingsService(path); service.Save(new() { VisualDetector = detector }); Assert.Equal(detector, service.Load().VisualDetector); }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void DetectorSelectionPersistsWithoutChangingTimingOrReconstructionProfiles()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
+        try
+        {
+            using (var service = new SettingsService(path)) service.Save(new() { VisualDetector = VisualDetectorKind.FlashTestSignal, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 20 } });
+            using var restored = new SettingsService(path); var settings = restored.Load();
+            Assert.Equal(VisualDetectorKind.FlashTestSignal, settings.VisualDetector); Assert.True(settings.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", settings.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(20, settings.VideoTimingOffsetOverridesMilliseconds["profile"]);
+        }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
@@ -657,6 +697,8 @@ public sealed class OperatorUiContractTests
         Assert.Contains("AudioDisplayStyleSelector", Ui);
         Assert.Contains("AutomaticDetectionToggle", Ui);
         Assert.Contains("AudioSensitivitySlider", Ui);
+        Assert.Contains("VisualDetectorSelector", Ui);
+        Assert.Contains("ItemsSource=\"{Binding VisualDetectors}\" SelectedItem=\"{Binding SelectedVisualDetector}\"", Ui);
         Assert.Equal(2, Ui.Split("IsMoveToPointEnabled=\"True\"").Length - 1);
         Assert.DoesNotContain("Content=\"Reconstruct fields\"", Ui);
         Assert.DoesNotContain("{Binding ReconstructInterlacedFields}", Ui);

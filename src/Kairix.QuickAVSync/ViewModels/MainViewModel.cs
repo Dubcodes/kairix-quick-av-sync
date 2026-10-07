@@ -25,6 +25,7 @@ public static class ReviewMeasurementPresentation
 
     public static string ResultText(FrameTimingAnalysis? timeline, EventReviewState? review) =>
         review?.CurrentResult?.Wording
+        ?? (review?.ResultMode == ReviewResultMode.AudioCandidate ? "VISUAL NOT FOUND" : null)
         ?? (timeline is { TimingValid: false } ? "TIMELINE TIMING INVALID" : "WAITING FOR CLAP");
 
     public static double SyncValue(FrameTimingAnalysis? timeline, EventReviewState? review) =>
@@ -36,6 +37,7 @@ public static class ReviewMeasurementPresentation
     {
         var label = mode switch
         {
+            ReviewResultMode.AudioCandidate => "AUDIO CANDIDATE",
             ReviewResultMode.Auto => "AUTO RESULT",
             ReviewResultMode.ManualPreview => "MANUAL PREVIEW",
             ReviewResultMode.ManualResult => "MANUAL RESULT",
@@ -49,7 +51,7 @@ public static class ReviewMeasurementPresentation
 
     public static void EnterManualPreview(EventReviewState review)
     {
-        if (review.ResultMode is ReviewResultMode.None or ReviewResultMode.Auto)
+        if (review.ResultMode is ReviewResultMode.None or ReviewResultMode.AudioCandidate or ReviewResultMode.Auto)
             review.MovePlayhead(review.Playhead);
     }
 }
@@ -62,7 +64,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly CaptureDeviceRanker _deviceRanker = new();
     private readonly MemoryStatusService _memoryService = new();
     private readonly TransientDetector _transientDetector = new();
-    private readonly VisualClapDetector _visualDetector = new();
     private readonly WaveformBuilder _waveformBuilder = new();
     private readonly AnalysisGeneration _analysisGeneration = new();
     private readonly SessionHistoryService _history = new();
@@ -80,6 +81,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private InterpretationFormatOption? _selectedInterpretationFormat;
     private PixelFormatOption? _selectedPixelFormat;
     private ProcessingResolutionOption? _selectedDetectionResolution, _selectedReviewResolution;
+    private VisualDetectorOption? _selectedVisualDetector;
     private ThemeOption? _selectedTheme;
     private string _selectedAudioDisplayStyle = "Centered Fill";
     private string _selectedAudioDisplayAmplitude = WaveformDisplayTransform.AutoGain;
@@ -126,6 +128,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<PixelFormatOption> PixelFormats { get; } = [];
     public ObservableCollection<ProcessingResolutionOption> DetectionResolutions { get; } = [];
     public ObservableCollection<ProcessingResolutionOption> ReviewResolutions { get; } = [];
+    public ObservableCollection<VisualDetectorOption> VisualDetectors { get; } =
+    [
+        new(VisualDetectorKind.HumanClap, "Human Clap"),
+        new(VisualDetectorKind.FlashTestSignal, "Flash / Test Signal")
+    ];
     public ObservableCollection<ThemeOption> Themes { get; } = [];
     public ObservableCollection<string> AudioDisplayStyles { get; } = ["Centered Fill", "Centered Bars", "Centered Line", "Peak Fill", "Peak Bars", "Peak Line"];
     public ObservableCollection<string> AudioDisplayAmplitudes { get; } = [WaveformDisplayTransform.AutoGain, WaveformDisplayTransform.Linear, WaveformDisplayTransform.Db60, WaveformDisplayTransform.Db96];
@@ -148,6 +155,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public MainViewModel()
     {
         _settings = _settingsService.Load(); _transientDetector.Sensitivity = _settings.AudioSensitivity; _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
+        _selectedVisualDetector = VisualDetectors.First(option => option.Kind == _settings.VisualDetector);
         foreach (var theme in ThemeManager.Themes) Themes.Add(theme);
         _selectedTheme = Themes.First(theme => theme.Name == ThemeManager.Normalize(_settings.Theme)); ThemeManager.Apply(_selectedTheme.Name);
         _selectedAudioDisplayStyle = WaveformDisplayTransform.NormalizeStyle(_settings.AudioDisplayStyle);
@@ -217,6 +225,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             if (!Set(ref _selectedDetectionResolution, value) || value is null || _suppressInterpretationChanges) return;
             _settings.DetectionWidth = value.Width; _settings.DetectionHeight = value.Height; SaveSettings(); RefreshPerformanceDisplay(); RequestSettingsReconnect();
+        }
+    }
+    public VisualDetectorOption? SelectedVisualDetector
+    {
+        get => _selectedVisualDetector;
+        set
+        {
+            if (value is null || !Set(ref _selectedVisualDetector, value)) return;
+            _settings.VisualDetector = value.Kind; SaveSettings();
+            _log.Write("visual.engine", $"selected='{value.Display}'; applies to future analyses");
         }
     }
     public ProcessingResolutionOption? SelectedReviewResolution
@@ -664,7 +682,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         Interlocked.Increment(ref _audioChunkCount); Interlocked.Exchange(ref _lastAudioStopwatchTicks, System.Diagnostics.Stopwatch.GetTimestamp()); _audio.Add(chunk); if (!ReviewTimeline.AcceptsAutomaticEvents(AutoDetect, AutoSpike, IsHold, _automaticAnalysisRunning)) return;
         foreach (var transient in _transientDetector.Process(chunk))
         {
-            _log.Write($"Transient detected at {transient.Timestamp.Ticks100ns}; peak {transient.Peak:0.000}");
+            _log.Write($"Transient detected at {transient.Timestamp.Ticks100ns}; peak {transient.Peak:0.000}; rms {transient.WindowRms:0.000}; crest {transient.CrestFactor:0.00}; peak/noise {transient.PeakToNoiseRatio:0.0}; attack {transient.AttackRatio:0.0}");
             PostToUi(() =>
             {
                 if (captureGeneration != Volatile.Read(ref _captureGeneration)) return;
@@ -674,7 +692,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                     return;
                 }
                 _automaticAnalysisRunning = true;
-                StartOwnedTask(StartEventAsync(transient.Timestamp, audioFinalized: true), "review.analysis");
+                StartOwnedTask(StartEventAsync(transient.Timestamp, audioFinalized: true, transient), "review.analysis");
             });
         }
     }
@@ -703,7 +721,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         });
     }
 
-    private async Task StartEventAsync(MediaTimestamp audioMark, bool audioFinalized)
+    private async Task StartEventAsync(MediaTimestamp audioMark, bool audioFinalized, AudioTransient? transient = null)
     {
         await _eventGate.WaitAsync(_lifetimeCts.Token).ConfigureAwait(true);
         try
@@ -717,8 +735,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (audioFinalized)
             {
                 _automaticAnalysisRunning = true;
-                task = RunPendingAutomaticAnalysisAsync(generation, review, cts.Token);
-                _log.Write("viewer.state", $"automatic event pending audioTimestamp={audioMark.Ticks100ns} generation={generation}; displayed review unchanged");
+                var detectorKind = SelectedVisualDetector?.Kind ?? VisualDetectorKind.HumanClap;
+                task = RunPendingAutomaticAnalysisAsync(generation, review, transient ?? new(audioMark, 0, 0), detectorKind, cts.Token);
+                _log.Write("viewer.state", $"automatic event pending audioTimestamp={audioMark.Ticks100ns} generation={generation} detector='{detectorKind}'; displayed review unchanged");
             }
             else
             {
@@ -733,7 +752,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         finally { _eventGate.Release(); }
     }
 
-    private async Task RunPendingAutomaticAnalysisAsync(long generation, EventReviewState pending, CancellationToken cancellationToken)
+    private async Task RunPendingAutomaticAnalysisAsync(long generation, EventReviewState pending, AudioTransient transient, VisualDetectorKind detectorKind, CancellationToken cancellationToken)
     {
         try
         {
@@ -742,27 +761,49 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (!_analysisGeneration.IsCurrent(generation)) return;
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var detector = VisualDetectorFactory.Create(detectorKind);
             var candidate = AutoVisual
-                ? await _visualDetector.DetectAsync(built.Timeline.Frames, pending.ExpectedRawVisualTimestamp, cancellationToken, new(VisualSensitivity))
+                ? await detector.DetectAsync(built.Timeline.Frames, pending.ExpectedRawVisualTimestamp, cancellationToken, new(VisualSensitivity))
                 : null;
             stopwatch.Stop();
             var analyzed = built.Timeline.Frames.FirstOrDefault();
-            _log.Write("visual.analysis", $"frames={built.Timeline.Frames.Count} resolution={analyzed?.Width ?? 0}x{analyzed?.Height ?? 0} detail='{MotionVisualClapDetector.DetailDescription(analyzed?.Width ?? 0, analyzed?.Height ?? 0)}' sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))}");
+            var audioQuality = AudioCandidateClassifier.Evaluate(transient);
+            _log.Write("visual.analysis", $"engine='{detectorKind}' frames={built.Timeline.Frames.Count} resolution={analyzed?.Width ?? 0}x{analyzed?.Height ?? 0} detail='{MotionVisualClapDetector.DetailDescription(analyzed?.Width ?? 0, analyzed?.Height ?? 0)}' sensitivity={VisualSensitivity} elapsedMs={stopwatch.Elapsed.TotalMilliseconds:0.0} candidate={(candidate is null ? "none" : candidate.Confidence.ToString("0.00"))} audioFallback={audioQuality.Passed} audioQuality={audioQuality.Quality:0.000}");
             if (!_analysisGeneration.IsCurrent(generation)) return;
-            if (!ReviewTimeline.TryAcceptAutomaticCandidate(pending, candidate))
+            var outcome = ReviewTimeline.ClassifyAutomaticOutcome(candidate, transient);
+            if (outcome == AutomaticEventOutcome.Rejected)
             {
                 _log.Write("viewer.state", $"automatic event rejected generation={generation}; displayed review unchanged");
                 return;
             }
 
             FinalizeCurrentEvent();
-            _review = pending; _reviewFrames = built.Timeline.Frames; _timelineAnalysis = built.Timeline.Analysis; _playheadIndex = Math.Max(0, _reviewFrames.IndexOf(candidate!.Frame));
+            _review = pending; _reviewFrames = built.Timeline.Frames; _timelineAnalysis = built.Timeline.Analysis;
+            _playheadIndex = candidate is null
+                ? Math.Max(0, ReviewTimeline.NearestFrameIndex(_reviewFrames, pending.ExpectedRawVisualTimestamp, 0))
+                : Math.Max(0, _reviewFrames.IndexOf(candidate.Frame));
+            if (candidate is null)
+            {
+                var initialPlayhead = _reviewFrames.Count == 0 ? pending.ExpectedRawVisualTimestamp : _reviewFrames[_playheadIndex].Timestamp;
+                pending.SetAudioCandidate(initialPlayhead);
+            }
+            else pending.SetAutoCandidate(candidate);
             Waveform = built.Waveform; ReviewFrameTicks = _reviewFrames.Select(frame => VideoTimingCompensation.CorrectedOffsetMilliseconds(pending.EventReference, frame.Timestamp, pending.VideoTimingOffset)).ToArray();
-            AutoThumbnail = ToBitmap(candidate.Frame); _isReview = true; _manualReview = false; Changed(nameof(IsInReview));
-            RecordCandidateDiagnostics(pending, candidate, built.Timeline.Analysis, stopwatch.Elapsed);
-            FinalizeCurrentEvent();
-            _automaticAnalysisRunning = false; Status = "REVIEW · AUTO RESULT · ARMED";
-            _log.Write("viewer.state", $"automatic event accepted atomically generation={generation} frames={_reviewFrames.Count}");
+            AutoThumbnail = candidate is null ? null : ToBitmap(candidate.Frame); _isReview = true; _manualReview = false; Changed(nameof(IsInReview));
+            if (candidate is null)
+            {
+                RecordAudioCandidateDiagnostics(transient, detectorKind, built.Timeline.Analysis, stopwatch.Elapsed, audioQuality);
+                Status = "REVIEW · AUDIO CANDIDATE · ARMED";
+                _log.Write("viewer.state", $"strong audio candidate retained generation={generation} frames={_reviewFrames.Count}; no history entry");
+            }
+            else
+            {
+                RecordCandidateDiagnostics(pending, candidate, built.Timeline.Analysis, stopwatch.Elapsed);
+                FinalizeCurrentEvent();
+                Status = "REVIEW · AUTO RESULT · ARMED";
+                _log.Write("viewer.state", $"automatic event accepted atomically generation={generation} frames={_reviewFrames.Count}");
+            }
+            _automaticAnalysisRunning = false;
             ShowPlayhead(); NotifyMarkers();
         }
         catch (OperationCanceledException) { }
@@ -853,7 +894,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var detection = SelectedDetectionResolution ?? new(_settings.DetectionWidth, _settings.DetectionHeight);
         var presentation = SelectedReviewResolution ?? new(_settings.ReviewWidth, _settings.ReviewHeight);
         var processing = (_capture as ICapturePerformanceDiagnostics)?.GetProcessingDiagnostics();
-        LastEventDiagnosticsText = $"Detection {detection.Width}×{detection.Height} · review {presentation.Width}×{presentation.Height}\nAudio {review.AudioMark.Ticks100ns} · expected raw {review.ExpectedRawVisualTimestamp.Ticks100ns}\nChosen raw {candidate.Timestamp.Ticks100ns} · temporal {candidate.TemporalIndex} · native {candidate.Frame.NativeSampleIndex} · {FieldLabel(candidate.Frame)}\nRaw {raw.SignedMilliseconds:+0.000;-0.000;0.000} ms · compensation {review.VideoTimingOffset.Milliseconds:+0.000;-0.000;0.000} ms · corrected {corrected.SignedMilliseconds:+0.000;-0.000;0.000} ms\nScore {candidate.MotionScore:0.###} · confidence {candidate.Confidence:P0} · peak {trace?.ApproachPeakIndex.ToString() ?? "—"} · contact {trace?.FinalContactIndex.ToString() ?? "—"} · advanced {trace?.PositionsAdvanced.ToString() ?? "—"}\nAnalysis {elapsed.TotalMilliseconds:0.0} ms · conversion avg/max {(processing is null ? "unavailable" : $"{processing.ConversionAverageMilliseconds:0.00}/{processing.ConversionMaximumMilliseconds:0.00} ms")} · timestamp source {candidate.Frame.TimingObservation?.PrimarySource.ToString() ?? candidate.Timestamp.Quality.ToString()}\nTimestamp faults: duplicate {timeline.Primary.DuplicateCount}, backwards {timeline.Primary.BackwardCount}, gaps {timeline.Primary.LargeGapCount}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
+        var components = trace?.DetectorKind == VisualDetectorKind.FlashTestSignal
+            ? $"pre-stability {trace.PreStability:0.000} · luma {trace.LumaDelta:0.000} · changed {trace.ChangedFraction:P1} · onset {trace.OnsetQuality:0.000} · margin {trace.CandidateMargin:0.000}"
+            : $"approach {trace?.ApproachQuality ?? 0:0.000} · continuity {trace?.ContinuityQuality ?? 0:0.000} · drop {trace?.DropQuality ?? 0:0.000} · settle {trace?.SettleQuality ?? 0:0.000} · margin {trace?.CandidateMargin ?? 0:0.000}";
+        LastEventDiagnosticsText = $"Detector {trace?.DetectorKind.ToString() ?? "unknown"} · detection {detection.Width}×{detection.Height} · review {presentation.Width}×{presentation.Height}\nAudio {review.AudioMark.Ticks100ns} · expected raw {review.ExpectedRawVisualTimestamp.Ticks100ns}\nChosen raw {candidate.Timestamp.Ticks100ns} · temporal {candidate.TemporalIndex} · native {candidate.Frame.NativeSampleIndex} · {FieldLabel(candidate.Frame)}\nRaw {raw.SignedMilliseconds:+0.000;-0.000;0.000} ms · compensation {review.VideoTimingOffset.Milliseconds:+0.000;-0.000;0.000} ms · corrected {corrected.SignedMilliseconds:+0.000;-0.000;0.000} ms\nScore {candidate.MotionScore:0.###} · confidence {candidate.Confidence:P0} · peak {trace?.ApproachPeakIndex.ToString() ?? "—"} · contact {trace?.FinalContactIndex.ToString() ?? "—"} · advanced {trace?.PositionsAdvanced.ToString() ?? "—"}\n{components}\nAnalysis {elapsed.TotalMilliseconds:0.0} ms · conversion avg/max {(processing is null ? "unavailable" : $"{processing.ConversionAverageMilliseconds:0.00}/{processing.ConversionMaximumMilliseconds:0.00} ms")} · timestamp source {candidate.Frame.TimingObservation?.PrimarySource.ToString() ?? candidate.Timestamp.Quality.ToString()}\nTimestamp faults: duplicate {timeline.Primary.DuplicateCount}, backwards {timeline.Primary.BackwardCount}, gaps {timeline.Primary.LargeGapCount}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
+        _log.Write("visual.event", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
+    }
+
+    private void RecordAudioCandidateDiagnostics(AudioTransient transient, VisualDetectorKind detectorKind, FrameTimingAnalysis timeline, TimeSpan elapsed, AudioCandidateQuality quality)
+    {
+        LastEventDiagnosticsText = $"Detector {detectorKind} · AUDIO CANDIDATE · visual not found\nAudio {transient.Timestamp.Ticks100ns} · peak {transient.Peak:0.000} · noise {transient.NoiseFloor:0.0000} · RMS {transient.WindowRms:0.000} · crest {transient.CrestFactor:0.00} · peak/noise {transient.PeakToNoiseRatio:0.0} · attack {transient.AttackRatio:0.0}\nAudio fallback quality {quality.Quality:0.000} · passed {quality.Passed}\nAnalysis {elapsed.TotalMilliseconds:0.0} ms · frames {_reviewFrames.Count}\nTimestamp faults: duplicate {timeline.Primary.DuplicateCount}, backwards {timeline.Primary.BackwardCount}, gaps {timeline.Primary.LargeGapCount}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
         _log.Write("visual.event", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
     }
     private static int FindNearest(IReadOnlyList<VideoFrame> frames, MediaTimestamp mark) => ReviewTimeline.NearestFrameIndex(frames, mark, 0);

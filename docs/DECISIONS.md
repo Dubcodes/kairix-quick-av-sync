@@ -16,6 +16,8 @@ This concise log records durable project choices. Evidence and open questions be
 | Hold | Suppresses new automatic events but does not stop capture or buffering. Once returned to ARMED, the next automatic event is immediately admissible even if a review is displayed. |
 | Persistence | Capture and presentation preferences persist per device/profile; Hold, media, and session history do not. |
 | Reconstruction selection | The selected interpretation is the sole runtime reconstruction truth; reconstructed rate/order choices are formats, not a second checkbox state. |
+| Visual detector engines | Run one selected lightweight deterministic engine per event: Human Clap by default, or Flash / Test Signal for electronic cues. Capture, timing, reconstruction, review, and history remain shared. |
+| Audio-only fallback | A strong impulsive transient without a visual match is retained as a reviewable Audio Candidate, not a confirmed sync result or normal history entry; weaker unmatched transients are discarded. |
 | History | Keep the newest three finalized results. |
 | Privacy | No telemetry, accounts, database, cloud dependency, or media persistence. |
 | Browser source | Ship one offline-capable HTML A/V sync test signal with the repository. |

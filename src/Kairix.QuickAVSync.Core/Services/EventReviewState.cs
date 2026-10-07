@@ -5,6 +5,7 @@ namespace Kairix.QuickAVSync.Services;
 public enum ReviewResultMode
 {
     None,
+    AudioCandidate,
     Auto,
     ManualPreview,
     ManualResult
@@ -79,6 +80,13 @@ public sealed class EventReviewState
             Playhead = candidate.Timestamp;
             ResultMode = ReviewResultMode.Auto;
         }
+    }
+
+    public void SetAudioCandidate(MediaTimestamp initialPlayhead)
+    {
+        if (ResultMode != ReviewResultMode.None) return;
+        Playhead = initialPlayhead;
+        ResultMode = ReviewResultMode.AudioCandidate;
     }
 
     public void MovePlayhead(MediaTimestamp timestamp)

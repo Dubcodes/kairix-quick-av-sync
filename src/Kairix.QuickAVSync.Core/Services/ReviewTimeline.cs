@@ -2,6 +2,13 @@ using Kairix.QuickAVSync.Models;
 
 namespace Kairix.QuickAVSync.Services;
 
+public enum AutomaticEventOutcome
+{
+    Confirmed,
+    AudioCandidate,
+    Rejected
+}
+
 public static class ReviewTimeline
 {
     public static int NearestFrameIndex(IReadOnlyList<VideoFrame> frames, MediaTimestamp audioZero, double relativeMilliseconds)
@@ -20,4 +27,11 @@ public static class ReviewTimeline
         pending.SetAutoCandidate(candidate);
         return true;
     }
+
+    public static AutomaticEventOutcome ClassifyAutomaticOutcome(VisualCandidate? candidate, AudioTransient transient) =>
+        candidate is not null
+            ? AutomaticEventOutcome.Confirmed
+            : AudioCandidateClassifier.Evaluate(transient).Passed
+                ? AutomaticEventOutcome.AudioCandidate
+                : AutomaticEventOutcome.Rejected;
 }

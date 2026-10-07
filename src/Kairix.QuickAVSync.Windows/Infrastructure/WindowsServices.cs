@@ -55,6 +55,7 @@ public sealed class SettingsService(string? path = null) : IDisposable
         {
             LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName,
             AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual,
+            VisualDetector = Enum.IsDefined(value.VisualDetector) ? value.VisualDetector : VisualDetectorKind.HumanClap,
             VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), AudioSensitivity = Math.Clamp(value.AudioSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30),
             WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000),
             DetectionWidth = value.DetectionWidth is > 0 and <= 8192 ? value.DetectionWidth : 640,

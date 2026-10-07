@@ -185,14 +185,43 @@ public sealed record AudioChunk(
     public TimeSpan Duration => TimeSpan.FromSeconds((double)FrameCount / SampleRate);
 }
 
-public sealed record AudioTransient(MediaTimestamp Timestamp, float Peak, float NoiseFloor);
+public sealed record AudioTransient(
+    MediaTimestamp Timestamp,
+    float Peak,
+    float NoiseFloor,
+    float WindowRms = 0,
+    float CrestFactor = 0,
+    float PeakToNoiseRatio = 0,
+    float AttackRatio = 0);
+
+public enum VisualDetectorKind
+{
+    HumanClap,
+    FlashTestSignal
+}
+
+public sealed record VisualDetectorOption(VisualDetectorKind Kind, string Display)
+{
+    public override string ToString() => Display;
+}
+
 public sealed record VisualDetectionTrace(
     int ApproachPeakIndex,
     int FinalContactIndex,
     int PositionsAdvanced,
     double ApproachEvidence,
     double ContactEvidence,
-    double PostContactEvidence);
+    double PostContactEvidence,
+    VisualDetectorKind DetectorKind = VisualDetectorKind.HumanClap,
+    double ApproachQuality = 0,
+    double ContinuityQuality = 0,
+    double DropQuality = 0,
+    double SettleQuality = 0,
+    double CandidateMargin = 0,
+    double PreStability = 0,
+    double LumaDelta = 0,
+    double ChangedFraction = 0,
+    double OnsetQuality = 0);
 
 public sealed record VisualCandidate(
     MediaTimestamp Timestamp,
@@ -378,6 +407,7 @@ public sealed class AppSettings
     public bool AutoDetect { get; set; } = true;
     public bool AutoSpike { get; set; } = true;
     public bool AutoVisual { get; set; } = true;
+    public VisualDetectorKind VisualDetector { get; set; } = VisualDetectorKind.HumanClap;
     public int VisualSensitivity { get; set; } = 50;
     public int AudioSensitivity { get; set; } = 50;
     public double RollingBufferSeconds { get; set; } = 5;
