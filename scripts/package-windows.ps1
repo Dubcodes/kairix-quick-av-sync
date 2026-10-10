@@ -22,12 +22,9 @@ $packageDirectory = Join-Path $repositoryRoot 'artifacts/package'
 $zipStagingDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "kairix-$BuildId-$PID"
 
 $selfContainedSource = Join-Path $publishRoot 'self-contained/Kairix.QuickAVSync.exe'
-$frameworkDependentSource = Join-Path $publishRoot 'framework-dependent/Kairix.QuickAVSync.exe'
 $selfContainedName = "Kairix.QuickAVSync-$BuildId-win-x64.exe"
-$frameworkDependentName = "Kairix.QuickAVSync-$BuildId-win-x64-framework-dependent.exe"
 $zipName = "Kairix-Quick-AV-Sync-$BuildId-win-x64.zip"
 $selfContainedAsset = Join-Path $packageDirectory $selfContainedName
-$frameworkDependentAsset = Join-Path $packageDirectory $frameworkDependentName
 $zipAsset = Join-Path $packageDirectory $zipName
 $checksumAsset = Join-Path $packageDirectory 'SHA256SUMS.txt'
 
@@ -60,25 +57,18 @@ try {
     & dotnet publish $project '-p:PublishProfile=win-x64-self-contained' @commonProperties
     if ($LASTEXITCODE -ne 0) { throw "Self-contained publish failed with exit code $LASTEXITCODE." }
 
-    & dotnet publish $project '-p:PublishProfile=win-x64-framework-dependent' @commonProperties
-    if ($LASTEXITCODE -ne 0) { throw "Framework-dependent publish failed with exit code $LASTEXITCODE." }
-
-    foreach ($publishedExecutable in @($selfContainedSource, $frameworkDependentSource)) {
-        if (-not (Test-Path -LiteralPath $publishedExecutable -PathType Leaf) -or
-            (Get-Item -LiteralPath $publishedExecutable).Length -le 0) {
-            throw "Published executable is missing or empty: $publishedExecutable"
-        }
+    if (-not (Test-Path -LiteralPath $selfContainedSource -PathType Leaf) -or
+        (Get-Item -LiteralPath $selfContainedSource).Length -le 0) {
+        throw "Published executable is missing or empty: $selfContainedSource"
     }
 
     Copy-Item -LiteralPath $selfContainedSource -Destination $selfContainedAsset
-    Copy-Item -LiteralPath $frameworkDependentSource -Destination $frameworkDependentAsset
     Copy-Item -LiteralPath $selfContainedAsset -Destination (Join-Path $zipStagingDirectory $selfContainedName)
-    Copy-Item -LiteralPath $frameworkDependentAsset -Destination (Join-Path $zipStagingDirectory $frameworkDependentName)
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $zipStagingDirectory
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $zipStagingDirectory
     Compress-Archive -Path (Join-Path $zipStagingDirectory '*') -DestinationPath $zipAsset -Force
 
-    $publicAssets = @($selfContainedAsset, $frameworkDependentAsset, $zipAsset)
+    $publicAssets = @($selfContainedAsset, $zipAsset)
     $checksumLines = foreach ($asset in $publicAssets) {
         if (-not (Test-Path -LiteralPath $asset -PathType Leaf) -or (Get-Item -LiteralPath $asset).Length -le 0) {
             throw "Package asset is missing or empty: $asset"

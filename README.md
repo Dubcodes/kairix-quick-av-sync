@@ -8,15 +8,15 @@ Kairix Quick A/V Sync is a small Windows 10/11 utility for measuring the timing 
 
 ### Recommended
 
-**Kairix Quick A/V Sync v0.1.0-alpha** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v0.1.0-alpha/Kairix.QuickAVSync-v0.1.0-alpha-win-x64.exe) — **recommended for most users**.
+**Kairix Quick A/V Sync v0.1.1-alpha** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v0.1.1-alpha/Kairix.QuickAVSync-v0.1.1-alpha-win-x64.exe) — **RECOMMENDED for most users**.
 
-This is the deliberately conservative public download. It remains recommended while newer builds receive practical testing.
+This is the deliberately conservative, physically tested public alpha download. It was validated with a Logitech HD Pro Webcam C920 at 1920×1080 30p NV12 with its paired microphone. Broad capture-device compatibility remains under development.
 
 ### Latest development
 
 **Latest Development Build** — [open the newest public development prerelease](https://github.com/Dubcodes/kairix-quick-av-sync/releases) and choose the self-contained `dev-YYYYMMDD-<commit>-win-x64.exe` asset.
 
-Development builds are built from validated current `main`, identify their exact source commit, and contain the newest changes. They may be less stable or include recently changed or unfinished functionality. Use the recommended release above when stability is more important. Both the self-contained EXE and a smaller framework-dependent EXE are provided publicly; at least the five newest successful development builds remain available for rollback.
+Development builds contain newer experimental work and identify their exact source commit. They may be less reliable or include recently changed or unfinished functionality. Testers can use the releases page above, but ordinary users should choose the recommended release.
 
 The self-contained EXE needs no separate .NET installation or installer. Administrator rights are not normally expected, although Windows privacy settings and capture-device drivers still control hardware access. This is an unsigned public alpha, so Windows SmartScreen may show an **Unknown Publisher** warning. Download builds only from this repository's Releases page. Hardware compatibility remains under active testing.
 
