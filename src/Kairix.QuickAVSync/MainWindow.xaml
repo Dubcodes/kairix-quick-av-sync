@@ -58,7 +58,11 @@
               <TextBlock Text="RUNTIME HEALTH" Style="{StaticResource SectionLabelStyle}"/><TextBlock Text="{Binding RuntimeHealthText}" FontFamily="Consolas" FontSize="10"/><TextBlock Text="VIDEO TIMING" Style="{StaticResource SectionLabelStyle}"/><TextBlock Text="{Binding AboutTimingDiagnosticsText}" FontFamily="Consolas" FontSize="10"/><TextBlock Text="{Binding ContentWarningText}" Foreground="{DynamicResource WarningBrush}" FontSize="10" Margin="0,5,0,0"/>
               <TextBlock Text="FIELD RECONSTRUCTION" Style="{StaticResource SectionLabelStyle}"/><TextBlock Text="{Binding FieldReconstructionAboutText}" Foreground="{DynamicResource SecondaryTextBrush}" FontSize="10"/>
               <TextBlock Text="LAST DETECTED EVENT" Style="{StaticResource SectionLabelStyle}"/><TextBlock Text="{Binding LastEventDiagnosticsText}" FontFamily="Consolas" FontSize="9"/>
-              <Button Content="☕  Buy me a coffee" Command="{Binding CoffeeCommand}" Opacity="0.78" FontSize="11" Margin="0,12,0,4"/>
+              <WrapPanel Margin="0,12,0,0" AutomationProperties.Name="Project links">
+                <Button Content="Buy me a coffee" Command="{Binding CoffeeCommand}" AutomationProperties.AutomationId="BuyMeACoffeeLink" Opacity="0.82" FontSize="10" Padding="7,4" Margin="0,0,6,6"/>
+                <Button Content="GitHub" Command="{Binding GitHubCommand}" AutomationProperties.AutomationId="GitHubLink" Opacity="0.82" FontSize="10" Padding="7,4" Margin="0,0,6,6"/>
+                <Button Content="Project website" Command="{Binding ProjectWebsiteCommand}" AutomationProperties.AutomationId="ProjectWebsiteLink" Opacity="0.82" FontSize="10" Padding="7,4" Margin="0,0,6,6"/>
+              </WrapPanel>
             </StackPanel></ScrollViewer></TabItem>
           </TabControl>
         </Grid>

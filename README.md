@@ -8,7 +8,7 @@ Kairix Quick A/V Sync is a small Windows 10/11 utility for measuring the timing 
 
 ### Recommended
 
-**Kairix Quick A/V Sync v0.1.1-alpha** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v0.1.1-alpha/Kairix.QuickAVSync-v0.1.1-alpha-win-x64.exe) — **RECOMMENDED for most users**.
+**Kairix Quick A/V Sync v0.1.2-alpha** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v0.1.2-alpha/Kairix.QuickAVSync-v0.1.2-alpha-win-x64.exe) — **RECOMMENDED for most users**.
 
 This is the deliberately conservative, physically tested public alpha download. It was validated with a Logitech HD Pro Webcam C920 at 1920×1080 30p NV12 with its paired microphone. Broad capture-device compatibility remains under development.
 

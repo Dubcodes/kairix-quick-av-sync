@@ -146,6 +146,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand MarkVisualCommand { get; }
     public ICommand JumpAutoCommand { get; }
     public ICommand CoffeeCommand { get; }
+    public ICommand GitHubCommand { get; }
+    public ICommand ProjectWebsiteCommand { get; }
     public ICommand ToggleSettingsCommand { get; }
     public ICommand ResetVideoTimingOffsetCommand { get; }
     public ICommand StepAudioPreviousCommand { get; }
@@ -168,7 +170,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         StepNextCommand = new RelayCommand(_ => Step(1));
         MarkVisualCommand = new RelayCommand(_ => MarkVisual());
         JumpAutoCommand = new RelayCommand(_ => JumpToAuto());
-        CoffeeCommand = new RelayCommand(_ => OpenCoffee(), _ => !string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl));
+        CoffeeCommand = ExternalLinkCommand(AppConstants.BuyMeACoffeeUrl);
+        GitHubCommand = ExternalLinkCommand(AppConstants.GitHubUrl);
+        ProjectWebsiteCommand = ExternalLinkCommand(AppConstants.ProjectWebsiteUrl);
         ToggleSettingsCommand = new RelayCommand(_ => IsSettingsPanelExpanded = !IsSettingsPanelExpanded);
         ResetVideoTimingOffsetCommand = new RelayCommand(_ => ResetVideoTimingOffset());
         StepAudioPreviousCommand = new RelayCommand(_ => StepAudio(-1));
@@ -1011,7 +1015,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private static string FormatAge(double milliseconds) => milliseconds < 0 ? "n/a" : $"{milliseconds:0} ms";
     private static double Gb(ulong bytes) => bytes / 1024d / 1024 / 1024;
     private void SaveSettings(bool immediate = false) { try { if (immediate) _settingsService.Save(_settings); else _settingsService.ScheduleSave(_settings); } catch (Exception ex) { _log.Write($"Settings save failed: {ex.Message}"); } }
-    private static void OpenCoffee() { if (!string.IsNullOrWhiteSpace(AppConstants.BuyMeACoffeeUrl)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppConstants.BuyMeACoffeeUrl) { UseShellExecute = true }); }
+    private RelayCommand ExternalLinkCommand(string url) => new(_ => OpenExternalUrl(url), _ => !string.IsNullOrWhiteSpace(url));
+    private void OpenExternalUrl(string url) => ExternalUrlLauncher.TryOpen(url, log: message => _log.Write("external.link", message));
     private static string DescribeTiming(TimingQuality quality) => quality switch { TimingQuality.DeviceHardware => "DEVICE/QPC TIMESTAMPS", TimingQuality.PlatformCaptureClock => "PLATFORM CAPTURE CLOCK", TimingQuality.ClockCorrelated => "CLOCKS CORRELATED", TimingQuality.StreamTimestamp => "STREAM TIMESTAMPS", TimingQuality.ArrivalFallback => "TIMING DEGRADED · ARRIVAL", _ => "TIMING DOMAINS UNRELATED" };
     private static string PairedRepeatWarning(double timestampRate, double? uniqueRate) => $"REPEATED FRAME PAIRS DETECTED · {timestampRate:0.##} timestamped fps · ≈{uniqueRate:0.##} unique images/sec · if this is an interlaced source, try half-rate progressive capture with field reconstruction";
     private static string FieldLabel(VideoFrame frame) => frame.TemporalImageKind switch { TemporalImageKind.TopField => "TOP FIELD", TemporalImageKind.BottomField => "BOTTOM FIELD", _ => "FRAME" };

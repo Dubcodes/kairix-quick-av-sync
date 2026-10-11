@@ -724,6 +724,17 @@ public sealed class OperatorUiContractTests
     }
 
     [Fact]
+    public void AboutShowsCompactProjectLinksWithStableAutomationIds()
+    {
+        Assert.Contains("<WrapPanel", Ui);
+        foreach (var id in new[] { "BuyMeACoffeeLink", "GitHubLink", "ProjectWebsiteLink" })
+            Assert.Contains($"AutomationProperties.AutomationId=\"{id}\"", Ui);
+        Assert.Contains("Content=\"Buy me a coffee\" Command=\"{Binding CoffeeCommand}\"", Ui);
+        Assert.Contains("Content=\"GitHub\" Command=\"{Binding GitHubCommand}\"", Ui);
+        Assert.Contains("Content=\"Project website\" Command=\"{Binding ProjectWebsiteCommand}\"", Ui);
+    }
+
+    [Fact]
     public void ReviewControlsHaveRequiredOrderAndAvailability()
     {
         var labels = new[] { "Pre A", "Pre V", "Mark Visual", "Nxt V", "Nxt A", "Live View" };
@@ -747,6 +758,46 @@ public sealed class OperatorUiContractTests
         var path = Path.Combine(Path.GetTempPath(), $"kairix-style-{Guid.NewGuid():N}.json");
         try { using var service = new SettingsService(path); service.Save(new() { AudioDisplayStyle = style }); Assert.Equal(style, service.Load().AudioDisplayStyle); }
         finally { if (File.Exists(path)) File.Delete(path); }
+    }
+}
+
+public sealed class ExternalProjectLinkTests
+{
+    [Fact]
+    public void CommandsAndExactUrlsAreExposed()
+    {
+        Assert.Equal("https://buymeacoffee.com/dubcodes", AppConstants.BuyMeACoffeeUrl);
+        Assert.Equal("https://github.com/Dubcodes/kairix-quick-av-sync", AppConstants.GitHubUrl);
+        Assert.Equal("https://www.dubcodesmedia.com/kairix/kairix-av-sync", AppConstants.ProjectWebsiteUrl);
+        foreach (var command in new[] { "CoffeeCommand", "GitHubCommand", "ProjectWebsiteCommand" })
+            Assert.NotNull(typeof(MainViewModel).GetProperty(command));
+    }
+
+    [Theory]
+    [InlineData("https://buymeacoffee.com/dubcodes")]
+    [InlineData("https://github.com/Dubcodes/kairix-quick-av-sync")]
+    [InlineData("https://www.dubcodesmedia.com/kairix/kairix-av-sync")]
+    public void EveryProjectLinkUsesTheDefaultBrowserShellPath(string url)
+    {
+        System.Diagnostics.ProcessStartInfo? observed = null;
+        Assert.True(ExternalUrlLauncher.TryOpen(url, info => observed = info));
+        Assert.NotNull(observed);
+        Assert.Equal(url, observed!.FileName);
+        Assert.True(observed.UseShellExecute);
+    }
+
+    [Fact]
+    public void BrowserLaunchFailureIsReportedWithoutEscaping()
+    {
+        string? message = null;
+        var opened = ExternalUrlLauncher.TryOpen(
+            AppConstants.GitHubUrl,
+            _ => throw new InvalidOperationException("test failure"),
+            value => message = value);
+
+        Assert.False(opened);
+        Assert.Contains("test failure", message);
+        Assert.Contains(AppConstants.GitHubUrl, message);
     }
 }
 
