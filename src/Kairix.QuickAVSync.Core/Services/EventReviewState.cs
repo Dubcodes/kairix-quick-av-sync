@@ -7,6 +7,7 @@ public enum ReviewResultMode
     None,
     AudioCandidate,
     Auto,
+    HistoryReview,
     ManualPreview,
     ManualResult
 }
@@ -44,7 +45,7 @@ public sealed class EventReviewState
         {
             var visual = ResultMode switch
             {
-                ReviewResultMode.Auto => AutoCandidate?.Timestamp,
+                ReviewResultMode.Auto or ReviewResultMode.HistoryReview => AutoCandidate?.Timestamp,
                 ReviewResultMode.ManualPreview => Playhead,
                 ReviewResultMode.ManualResult => ManualVisualMark,
                 _ => null
@@ -59,7 +60,7 @@ public sealed class EventReviewState
         {
             var visual = ResultMode switch
             {
-                ReviewResultMode.Auto => AutoCandidate?.Timestamp,
+                ReviewResultMode.Auto or ReviewResultMode.HistoryReview => AutoCandidate?.Timestamp,
                 ReviewResultMode.ManualPreview => Playhead,
                 ReviewResultMode.ManualResult => ManualVisualMark,
                 _ => null
@@ -87,6 +88,14 @@ public sealed class EventReviewState
         if (ResultMode != ReviewResultMode.None) return;
         Playhead = initialPlayhead;
         ResultMode = ReviewResultMode.AudioCandidate;
+    }
+
+    public void SetHistoryCandidate(VisualCandidate candidate)
+    {
+        AutoCandidate = candidate;
+        Playhead = candidate.Timestamp;
+        ResultMode = ReviewResultMode.HistoryReview;
+        _finalized = true;
     }
 
     public void MovePlayhead(MediaTimestamp timestamp)

@@ -410,8 +410,64 @@ public sealed class VisualClapDetector : IVisualClapDetector
 
 public sealed class SessionHistoryService(int capacity = 3)
 {
-    private readonly int _capacity = capacity;
+    private int _capacity = NormalizeCapacity(capacity);
     private readonly LinkedList<SessionResult> _items = [];
     public IReadOnlyList<SessionResult> Items => _items.ToArray();
+    public int Capacity => _capacity;
     public void Add(SessionResult item) { _items.AddFirst(item); while (_items.Count > _capacity) _items.RemoveLast(); }
+    public void SetCapacity(int capacity) { _capacity = NormalizeCapacity(capacity); while (_items.Count > _capacity) _items.RemoveLast(); }
+    private static int NormalizeCapacity(int capacity) => capacity switch { 5 => 5, 10 => 10, _ => 3 };
+}
+
+public sealed record HistoryReviewWorkspace(
+    EventReviewState Review,
+    IReadOnlyList<VideoFrame> Frames,
+    IReadOnlyList<float> Waveform,
+    IReadOnlyList<double> FrameTicks,
+    FrameTimingAnalysis? Timeline)
+{
+    public bool RequiresHold => true;
+}
+
+public static class ReviewHistorySnapshotFactory
+{
+    public static ReviewHistorySnapshot Create(EventReviewState review, IReadOnlyList<VideoFrame> frames, IReadOnlyList<float> waveform,
+        IReadOnlyList<double> frameTicks, FrameTimingAnalysis? timeline)
+    {
+        if (review.AutoCandidate is not { } candidate) throw new ArgumentException("A confirmed automatic candidate is required.", nameof(review));
+        var compact = frames.Select(Compact).ToArray();
+        if (compact.Length == 0) throw new ArgumentException("A retained review window is required.", nameof(frames));
+        var candidateFrame = compact.FirstOrDefault(frame => frame.Timestamp == candidate.Timestamp && frame.TemporalIndex == candidate.TemporalIndex)
+            ?? compact.OrderBy(frame => Math.Abs(frame.Timestamp.Ticks100ns - candidate.Timestamp.Ticks100ns)).First();
+        var compactCandidate = candidate with { Frame = candidateFrame };
+        var waveformCopy = waveform.ToArray(); var ticksCopy = frameTicks.ToArray();
+        var bytes = compact.Sum(frame => (long)(frame.HasPresentation ? frame.PresentationBgra!.Length : frame.Luma.Length))
+            + waveformCopy.LongLength * sizeof(float) + ticksCopy.LongLength * sizeof(double);
+        return new(review.EventReference, review.AudioMark, compactCandidate, Array.AsReadOnly(compact), Array.AsReadOnly(waveformCopy),
+            Array.AsReadOnly(ticksCopy), timeline, review.VideoTimingOffset.Ticks100ns, review.VideoTimingOffset.Source, bytes);
+    }
+
+    public static HistoryReviewWorkspace Restore(ReviewHistorySnapshot snapshot)
+    {
+        var review = new EventReviewState(snapshot.EventReference, snapshot.AudioMark,
+            new(snapshot.VideoTimingOffsetTicks100ns, snapshot.VideoTimingOffsetSource));
+        review.SetHistoryCandidate(snapshot.AutoCandidate);
+        return new(review, snapshot.Frames, snapshot.Waveform, snapshot.FrameTicks, snapshot.Timeline);
+    }
+
+    private static VideoFrame Compact(VideoFrame frame)
+    {
+        if (frame.HasPresentation)
+        {
+            return frame with
+            {
+                Width = frame.PresentationWidth,
+                Height = frame.PresentationHeight,
+                Luma = [],
+                Stride = frame.PresentationWidth,
+                PresentationBgra = frame.PresentationBgra!.ToArray()
+            };
+        }
+        return frame with { Luma = frame.Luma.ToArray(), PresentationBgra = frame.PresentationBgra?.ToArray() };
+    }
 }

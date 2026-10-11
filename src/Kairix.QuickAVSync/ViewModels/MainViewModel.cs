@@ -39,6 +39,7 @@ public static class ReviewMeasurementPresentation
         {
             ReviewResultMode.AudioCandidate => "AUDIO CANDIDATE",
             ReviewResultMode.Auto => "AUTO RESULT",
+            ReviewResultMode.HistoryReview => "HISTORY REVIEW",
             ReviewResultMode.ManualPreview => "MANUAL PREVIEW",
             ReviewResultMode.ManualResult => "MANUAL RESULT",
             _ => ""
@@ -51,7 +52,7 @@ public static class ReviewMeasurementPresentation
 
     public static void EnterManualPreview(EventReviewState review)
     {
-        if (review.ResultMode is ReviewResultMode.None or ReviewResultMode.AudioCandidate or ReviewResultMode.Auto)
+        if (review.ResultMode is ReviewResultMode.None or ReviewResultMode.AudioCandidate or ReviewResultMode.Auto or ReviewResultMode.HistoryReview)
             review.MovePlayhead(review.Playhead);
     }
 }
@@ -136,6 +137,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<ThemeOption> Themes { get; } = [];
     public ObservableCollection<string> AudioDisplayStyles { get; } = ["Centered Fill", "Centered Bars", "Centered Line", "Peak Fill", "Peak Bars", "Peak Line"];
     public ObservableCollection<string> AudioDisplayAmplitudes { get; } = [WaveformDisplayTransform.AutoGain, WaveformDisplayTransform.Linear, WaveformDisplayTransform.Db60, WaveformDisplayTransform.Db96];
+    public ObservableCollection<int> SessionHistoryDepths { get; } = [3, 5, 10];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -153,10 +155,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand StepAudioPreviousCommand { get; }
     public ICommand StepAudioNextCommand { get; }
     public ICommand ToggleHoldCommand { get; }
+    public ICommand SelectHistoryCommand { get; }
 
     public MainViewModel()
     {
-        _settings = _settingsService.Load(); _transientDetector.Sensitivity = _settings.AudioSensitivity; _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
+        _settings = _settingsService.Load(); _transientDetector.Sensitivity = _settings.AudioSensitivity; _history.SetCapacity(_settings.SessionHistoryDepth); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
         _selectedVisualDetector = VisualDetectors.First(option => option.Kind == _settings.VisualDetector);
         foreach (var theme in ThemeManager.Themes) Themes.Add(theme);
         _selectedTheme = Themes.First(theme => theme.Name == ThemeManager.Normalize(_settings.Theme)); ThemeManager.Apply(_selectedTheme.Name);
@@ -178,6 +181,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         StepAudioPreviousCommand = new RelayCommand(_ => StepAudio(-1));
         StepAudioNextCommand = new RelayCommand(_ => StepAudio(1));
         ToggleHoldCommand = new RelayCommand(_ => IsHold = !IsHold, _ => IsArmEnabled);
+        SelectHistoryCommand = new RelayCommand(item => { if (item is SessionResult result) StartOwnedTask(LoadHistoryAsync(result), "history.load"); });
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current.Dispatcher);
     }
 
@@ -307,6 +311,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public bool AutoVisual { get => _settings.AutoVisual; set { if (_settings.AutoVisual != value) { _settings.AutoVisual = value; Changed(); SaveSettings(); } } }
     public int VisualSensitivity { get => Math.Clamp(_settings.VisualSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.VisualSensitivity != clamped) { _settings.VisualSensitivity = clamped; Changed(); SaveSettings(); } } }
     public int AudioSensitivity { get => Math.Clamp(_settings.AudioSensitivity, 0, 100); set { var clamped = Math.Clamp(value, 0, 100); if (_settings.AudioSensitivity != clamped) { _settings.AudioSensitivity = clamped; _transientDetector.Sensitivity = clamped; Changed(); SaveSettings(); } } }
+    public int SessionHistoryDepth
+    {
+        get => _settings.SessionHistoryDepth;
+        set
+        {
+            var normalized = value switch { 5 => 5, 10 => 10, _ => 3 };
+            if (_settings.SessionHistoryDepth == normalized) return;
+            _settings.SessionHistoryDepth = normalized; _history.SetCapacity(normalized); RefreshRecentResults(); Changed(); Changed(nameof(HistoryMemoryText)); SaveSettings();
+        }
+    }
+    public string HistoryMemoryText => $"Retains processed review windows only · {RecentResults.Sum(item => item.Snapshot?.EstimatedBytes ?? 0) / 1024d / 1024:0.0} MiB / {SessionHistoryDepth} items";
     public double RollingBufferSeconds { get => _settings.RollingBufferSeconds; set { var v = Math.Clamp(value, 1, 30); if (_settings.RollingBufferSeconds != v) { _settings.RollingBufferSeconds = v; ResizeBuffers(); Changed(); RefreshPerformanceDisplay(); SaveSettings(); } } }
     public double WorkWindowMilliseconds { get => _settings.WorkWindowMilliseconds; set { var v = Math.Clamp(value, 50, 2000); if (_settings.WorkWindowMilliseconds != v) { _settings.WorkWindowMilliseconds = v; Changed(); Changed(nameof(HalfWindow)); SaveSettings(); } } }
     public double HalfWindow => WorkWindowMilliseconds;
@@ -926,7 +941,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void FinalizeCurrentEvent()
     {
         if (_review is null || ReviewMeasurementPresentation.ExcludeInvalidAutomaticResultFromHistory(_timelineAnalysis, _review.ResultMode) || !_review.TryFinalize(out var result) || result is null) return;
-        _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence, _review.CurrentRawResult, _review.VideoTimingOffset.Milliseconds, _review.VideoTimingOffset.Source)); RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item);
+        var snapshot = _review.AutoCandidate is null ? null : ReviewHistorySnapshotFactory.Create(_review, _reviewFrames, Waveform, ReviewFrameTicks, _timelineAnalysis);
+        _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence, _review.CurrentRawResult, _review.VideoTimingOffset.Milliseconds, _review.VideoTimingOffset.Source, snapshot));
+        RefreshRecentResults();
+    }
+    private void RefreshRecentResults() { RecentResults.Clear(); foreach (var item in _history.Items) RecentResults.Add(item); Changed(nameof(HistoryMemoryText)); }
+
+    private async Task LoadHistoryAsync(SessionResult item)
+    {
+        if (item.Snapshot is not { } snapshot) return;
+        var workspace = ReviewHistorySnapshotFactory.Restore(snapshot);
+        IsHold = workspace.RequiresHold;
+        await CancelCurrentAnalysisAsync().ConfigureAwait(true); FinalizeCurrentEvent();
+        _review = workspace.Review; _reviewFrames = workspace.Frames; _timelineAnalysis = workspace.Timeline; Waveform = workspace.Waveform; ReviewFrameTicks = workspace.FrameTicks;
+        _playheadIndex = FindNearest(_reviewFrames, snapshot.AutoCandidate.Timestamp); AutoThumbnail = ToBitmap(snapshot.AutoCandidate.Frame);
+        _isReview = true; _manualReview = false; _automaticAnalysisRunning = false; Changed(nameof(IsInReview)); Status = "REVIEW · HISTORY REVIEW · HOLD";
+        ShowPlayhead(); NotifyMarkers();
     }
     private async Task CancelCurrentAnalysisAsync()
     {

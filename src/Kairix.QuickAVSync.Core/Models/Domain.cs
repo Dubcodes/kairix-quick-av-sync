@@ -398,7 +398,20 @@ public sealed record SessionResult(
     double? Confidence,
     SyncResult? RawResult = null,
     double VideoTimingOffsetMilliseconds = 0,
-    VideoTimingOffsetSource VideoTimingOffsetSource = VideoTimingOffsetSource.Automatic);
+    VideoTimingOffsetSource VideoTimingOffsetSource = VideoTimingOffsetSource.Automatic,
+    ReviewHistorySnapshot? Snapshot = null);
+
+public sealed record ReviewHistorySnapshot(
+    MediaTimestamp EventReference,
+    MediaTimestamp AudioMark,
+    VisualCandidate AutoCandidate,
+    IReadOnlyList<VideoFrame> Frames,
+    IReadOnlyList<float> Waveform,
+    IReadOnlyList<double> FrameTicks,
+    FrameTimingAnalysis? Timeline,
+    long VideoTimingOffsetTicks100ns,
+    VideoTimingOffsetSource VideoTimingOffsetSource,
+    long EstimatedBytes);
 
 public sealed class AppSettings
 {
@@ -410,6 +423,7 @@ public sealed class AppSettings
     public VisualDetectorKind VisualDetector { get; set; } = VisualDetectorKind.HumanClap;
     public int VisualSensitivity { get; set; } = 50;
     public int AudioSensitivity { get; set; } = 50;
+    public int SessionHistoryDepth { get; set; } = 3;
     public double RollingBufferSeconds { get; set; } = 5;
     public double WorkWindowMilliseconds { get; set; } = 300;
     public int DetectionWidth { get; set; } = 640;
