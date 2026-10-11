@@ -14,6 +14,8 @@ public sealed class ReleasePackagingContractTests
         Assert.Contains("[ValidateSet('Release', 'Development')]", script);
         Assert.Contains("artifacts/staging", script);
         Assert.DoesNotContain("GetTempPath", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("--no-restore", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("-p:NuGetAudit=false", script);
         Assert.Contains("Kairix.QuickAVSync-$BuildId-win-x64.exe", script);
         Assert.Contains("Kairix-Quick-AV-Sync-$BuildId-win-x64.zip", script);
         Assert.Contains("Kairix-AV-Sync-Test-Signal.html", script);

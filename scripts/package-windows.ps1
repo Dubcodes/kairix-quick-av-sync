@@ -56,7 +56,6 @@ try {
     }
 
     $commonProperties = @(
-        '--no-restore',
         '-p:NuGetAudit=false',
         "-p:BuildId=$BuildId",
         "-p:SourceCommit=$SourceCommit",
