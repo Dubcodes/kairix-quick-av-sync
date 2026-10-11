@@ -524,9 +524,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _suppressInterpretationChanges = true;
         try
         {
-            var modes = NativeModes().ToList();
-            if (preferred is not null && !modes.Any(option => SameNativeFormat(option.Format!, preferred)))
-                modes.Add(new CaptureFormatOption("__negotiated__", NativeFormatDisplay(preferred), preferred));
+            var modes = preferred is null
+                ? NativeModes().ToList()
+                : [new CaptureFormatOption("__active_transport__", NativeFormatDisplay(preferred), preferred)];
             var priorResolution = preferred is null ? SelectedResolution : new ResolutionOption(preferred.Width, preferred.Height);
             Resolutions.Clear();
             foreach (var resolution in modes.Select(mode => new ResolutionOption(mode.Format!.Width, mode.Format.Height)).Distinct().OrderByDescending(value => value.Width * value.Height)) Resolutions.Add(resolution);
@@ -552,22 +552,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             }
             var savedOrder = SelectedDevice is { } device && _settings.ReconstructionFieldOrderByDevice.GetValueOrDefault(device.Id) == "bottom" ? FieldOrder.BottomFirst : FieldOrder.TopFirst;
             SelectedInterpretationFormat = CaptureFormatCatalog.SelectInterpretation(InterpretationFormats, preferred, priorFormat, _legacyReconstructionRequested, savedOrder);
-            RebuildPixelFormats(preferred?.PixelFormat);
+            RebuildPixelFormats(preferred);
         }
         finally { _suppressInterpretationChanges = false; }
     }
 
-    private void RebuildPixelFormats(VideoPixelFormat? preferred = null)
+    private void RebuildPixelFormats(CaptureFormat? preferred = null)
     {
-        var prior = preferred ?? SelectedPixelFormat?.Value;
+        var prior = preferred?.PixelFormat ?? SelectedPixelFormat?.Value;
         _suppressInterpretationChanges = true;
         try
         {
             PixelFormats.Clear();
             if (SelectedResolution is not null && SelectedInterpretationFormat is not null)
             {
-                foreach (var pixel in NativeModes().Where(mode => MatchesSelection(mode.Format!)).Select(mode => mode.Format!.PixelFormat).Distinct()) PixelFormats.Add(new(pixel));
-                if (PixelFormats.Count == 0 && preferred is { } negotiatedPixel) PixelFormats.Add(new(negotiatedPixel));
+                if (preferred is not null) PixelFormats.Add(new(preferred.PixelFormat));
+                else foreach (var pixel in NativeModes().Where(mode => MatchesSelection(mode.Format!)).Select(mode => mode.Format!.PixelFormat).Distinct()) PixelFormats.Add(new(pixel));
             }
             SelectedPixelFormat = PixelFormats.FirstOrDefault(value => value.Value == prior) ?? PixelFormats.FirstOrDefault();
         }

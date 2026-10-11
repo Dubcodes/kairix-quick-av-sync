@@ -1,7 +1,10 @@
 using System.IO;
 using System.Runtime.ExceptionServices;
+using System.Collections.ObjectModel;
 using Kairix.QuickAVSync.Capture;
+using Kairix.QuickAVSync.Controls;
 using Kairix.QuickAVSync.Models;
+using Kairix.QuickAVSync.Services;
 using Kairix.QuickAVSync.ViewModels;
 using Kairix.QuickAVSync.Windows.Infrastructure;
 
@@ -38,6 +41,54 @@ public sealed class CaptureModeAndAudioUiTests
             Assert.True(service.Load().ShowAllCaptureModes);
         }
         finally { Directory.Delete(directory, true); }
+    }
+
+    [Fact]
+    public void InterpretationTracksOnlyTheSelectedOrNegotiatedTransport()
+    {
+        RunSta(async () =>
+        {
+            var directory = TestDirectory();
+            try
+            {
+                var backend = new FakeCaptureBackend();
+                await using var viewModel = CreateViewModel(directory, backend);
+                await viewModel.InitializeAsync();
+
+                Assert.Equal(CaptureFormatOption.Auto, viewModel.SelectedCaptureFormat);
+                Assert.Equal(["25p", "25p → 50i · Top first", "25p → 50i · Bottom first"], viewModel.InterpretationFormats.Select(value => value.ToString()));
+
+                viewModel.SelectedCaptureFormat = viewModel.CaptureModes.Single(option => option.Id == FakeCaptureBackend.Thirty.Id);
+                Assert.Equal(["30p"], viewModel.InterpretationFormats.Select(value => value.ToString()));
+                Assert.DoesNotContain(viewModel.InterpretationFormats, value => value.TransportRate == Rational.From(25) || value.TransportRate == Rational.From(15));
+
+                viewModel.SelectedCaptureFormat = viewModel.CaptureModes.Single(option => option.Id == FakeCaptureBackend.Recommended.Id);
+                Assert.Equal(["25p", "25p → 50i · Top first", "25p → 50i · Bottom first"], viewModel.InterpretationFormats.Select(value => value.ToString()));
+                Assert.Equal(FakeCaptureBackend.Recommended.Id, viewModel.SelectedCaptureFormat.Id);
+                viewModel.SelectedInterpretationFormat = viewModel.InterpretationFormats.Last();
+                Assert.Equal(FakeCaptureBackend.Recommended.Id, viewModel.SelectedCaptureFormat.Id);
+            }
+            finally { Directory.Delete(directory, true); }
+        });
+    }
+
+    [Fact]
+    public void HistoryTrendGraphBindsDirectlyToTheBoundedHistoryCollection()
+    {
+        Assert.Contains("AutomationProperties.AutomationId=\"HistoryTrendGraph\"", Ui);
+        Assert.Contains("ItemsSource=\"{Binding RecentResults}\"", Ui);
+        RunSta(() =>
+        {
+            var history = new ObservableCollection<SessionResult>();
+            var graph = new HistoryTrendGraph { ItemsSource = history };
+            Assert.Same(history, graph.ItemsSource);
+            Assert.Empty(HistoryTrendSeries.Build(history));
+            history.Add(new(DateTime.UtcNow, new(7, "test"), null));
+            Assert.Single(HistoryTrendSeries.Build(history));
+            history.Clear();
+            Assert.Empty(HistoryTrendSeries.Build(history));
+            return Task.CompletedTask;
+        });
     }
 
     [Fact]
@@ -145,8 +196,10 @@ public sealed class CaptureModeAndAudioUiTests
     private sealed class FakeCaptureBackend : ICaptureBackend, ICaptureFormatProvider
     {
         private static readonly CaptureFormat RecommendedFormat = new(1920, 1080, Rational.From(25), ScanMode.Progressive, FieldOrder.Unknown, 48_000, VideoPixelFormat.Yuy2);
+        private static readonly CaptureFormat ThirtyFormat = new(1920, 1080, Rational.From(30), ScanMode.Progressive, FieldOrder.Unknown, 48_000, VideoPixelFormat.Nv12);
         private static readonly CaptureFormat AdvancedFormat = new(1920, 1080, Rational.From(15), ScanMode.Progressive, FieldOrder.Unknown, 48_000, VideoPixelFormat.Yuy2);
         public static readonly CaptureFormatOption Recommended = new("recommended", "1920×1080 · 25.000p · YUY2", RecommendedFormat);
+        public static readonly CaptureFormatOption Thirty = new("thirty", "1920×1080 · 30.000p · NV12", ThirtyFormat);
         public static readonly CaptureFormatOption Advanced = new("advanced", "1920×1080 · 15.000p · YUY2", AdvancedFormat);
         public string Id => "fake";
         public CaptureOpenOptions? LastOptions { get; private set; }
@@ -154,11 +207,11 @@ public sealed class CaptureModeAndAudioUiTests
         public Task<IReadOnlyList<CaptureDeviceDescriptor>> EnumerateDevicesAsync(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<CaptureDeviceDescriptor>>([new("fake-device", "Fake Capture", CaptureDeviceKind.ExternalCapture, Id)]);
         public Task<IReadOnlyList<CaptureFormatOption>> EnumerateFormatsAsync(CaptureDeviceDescriptor device, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<CaptureFormatOption>>([Recommended, Advanced]);
+            Task.FromResult<IReadOnlyList<CaptureFormatOption>>([Recommended, Thirty, Advanced]);
         public Task<ICaptureSession> OpenAsync(CaptureDeviceDescriptor device, CaptureOpenOptions options, CancellationToken cancellationToken)
         {
             LastOptions = options;
-            var format = options.PreferredNativeFormatId == Advanced.Id ? AdvancedFormat : RecommendedFormat;
+            var format = options.PreferredNativeFormatId switch { "advanced" => AdvancedFormat, "thirty" => ThirtyFormat, _ => RecommendedFormat };
             return Task.FromResult<ICaptureSession>(new FakeCaptureSession(format));
         }
     }

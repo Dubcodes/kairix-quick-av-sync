@@ -41,6 +41,26 @@ public sealed record AudioLevelReading(
     int Channels,
     int AggregatedChunks);
 
+public readonly record struct HistoryTrendPoint(int Position, int TotalPositions, double Milliseconds, bool IsNewest);
+
+public static class HistoryTrendSeries
+{
+    public const int MaximumPoints = 10;
+
+    public static IReadOnlyList<HistoryTrendPoint> Build(IEnumerable<SessionResult> newestFirst)
+    {
+        var retained = newestFirst.Take(MaximumPoints).Reverse().ToArray();
+        var points = new List<HistoryTrendPoint>(retained.Length);
+        for (var position = 0; position < retained.Length; position++)
+        {
+            var result = retained[position].Result;
+            if (!result.TimingComparable || !double.IsFinite(result.SignedMilliseconds)) continue;
+            points.Add(new(position, retained.Length, result.SignedMilliseconds, position == retained.Length - 1));
+        }
+        return points;
+    }
+}
+
 public sealed class AudioLevelAccumulator
 {
     public const double FloorDbfs = -60;

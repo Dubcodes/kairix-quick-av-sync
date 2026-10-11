@@ -74,8 +74,54 @@ public sealed class LiveOperatorServicesTests
         Assert.Equal(1, AudioLevelAccumulator.Normalize(0));
     }
 
+    [Fact]
+    public void HistoryTrendIsBoundedChronologicalAndPreservesSignedValues()
+    {
+        var newestFirst = Enumerable.Range(0, 12)
+            .Select(index => Result(index % 2 == 0 ? index : -index))
+            .ToArray();
+
+        var points = HistoryTrendSeries.Build(newestFirst);
+
+        Assert.Equal(HistoryTrendSeries.MaximumPoints, points.Count);
+        Assert.Equal(-9, points[0].Milliseconds);
+        Assert.Equal(0, points[^1].Milliseconds);
+        Assert.True(points[^1].IsNewest);
+        Assert.Contains(points, point => point.Milliseconds > 0);
+        Assert.Contains(points, point => point.Milliseconds < 0);
+    }
+
+    [Fact]
+    public void HistoryTrendOmitsInvalidValuesWithoutInventingZeroAndShrinksWithHistory()
+    {
+        SessionResult[] history =
+        [
+            Result(double.NaN),
+            Result(12, comparable: false),
+            Result(-8)
+        ];
+
+        var points = HistoryTrendSeries.Build(history);
+
+        var point = Assert.Single(points);
+        Assert.Equal(-8, point.Milliseconds);
+        Assert.Equal(0, point.Position);
+        Assert.Equal(3, point.TotalPositions);
+        Assert.Empty(HistoryTrendSeries.Build([]));
+        Assert.Single(HistoryTrendSeries.Build(history.TakeLast(1)));
+    }
+
+    [Fact]
+    public void HistoryTrendPointsCannotRetainReviewSnapshotsOrMedia()
+    {
+        Assert.DoesNotContain(typeof(HistoryTrendPoint).GetProperties(), property =>
+            property.PropertyType == typeof(ReviewHistorySnapshot) || property.Name.Contains("Snapshot", StringComparison.Ordinal));
+    }
+
     private static CaptureFormat Format(int rate) => new(1920, 1080, Rational.From(rate), ScanMode.Progressive, FieldOrder.Unknown, 48_000, VideoPixelFormat.Yuy2);
     private static AudioChunk Chunk(float[] samples, int channels) => new(new MediaTimestamp(0, TimingQuality.StreamTimestamp), samples, 48_000, channels);
     private static ObservedSignalAnalysis Analysis(InputSignalInfo signal, bool sceneActivity, bool pairedRepeat, double? uniqueRate) =>
         new(signal, 50, 20, 0, .5, "AABB", 0, 100, 2, sceneActivity, pairedRepeat, uniqueRate);
+    private static SessionResult Result(double milliseconds, bool comparable = true) =>
+        new(DateTime.UtcNow, new(milliseconds, "test", comparable), null);
 }
