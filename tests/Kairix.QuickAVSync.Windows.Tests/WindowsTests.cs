@@ -8,6 +8,8 @@ using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -743,7 +745,8 @@ public sealed class OperatorUiContractTests
         Assert.Contains("Content=\"Mark Visual\" Command=\"{Binding MarkVisualCommand}\" IsEnabled=\"{Binding IsInReview}\"", Ui);
         Assert.Contains("Command=\"{Binding JumpAutoCommand}\"", Ui);
         Assert.DoesNotContain("{Binding ViewerStateText}", Ui);
-        Assert.Contains("A           Mark audio at playhead", Ui);
+        Assert.Contains("Text=\"A\"", Ui);
+        Assert.Contains("Text=\"Mark audio at playhead\"", Ui);
     }
 
     [Theory]
@@ -891,6 +894,12 @@ public sealed class ThemedControlRenderingTests
                 combo.ApplyTemplate(); text.ApplyTemplate(); button.ApplyTemplate(); check.ApplyTemplate(); slider.ApplyTemplate();
                 Assert.NotNull(combo.Template);
                 Assert.NotNull(combo.Template.FindName("PART_Popup", combo));
+                var dropDownToggle = Assert.IsType<ToggleButton>(FindVisualChild<ToggleButton>(combo));
+                Assert.Equal(2, Grid.GetColumnSpan(dropDownToggle));
+                var dropDownBinding = BindingOperations.GetBinding(dropDownToggle, ToggleButton.IsCheckedProperty);
+                Assert.NotNull(dropDownBinding);
+                Assert.Equal("IsDropDownOpen", dropDownBinding.Path.Path);
+                Assert.Equal(BindingMode.TwoWay, dropDownBinding.Mode);
                 Assert.NotNull(text.Template.FindName("PART_ContentHost", text));
                 combo.IsDropDownOpen = true; combo.IsDropDownOpen = false; combo.IsEnabled = false;
                 Assert.False(combo.IsEnabled);
@@ -906,5 +915,17 @@ public sealed class ThemedControlRenderingTests
         var thread = new Thread(() => { try { action(); } catch (Exception failure) { exception = failure; } }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
         if (exception is not null) ExceptionDispatchInfo.Capture(exception).Throw();
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match) return match;
+            if (FindVisualChild<T>(child) is { } descendant) return descendant;
+        }
+
+        return null;
     }
 }

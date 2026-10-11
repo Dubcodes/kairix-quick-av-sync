@@ -55,6 +55,8 @@ public sealed class HistorySettingsAndUiTests
         Assert.Contains("Command=\"{Binding DataContext.SelectHistoryCommand, RelativeSource={RelativeSource AncestorType=Window}}\"", ui);
         Assert.Contains("CommandParameter=\"{Binding}\"", ui);
         Assert.Contains("Hold automatic detection and review this retained event", ui);
+        Assert.Contains("Select an event to reopen its retained review", ui);
+        Assert.Contains("Text=\"OPEN  ›\"", ui);
         Assert.Contains("Command=\"{Binding ResumeLiveCommand}\"", ui);
         Assert.Equal(typeof(ICommand), typeof(MainViewModel).GetProperty(nameof(MainViewModel.SelectHistoryCommand))!.PropertyType);
     }
