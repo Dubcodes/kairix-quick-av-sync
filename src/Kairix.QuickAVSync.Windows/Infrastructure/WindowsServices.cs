@@ -98,9 +98,9 @@ public sealed class MemoryStatusService
     }
 }
 
-public sealed class AppLogger : IDiagnosticSink
+public sealed class AppLogger(string? path = null) : IDiagnosticSink
 {
-    private readonly string _path = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairix", "QuickAVSync", "logs", "current.log");
+    private readonly string _path = path ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairix", "QuickAVSync", "logs", "current.log");
     private readonly object _gate = new();
     public string Path => _path;
     public void Write(string message) => Write("app", message);

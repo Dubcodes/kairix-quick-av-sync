@@ -47,19 +47,6 @@ public sealed class ManualReviewTimingPresentationTests
     }
 
     [Fact]
-    public void InvalidTimelineHistoryPolicyDoesNotControlResultPresentation()
-    {
-        var review = ReviewWithAuto(80);
-        Assert.True(ReviewMeasurementPresentation.ExcludeInvalidAutomaticResultFromHistory(InvalidTimeline, review.ResultMode));
-        Assert.Equal("AUDIO LEADS VIDEO BY 80 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
-
-        ReviewMeasurementPresentation.EnterManualPreview(review);
-
-        Assert.False(ReviewMeasurementPresentation.ExcludeInvalidAutomaticResultFromHistory(InvalidTimeline, review.ResultMode));
-        Assert.Equal("AUDIO LEADS VIDEO BY 80 ms", ReviewMeasurementPresentation.ResultText(InvalidTimeline, review));
-    }
-
-    [Fact]
     public void ManualClapSelectedPointsImmediatelyProducePreviewOnInvalidTimeline()
     {
         var review = new EventReviewState(T(0), T(0));
@@ -157,12 +144,168 @@ public sealed class ManualReviewTimingPresentationTests
     private static MediaTimestamp T(double milliseconds) => new((long)Math.Round(milliseconds * 10_000), TimingQuality.StreamTimestamp);
 }
 
+public sealed class MainViewModelHistoryIntegrationTests
+{
+    [Fact]
+    public void AcceptedNormalAutomaticEventIsRetainedByTheViewModelPath() => RunSta(async () =>
+    {
+        var (viewModel, directory) = CreateViewModel();
+        try
+        {
+            var scenario = AutomaticScenario(validTimeline: true, eventTicks: 0);
+            FinalizeThroughViewModel(viewModel, scenario);
+
+            var retained = Assert.Single(viewModel.RecentResults);
+            Assert.NotNull(retained.Snapshot);
+            Assert.True(retained.Snapshot!.Timeline!.TimingValid);
+            Assert.Equal(scenario.Review.CurrentResult, retained.Result);
+            Assert.Equal(.91, retained.Confidence);
+        }
+        finally { await viewModel.DisposeAsync(); Directory.Delete(directory, true); }
+    });
+
+    [Fact]
+    public void ThreeTimingWarningAutomaticEventsRemainVisibleInBoundedHistory() => RunSta(async () =>
+    {
+        var (viewModel, directory) = CreateViewModel();
+        try
+        {
+            for (var index = 0; index < 3; index++) FinalizeThroughViewModel(viewModel, AutomaticScenario(validTimeline: false, eventTicks: index * 1_000_000));
+
+            Assert.Equal(3, viewModel.RecentResults.Count);
+            Assert.All(viewModel.RecentResults, retained => Assert.False(retained.Snapshot!.Timeline!.TimingValid));
+        }
+        finally { await viewModel.DisposeAsync(); Directory.Delete(directory, true); }
+    });
+
+    [Fact]
+    public void HistoryCommandRestoresWarningSnapshotEntersHoldAndDoesNotDuplicate() => RunSta(async () =>
+    {
+        var (viewModel, directory) = CreateViewModel();
+        try
+        {
+            var scenario = AutomaticScenario(validTimeline: false, eventTicks: 4_000_000);
+            FinalizeThroughViewModel(viewModel, scenario);
+            var retained = Assert.Single(viewModel.RecentResults);
+            var originalBytes = retained.Snapshot!.Frames[0].Luma.ToArray();
+            scenario.Frames[0].Luma[0] = 255;
+            scenario.Waveform[0] = 99;
+            scenario.FrameTicks[0] = 99;
+
+            viewModel.SelectHistoryCommand.Execute(retained);
+
+            Assert.True(viewModel.IsHold);
+            Assert.True(viewModel.IsInReview);
+            Assert.Equal("HISTORY REVIEW · TIMING WARNING", viewModel.ResultModeText);
+            Assert.Equal(retained.Result, viewModel.CurrentResult);
+            Assert.Equal(retained.RawResult, viewModel.CurrentRawResult);
+            Assert.Equal(retained.Confidence, retained.Snapshot.AutoCandidate.Confidence);
+            Assert.Equal(VisualDetectorKind.FlashTestSignal, retained.Snapshot.AutoCandidate.Trace!.DetectorKind);
+            Assert.Equal(originalBytes, retained.Snapshot.Frames[0].Luma);
+            Assert.NotEqual(99, viewModel.Waveform[0]);
+            Assert.NotEqual(99, viewModel.ReviewFrameTicks[0]);
+            Assert.False(ReviewTimeline.AcceptsAutomaticEvents(viewModel.AutoDetect, viewModel.AutoSpike, viewModel.IsHold, false));
+            Assert.Single(viewModel.RecentResults);
+
+            viewModel.ResumeLiveCommand.Execute(null);
+            Assert.False(viewModel.IsInReview);
+            Assert.True(viewModel.IsHold);
+            viewModel.IsHold = false;
+            Assert.True(ReviewTimeline.AcceptsAutomaticEvents(viewModel.AutoDetect, viewModel.AutoSpike, viewModel.IsHold, false));
+            Assert.Single(viewModel.RecentResults);
+        }
+        finally { await viewModel.DisposeAsync(); Directory.Delete(directory, true); }
+    });
+
+    [Fact]
+    public void HistoryDepthOptionsPersistAndShrinkImmediatelyWithoutMediaSerialization() => RunSta(async () =>
+    {
+        var (viewModel, directory) = CreateViewModel();
+        try
+        {
+            Assert.Equal(new[] { 3, 5, 10 }, viewModel.SessionHistoryDepths);
+            viewModel.SessionHistoryDepth = 10;
+            for (var index = 0; index < 10; index++) FinalizeThroughViewModel(viewModel, AutomaticScenario(validTimeline: false, eventTicks: index * 1_000_000));
+            Assert.Equal(10, viewModel.RecentResults.Count);
+
+            viewModel.SessionHistoryDepth = 5;
+            Assert.Equal(5, viewModel.RecentResults.Count);
+            viewModel.SessionHistoryDepth = 3;
+            Assert.Equal(3, viewModel.RecentResults.Count);
+
+            await viewModel.DisposeAsync();
+            var json = File.ReadAllText(Path.Combine(directory, "settings.json"));
+            Assert.Contains("\"SessionHistoryDepth\": 3", json);
+            Assert.DoesNotContain("Waveform", json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Snapshot", json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("Frames", json, StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(directory, true); }
+    });
+
+    private static (MainViewModel ViewModel, string Directory) CreateViewModel()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "viewmodel-test-state", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var settings = new SettingsService(Path.Combine(directory, "settings.json"));
+        var logger = new AppLogger(Path.Combine(directory, "current.log"));
+        return (new MainViewModel(settings, logger, [], applyTheme: false), directory);
+    }
+
+    private static AutomaticHistoryScenario AutomaticScenario(bool validTimeline, long eventTicks)
+    {
+        VideoFrame[] frames = validTimeline
+            ? [Frame(eventTicks, 0, 10), Frame(eventTicks + 200_000, 1, 20), Frame(eventTicks + 400_000, 2, 30)]
+            : [Frame(eventTicks, 0, 10), Frame(eventTicks, 1, 20)];
+        var timeline = new FrameTimingAnalyzer().Analyze(frames, 50);
+        Assert.Equal(validTimeline, timeline.TimingValid);
+        var reference = new MediaTimestamp(eventTicks, TimingQuality.StreamTimestamp);
+        var review = new EventReviewState(reference, reference, new(50_000, VideoTimingOffsetSource.Manual));
+        var candidateFrame = frames[Math.Min(1, frames.Length - 1)];
+        review.SetAutoCandidate(new(candidateFrame.Timestamp, candidateFrame.TemporalIndex, .91, .8, candidateFrame,
+            new(0, 1, 2, .7, .8, .9, DetectorKind: VisualDetectorKind.FlashTestSignal, CandidateMargin: .4)));
+        return new(review, frames, [0.1f, 0.5f, 0.2f], [0d, 20d, 40d], timeline);
+    }
+
+    private static void FinalizeThroughViewModel(MainViewModel viewModel, AutomaticHistoryScenario scenario)
+    {
+        SetField(viewModel, "_review", scenario.Review);
+        SetField(viewModel, "_reviewFrames", scenario.Frames);
+        SetField(viewModel, "_waveform", scenario.Waveform);
+        SetField(viewModel, "_reviewFrameTicks", scenario.FrameTicks);
+        SetField(viewModel, "_timelineAnalysis", scenario.Timeline);
+        SetField(viewModel, "_isReview", true);
+        typeof(MainViewModel).GetMethod("FinalizeCurrentEvent", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(viewModel, null);
+    }
+
+    private static void SetField(MainViewModel viewModel, string name, object value) =>
+        typeof(MainViewModel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(viewModel, value);
+
+    private static VideoFrame Frame(long ticks, int index, byte luma) =>
+        new(new(ticks, TimingQuality.StreamTimestamp), 1, 1, [luma], index);
+
+    private static void RunSta(Func<Task> action)
+    {
+        Exception? exception = null;
+        var thread = new Thread(() => { try { action().GetAwaiter().GetResult(); } catch (Exception failure) { exception = failure; } }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
+        if (exception is not null) ExceptionDispatchInfo.Capture(exception).Throw();
+    }
+
+    private sealed record AutomaticHistoryScenario(
+        EventReviewState Review,
+        VideoFrame[] Frames,
+        float[] Waveform,
+        double[] FrameTicks,
+        FrameTimingAnalysis Timeline);
+}
+
 public sealed class SettingsTests
 {
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");
-        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualDetector = VisualDetectorKind.FlashTestSignal, VisualSensitivity = 77, AudioSensitivity = 68, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Filled Peaks", AudioDisplayAmplitude = "dB · 96 dB", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(VisualDetectorKind.FlashTestSignal, loaded.VisualDetector); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(68, loaded.AudioSensitivity); Assert.Equal(3, loaded.SessionHistoryDepth); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Peak Fill", loaded.AudioDisplayStyle); Assert.Equal("dB · 96 dB", loaded.AudioDisplayAmplitude); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("Snapshot", json, StringComparison.OrdinalIgnoreCase); }
+        try { using var service = new SettingsService(path); service.Save(new() { LastDeviceId = "device", AutoDetect = false, VisualDetector = VisualDetectorKind.FlashTestSignal, VisualSensitivity = 77, AudioSensitivity = 68, SessionHistoryDepth = 10, RollingBufferSeconds = 12, DetectionWidth = 960, DetectionHeight = 540, ReviewWidth = 480, ReviewHeight = 270, Theme = "Solar Flare", AudioDisplayStyle = "Filled Peaks", AudioDisplayAmplitude = "dB · 96 dB", SettingsPanelExpanded = false, NativeFormatByDevice = new() { ["device"] = "1920x1080|30000/1001|p|Nv12" }, ReconstructFieldsByDevice = new() { ["device"] = true }, ReconstructionFieldOrderByDevice = new() { ["device"] = "bottom" }, VideoTimingOffsetOverridesMilliseconds = new() { ["profile"] = 18.5 } }); var loaded = service.Load(); Assert.Equal("device", loaded.LastDeviceId); Assert.False(loaded.AutoDetect); Assert.Equal(VisualDetectorKind.FlashTestSignal, loaded.VisualDetector); Assert.Equal(77, loaded.VisualSensitivity); Assert.Equal(68, loaded.AudioSensitivity); Assert.Equal(10, loaded.SessionHistoryDepth); Assert.Equal(12, loaded.RollingBufferSeconds); Assert.Equal((960, 540), (loaded.DetectionWidth, loaded.DetectionHeight)); Assert.Equal((480, 270), (loaded.ReviewWidth, loaded.ReviewHeight)); Assert.Equal("Solar Flare", loaded.Theme); Assert.Equal("Peak Fill", loaded.AudioDisplayStyle); Assert.Equal("dB · 96 dB", loaded.AudioDisplayAmplitude); Assert.False(loaded.SettingsPanelExpanded); Assert.Equal("1920x1080|30000/1001|p|Nv12", loaded.NativeFormatByDevice["device"]); Assert.True(loaded.ReconstructFieldsByDevice["device"]); Assert.Equal("bottom", loaded.ReconstructionFieldOrderByDevice["device"]); Assert.Equal(18.5, loaded.VideoTimingOffsetOverridesMilliseconds["profile"]); var json = File.ReadAllText(path); Assert.Contains("\"SessionHistoryDepth\": 10", json); Assert.DoesNotContain("waveform", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("Snapshot", json, StringComparison.OrdinalIgnoreCase); Assert.DoesNotContain("Frames", json, StringComparison.OrdinalIgnoreCase); }
         finally { if (File.Exists(path)) File.Delete(path); }
     }
 
@@ -700,6 +843,9 @@ public sealed class OperatorUiContractTests
         Assert.Contains("AutomaticDetectionToggle", Ui);
         Assert.Contains("AudioSensitivitySlider", Ui);
         Assert.Contains("VisualDetectorSelector", Ui);
+        Assert.Contains("Text=\"Session history depth\"", Ui);
+        Assert.Contains("ItemsSource=\"{Binding SessionHistoryDepths}\" SelectedItem=\"{Binding SessionHistoryDepth}\"", Ui);
+        Assert.Contains("AutomationProperties.Name=\"Session history depth: retain 3, 5, or 10 events\"", Ui);
         Assert.Contains("ItemsSource=\"{Binding VisualDetectors}\" SelectedItem=\"{Binding SelectedVisualDetector}\"", Ui);
         Assert.Equal(2, Ui.Split("IsMoveToPointEnabled=\"True\"").Length - 1);
         Assert.DoesNotContain("Content=\"Reconstruct fields\"", Ui);

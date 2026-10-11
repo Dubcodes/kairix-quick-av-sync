@@ -20,9 +20,6 @@ public static class ReviewMeasurementPresentation
     public static bool UsesSelectedPoints(ReviewResultMode mode) =>
         mode is ReviewResultMode.ManualPreview or ReviewResultMode.ManualResult;
 
-    public static bool ExcludeInvalidAutomaticResultFromHistory(FrameTimingAnalysis? timeline, ReviewResultMode mode) =>
-        timeline is { TimingValid: false } && !UsesSelectedPoints(mode);
-
     public static string ResultText(FrameTimingAnalysis? timeline, EventReviewState? review) =>
         review?.CurrentResult?.Wording
         ?? (review?.ResultMode == ReviewResultMode.AudioCandidate ? "VISUAL NOT FOUND" : null)
@@ -59,8 +56,8 @@ public static class ReviewMeasurementPresentation
 
 public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 {
-    private readonly SettingsService _settingsService = new();
-    private readonly AppLogger _log = new();
+    private readonly SettingsService _settingsService;
+    private readonly AppLogger _log;
     private readonly IReadOnlyList<ICaptureBackend> _backends;
     private readonly CaptureDeviceRanker _deviceRanker = new();
     private readonly MemoryStatusService _memoryService = new();
@@ -157,12 +154,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand ToggleHoldCommand { get; }
     public ICommand SelectHistoryCommand { get; }
 
-    public MainViewModel()
+    public MainViewModel() : this(new SettingsService(), new AppLogger(), null, true)
     {
-        _settings = _settingsService.Load(); _transientDetector.Sensitivity = _settings.AudioSensitivity; _history.SetCapacity(_settings.SessionHistoryDepth); _backends = [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
+    }
+
+    internal MainViewModel(SettingsService settingsService, AppLogger log, IReadOnlyList<ICaptureBackend>? backends, bool applyTheme)
+    {
+        _settingsService = settingsService; _log = log;
+        _settings = _settingsService.Load(); _transientDetector.Sensitivity = _settings.AudioSensitivity; _history.SetCapacity(_settings.SessionHistoryDepth); _backends = backends ?? [new WindowsCaptureBackend(_log), new SyntheticCaptureBackend()];
         _selectedVisualDetector = VisualDetectors.First(option => option.Kind == _settings.VisualDetector);
         foreach (var theme in ThemeManager.Themes) Themes.Add(theme);
-        _selectedTheme = Themes.First(theme => theme.Name == ThemeManager.Normalize(_settings.Theme)); ThemeManager.Apply(_selectedTheme.Name);
+        _selectedTheme = Themes.First(theme => theme.Name == ThemeManager.Normalize(_settings.Theme));
+        if (applyTheme) ThemeManager.Apply(_selectedTheme.Name);
         _selectedAudioDisplayStyle = WaveformDisplayTransform.NormalizeStyle(_settings.AudioDisplayStyle);
         _selectedAudioDisplayAmplitude = WaveformDisplayTransform.NormalizeAmplitude(_settings.AudioDisplayAmplitude);
         RefreshCommand = new AsyncRelayCommand(RefreshDevicesAsync);
@@ -182,7 +185,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         StepAudioNextCommand = new RelayCommand(_ => StepAudio(1));
         ToggleHoldCommand = new RelayCommand(_ => IsHold = !IsHold, _ => IsArmEnabled);
         SelectHistoryCommand = new RelayCommand(item => { if (item is SessionResult result) StartOwnedTask(LoadHistoryAsync(result), "history.load"); });
-        _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current.Dispatcher);
+        _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher);
     }
 
     public CaptureDeviceDescriptor? SelectedDevice
@@ -940,7 +943,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private void FinalizeCurrentEvent()
     {
-        if (_review is null || ReviewMeasurementPresentation.ExcludeInvalidAutomaticResultFromHistory(_timelineAnalysis, _review.ResultMode) || !_review.TryFinalize(out var result) || result is null) return;
+        // Retention is independent of timeline validity. A warning remains part of the
+        // immutable snapshot and must not make an accepted automatic result disappear.
+        if (_review is null || !_review.TryFinalize(out var result) || result is null) return;
         var snapshot = _review.AutoCandidate is null ? null : ReviewHistorySnapshotFactory.Create(_review, _reviewFrames, Waveform, ReviewFrameTicks, _timelineAnalysis);
         _history.Add(new(DateTime.Now, result, _review.AutoCandidate?.Confidence, _review.CurrentRawResult, _review.VideoTimingOffset.Milliseconds, _review.VideoTimingOffset.Source, snapshot));
         RefreshRecentResults();

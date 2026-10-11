@@ -12,13 +12,13 @@ This concise log records durable project choices. Evidence and open questions be
 | Review cadence | Review is field-aware. Explicit reconstructed fields remain distinct from native transport samples. |
 | Automatic workflow | Detection is continuous and transactional; a rejected pending event changes no displayed event or history, while the newest accepted event atomically replaces the previous event. |
 | Manual workflow | Manual Clap enters Hold and opens explicit review; its audio/video points are independently editable. Live View clears the review without changing Hold/ARMED. |
-| Integrity vs measurement | Every calculable Auto Result, Manual Preview, and Manual Result stays visible. Whole-timeline invalidity is a separate warning and may exclude an automatic result from history. |
+| Integrity vs measurement | Every calculable Auto Result, Manual Preview, and Manual Result stays visible. Whole-timeline invalidity is a separate warning; it never upgrades trust and does not exclude an accepted automatic result from history. |
 | Hold | Suppresses new automatic events but does not stop capture or buffering. Once returned to ARMED, the next automatic event is immediately admissible even if a review is displayed. |
 | Persistence | Capture and presentation preferences persist per device/profile; Hold, media, and session history do not. |
 | Reconstruction selection | The selected interpretation is the sole runtime reconstruction truth; reconstructed rate/order choices are formats, not a second checkbox state. |
 | Visual detector engines | Run one selected lightweight deterministic engine per event: Human Clap by default, or Flash / Test Signal for electronic cues. Capture, timing, reconstruction, review, and history remain shared. |
 | Audio-only fallback | A strong impulsive transient without a visual match is retained as a reviewable Audio Candidate, not a confirmed sync result or normal history entry; weaker unmatched transients are discarded. |
-| History | Keep the newest three finalized results. |
+| History | Keep the newest 3, 5, or 10 finalized automatic results (default 3) as immutable processed review-window snapshots in bounded RAM. History depth persists; captured history media does not. |
 | Privacy | No telemetry, accounts, database, cloud dependency, or media persistence. |
 | Browser source | Ship one offline-capable HTML A/V sync test signal with the repository. |
 | Releases | Recommended `v*` releases are deliberate promotions; validated `main` commits produce separate development prereleases. |

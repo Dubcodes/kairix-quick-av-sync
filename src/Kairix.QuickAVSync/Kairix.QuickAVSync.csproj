@@ -31,6 +31,9 @@
       <_Parameter1>BuildChannel</_Parameter1>
       <_Parameter2>$(BuildChannel)</_Parameter2>
     </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Kairix.QuickAVSync.Windows.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>
