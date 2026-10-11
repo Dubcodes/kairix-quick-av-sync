@@ -66,12 +66,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly AnalysisGeneration _analysisGeneration = new();
     private readonly SessionHistoryService _history = new();
     private readonly ObservedSignalAnalyzer _signalAnalyzer = new();
+    private readonly AudioLevelAccumulator _liveAudioMeter = new();
     private RollingBuffer<VideoFrame> _video = new(300, f => f.Timestamp.Ticks100ns);
     private RollingBuffer<AudioChunk> _audio = new(300, a => a.Timestamp.Ticks100ns);
     private ICaptureSession? _capture;
     private CancellationTokenSource? _analysisCts, _signalAnalysisCts, _settingsReconnectCts;
     private Task? _currentAnalysisTask, _signalAnalysisTask, _settingsReconnectTask;
-    private readonly DispatcherTimer _memoryTimer;
+    private readonly DispatcherTimer _memoryTimer, _audioMeterTimer;
     private AppSettings _settings;
     private CaptureDeviceDescriptor? _selectedDevice;
     private CaptureFormatOption? _selectedCaptureFormat;
@@ -118,9 +119,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private string _lastEventDiagnosticsText = "No detected event diagnostics yet.";
     private long _lastAudioEndTicks = long.MinValue;
     private int _audioContinuityFaults;
+    private double _audioLeftDbfs = AudioLevelAccumulator.FloorDbfs, _audioRightDbfs = AudioLevelAccumulator.FloorDbfs;
+    private int _liveAudioSampleRate, _liveAudioChannels;
+    private bool _suppressCaptureModeChanges;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public ObservableCollection<CaptureDeviceDescriptor> Devices { get; } = [];
+    public ObservableCollection<CaptureFormatOption> CaptureModes { get; } = [];
     public ObservableCollection<ResolutionOption> Resolutions { get; } = [];
     public ObservableCollection<InterpretationFormatOption> InterpretationFormats { get; } = [];
     public ObservableCollection<PixelFormatOption> PixelFormats { get; } = [];
@@ -186,6 +191,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         ToggleHoldCommand = new RelayCommand(_ => IsHold = !IsHold, _ => IsArmEnabled);
         SelectHistoryCommand = new RelayCommand(item => { if (item is SessionResult result) StartOwnedTask(LoadHistoryAsync(result), "history.load"); });
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher);
+        _audioMeterTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(40), DispatcherPriority.Background, (_, _) => RefreshLiveAudioMeter(), Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher);
     }
 
     public CaptureDeviceDescriptor? SelectedDevice
@@ -199,6 +205,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _observedSignal = null; RefreshInterpretationDisplay();
             SaveSettings(immediate: true);
             if (!_suppressDeviceRefresh) _ = RefreshCaptureFormatsAsync(value);
+        }
+    }
+    public CaptureFormatOption? SelectedCaptureFormat
+    {
+        get => _selectedCaptureFormat;
+        set
+        {
+            // WPF clears SelectedItem transiently while a filtered ItemsSource is rebuilt.
+            // Ignore that null so changing Show all cannot silently switch the driver mode.
+            if (value is null || !Set(ref _selectedCaptureFormat, value) || _suppressCaptureModeChanges || SelectedDevice is null) return;
+            _settings.NativeFormatByDevice[SelectedDevice.Id] = value.Id;
+            RefreshVisibleCaptureModes();
+            RebuildInterpretationOptions(value.Format ?? _capture?.CurrentFormat);
+            SaveSettings(immediate: true);
+            _log.Write("capture.mode-selection", $"device='{SelectedDevice.FriendlyName}' mode='{(string.IsNullOrWhiteSpace(value.Id) ? "Auto" : value.Display)}'");
+            RequestSettingsReconnect();
+        }
+    }
+    public bool ShowAllCaptureModes
+    {
+        get => _settings.ShowAllCaptureModes;
+        set
+        {
+            if (_settings.ShowAllCaptureModes == value) return;
+            _settings.ShowAllCaptureModes = value;
+            Changed();
+            RefreshVisibleCaptureModes();
+            SaveSettings();
         }
     }
     public ResolutionOption? SelectedResolution
@@ -332,7 +366,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ImageSource? AutoThumbnail { get => _autoThumbnail; private set => Set(ref _autoThumbnail, value); }
     public string Status { get => _status; private set => Set(ref _status, value); }
     public string FormatText { get => _formatText; private set => Set(ref _formatText, value); }
-    public string DetectedCaptureText => _capture is null ? "Not negotiated" : NativeFormatDisplay(_capture.CurrentFormat);
+    public string DriverCaptureText => CaptureReadout.DriverCapture;
+    public string ObservedDeliveryText => CaptureReadout.ObservedDelivery;
+    public string SourceCadenceText => CaptureReadout.SourceCadence;
+    public double AudioLeftLevel => AudioLevelAccumulator.Normalize(_audioLeftDbfs);
+    public double AudioRightLevel => AudioLevelAccumulator.Normalize(_audioRightDbfs);
+    public int LiveAudioChannels => _liveAudioChannels;
+    public string LiveAudioFormatText => _liveAudioSampleRate <= 0 || _liveAudioChannels <= 0
+        ? "Waiting for audio samples"
+        : $"{_liveAudioSampleRate / 1000d:0.#} kHz · {(_liveAudioChannels == 1 ? "Mono" : _liveAudioChannels == 2 ? "Stereo" : $"{_liveAudioChannels} channels")}";
+    public string LiveAudioLevelText => _liveAudioChannels <= 0
+        ? "Peak —"
+        : _liveAudioChannels == 1 ? $"Peak {_audioLeftDbfs:0.0} dBFS" : $"L {_audioLeftDbfs:0.0} dBFS · R {_audioRightDbfs:0.0} dBFS";
     public string InterpretationText => SelectedResolution is null || SelectedInterpretationFormat is null || SelectedPixelFormat is null ? "Not configured" : $"{SelectedResolution} · {SelectedInterpretationFormat} · {SelectedPixelFormat}";
     public string FieldReconstructionHelpText => CurrentFieldReconstruction is not null
         ? "Reconstructed field timing: selected field order. Capture timestamp is assumed to represent the second field / completed pair."
@@ -406,7 +451,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string BuildText => Services.BuildIdentity.Current.BuildId;
     public string BuildChannelText => $"{Services.BuildIdentity.Current.Channel} build";
     public string BuildCommitText => $"Commit {Services.BuildIdentity.Current.ShortCommit}";
-    public string AboutTimingDiagnosticsText => $"Detected capture: {DetectedCaptureText}\nInterpreted format: {InterpretationText}\nReview temporal rate: {ExpectedReviewTemporalRate:0.000}/s\nNative transport rate: {ExpectedCaptureTransportRate:0.000}/s\nTiming source: {TimingText}\n{TimestampPhaseText}\nVideo compensation: {VideoTimingOffsetModeText}\nRaw measurement: {RawMeasurementText}\nCorrected measurement: {(CurrentResult is { TimingComparable: true } result ? $"{result.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—")}";
+    public string AboutTimingDiagnosticsText => $"Driver capture: {DriverCaptureText}\nObserved delivery: {ObservedDeliveryText}\nSource cadence: {SourceCadenceText}\nInterpreted format: {InterpretationText}\nReview temporal rate: {ExpectedReviewTemporalRate:0.000}/s\nNative transport rate: {ExpectedCaptureTransportRate:0.000}/s\nTiming source: {TimingText}\n{TimestampPhaseText}\nVideo compensation: {VideoTimingOffsetModeText}\nRaw measurement: {RawMeasurementText}\nCorrected measurement: {(CurrentResult is { TimingComparable: true } result ? $"{result.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—")}";
     public string FieldReconstructionAboutText => CurrentFieldReconstruction is { } reconstruction
         ? $"One woven progressive frame contains two fields. Kairix extracts {reconstruction.FieldOrder.ToString().Replace("First", " first").ToLowerInvariant()} fields before downscaling. Field interval: {reconstruction.FieldIntervalTicks100ns / 10_000d:0.0000} ms. The capture timestamp is treated as the completed pair / second field; automatic compensation is one field interval."
         : "Field reconstruction is off. Native progressive/interlaced temporal positions use direct capture timing and no automatic reconstructed-field compensation.";
@@ -417,7 +462,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         await RefreshDevicesAsync();
         if (Volatile.Read(ref _disposing) != 0) return;
-        UpdateMemory(); _memoryTimer.Start(); await ReconnectAsync();
+        UpdateMemory(); _memoryTimer.Start(); _audioMeterTimer.Start(); await ReconnectAsync();
     }
     private async Task RefreshDevicesAsync()
     {
@@ -458,9 +503,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _log.Write("capture.format-selection", $"device='{device.FriendlyName}' saved interpretation native='{saved ?? "Auto"}' is unavailable this session; retaining saved reconstruction profile and using Auto");
         }
         _allCaptureFormats = options;
-        _selectedCaptureFormat = selected;
+        _suppressCaptureModeChanges = true;
+        try { SelectedCaptureFormat = selected; }
+        finally { _suppressCaptureModeChanges = false; }
+        RefreshVisibleCaptureModes();
         RebuildInterpretationOptions(selected.Format);
         RefreshInterpretationDisplay();
+    }
+
+    private void RefreshVisibleCaptureModes()
+    {
+        var visible = CaptureFormatCatalog.VisibleOptions(_allCaptureFormats, ShowAllCaptureModes, _selectedCaptureFormat?.Id);
+        CaptureModes.Clear();
+        foreach (var option in visible) CaptureModes.Add(option);
+        Changed(nameof(SelectedCaptureFormat));
     }
 
     private void RebuildInterpretationOptions(CaptureFormat? preferred = null)
@@ -468,7 +524,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _suppressInterpretationChanges = true;
         try
         {
-            var modes = NativeModes();
+            var modes = NativeModes().ToList();
+            if (preferred is not null && !modes.Any(option => SameNativeFormat(option.Format!, preferred)))
+                modes.Add(new CaptureFormatOption("__negotiated__", NativeFormatDisplay(preferred), preferred));
             var priorResolution = preferred is null ? SelectedResolution : new ResolutionOption(preferred.Width, preferred.Height);
             Resolutions.Clear();
             foreach (var resolution in modes.Select(mode => new ResolutionOption(mode.Format!.Width, mode.Format.Height)).Distinct().OrderByDescending(value => value.Width * value.Height)) Resolutions.Add(resolution);
@@ -509,6 +567,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (SelectedResolution is not null && SelectedInterpretationFormat is not null)
             {
                 foreach (var pixel in NativeModes().Where(mode => MatchesSelection(mode.Format!)).Select(mode => mode.Format!.PixelFormat).Distinct()) PixelFormats.Add(new(pixel));
+                if (PixelFormats.Count == 0 && preferred is { } negotiatedPixel) PixelFormats.Add(new(negotiatedPixel));
             }
             SelectedPixelFormat = PixelFormats.FirstOrDefault(value => value.Value == prior) ?? PixelFormats.FirstOrDefault();
         }
@@ -549,23 +608,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
 
     private IReadOnlyList<CaptureFormatOption> NativeModes() => _allCaptureFormats.Where(option => option.Format is not null).ToArray();
+    private static bool SameNativeFormat(CaptureFormat left, CaptureFormat right) =>
+        left.Width == right.Width && left.Height == right.Height && left.FrameRate == right.FrameRate && left.ScanMode == right.ScanMode &&
+        left.InterlaceLayout == right.InterlaceLayout && left.PixelFormat == right.PixelFormat;
     private bool MatchesSelection(CaptureFormat format) => SelectedResolution is { } resolution && SelectedInterpretationFormat is { } interpretation &&
         format.Width == resolution.Width && format.Height == resolution.Height && format.FrameRate == interpretation.TransportRate && format.ScanMode == interpretation.TransportScanMode && format.InterlaceLayout == interpretation.TransportInterlaceLayout;
-    private CaptureFormatOption? ResolveSelectedNativeMode() => SelectedPixelFormat is null ? null : NativeModes().FirstOrDefault(mode => MatchesSelection(mode.Format!) && mode.Format!.PixelFormat == SelectedPixelFormat.Value);
-
     private void CommitInterpretationSelection()
     {
         if (_suppressInterpretationChanges || SelectedDevice is null) return;
-        var mode = ResolveSelectedNativeMode();
-        if (mode is null) return;
-        _selectedCaptureFormat = mode; RefreshInterpretationDisplay();
-        _settings.NativeFormatByDevice[SelectedDevice.Id] = mode.Id;
+        if (SelectedInterpretationFormat is null) return;
+        RefreshInterpretationDisplay();
         _legacyReconstructionRequested = SelectedInterpretationFormat?.ReconstructFields == true;
         _settings.ReconstructFieldsByDevice[SelectedDevice.Id] = _legacyReconstructionRequested;
         if (SelectedInterpretationFormat is { ReconstructFields: true } interpretation)
             _settings.ReconstructionFieldOrderByDevice[SelectedDevice.Id] = interpretation.FieldOrder == FieldOrder.BottomFirst ? "bottom" : "top";
         SaveSettings(immediate: true);
-        _log.Write("capture.interpretation", $"device='{SelectedDevice.FriendlyName}' native='{mode.Id}' interpretation='{InterpretationText}' reconstruction={_legacyReconstructionRequested}");
+        _log.Write("capture.interpretation", $"device='{SelectedDevice.FriendlyName}' captureMode='{(_selectedCaptureFormat?.Display ?? "Auto")}' interpretation='{InterpretationText}' reconstruction={_legacyReconstructionRequested}");
         RequestSettingsReconnect();
     }
 
@@ -618,8 +676,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 PreferredPresentationWidth: review.Width, PreferredPresentationHeight: review.Height, RequirePreferredNativeFormat: strictFormat,
                 FieldReconstruction: CurrentFieldReconstruction), _lifetimeCts.Token); _capture.VideoSampleReceived += OnVideoFrame; _capture.AudioSampleReceived += OnAudio; _capture.StatusChanged += OnCaptureStatus;
             await _capture.StartAsync(_lifetimeCts.Token);
-            if (!strictFormat) ApplyDetectedCaptureDefaults(_capture.CurrentFormat);
-            ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInterpretationDisplay(); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}; detected='{DetectedCaptureText}' interpretation='{InterpretationText}'");
+            if (!strictFormat) ApplyNegotiatedCaptureDefaults(_capture.CurrentFormat);
+            ResizeBuffers(); FormatText = BuildCaptureText(); TimingText = DescribeTiming(_capture.TimingQuality); RefreshInterpretationDisplay(); if (SelectedDevice.Kind == CaptureDeviceKind.Synthetic) Status = "READY TO CLAP"; _log.Write("capture", $"Opened {SelectedDevice.FriendlyName} using {backend.Id}; driverCapture='{DriverCaptureText}' interpretation='{InterpretationText}'");
         }
         catch (OperationCanceledException) when (Volatile.Read(ref _disposing) != 0) { await StopCaptureAsync(); }
         catch (Exception ex) { _captureStatus = CaptureStatus.Failed; _captureStatusText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? "REQUESTED CAPTURE FORMAT NOT ACCEPTED" : "CAPTURE OPEN FAILED"; Status = _captureStatusText; TimingText = "TIMING UNAVAILABLE"; FormatText = !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id) ? $"Requested: {_selectedCaptureFormat.Display}" : "Capture: Not negotiated"; _log.Write("capture", $"Open failed for {SelectedDevice.FriendlyName}: {ex}"); await StopCaptureAsync(); RefreshInterpretationDisplay(); }
@@ -630,7 +688,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private async Task ClearCurrentMediaStateAsync()
     {
         Interlocked.Increment(ref _captureGeneration); await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync(); _isReview = false; _manualReview = false; _automaticAnalysisRunning = false; Changed(nameof(IsInReview)); _review = null; _reviewFrames = []; _playheadIndex = 0; _lastAudioEndTicks = long.MinValue; _audioContinuityFaults = 0; Interlocked.Exchange(ref _temporalVideoCount, 0); Interlocked.Exchange(ref _displayedPreviewCount, 0); Interlocked.Exchange(ref _audioChunkCount, 0); Interlocked.Exchange(ref _lastTemporalStopwatchTicks, 0); Interlocked.Exchange(ref _lastPreviewStopwatchTicks, 0); Interlocked.Exchange(ref _lastAudioStopwatchTicks, 0); Interlocked.Exchange(ref _videoStallReported, 0);
-        Interlocked.Exchange(ref _pendingPreview, null); VideoImage = null; AutoThumbnail = null; Waveform = []; ReviewFrameTicks = []; _timelineAnalysis = null; FormatText = "Format not negotiated"; TimingText = "TIMING NOT AVAILABLE"; NotifyMarkers();
+        Interlocked.Exchange(ref _pendingPreview, null); VideoImage = null; AutoThumbnail = null; Waveform = []; ReviewFrameTicks = []; _timelineAnalysis = null; FormatText = "Format not negotiated"; TimingText = "TIMING NOT AVAILABLE"; _liveAudioMeter.Reset(); _audioLeftDbfs = AudioLevelAccumulator.FloorDbfs; _audioRightDbfs = AudioLevelAccumulator.FloorDbfs; _liveAudioSampleRate = 0; _liveAudioChannels = 0; RefreshLiveAudioMeter(); NotifyMarkers();
     }
 
     private void OnVideoFrame(object? sender, VideoFrame frame)
@@ -698,6 +756,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void OnAudio(object? sender, AudioChunk chunk)
     {
         if (Volatile.Read(ref _disposing) != 0 || !ReferenceEquals(sender, _capture)) return;
+        AccumulateLiveAudio(chunk);
         var captureGeneration = Volatile.Read(ref _captureGeneration);
         var priorEnd = Interlocked.Exchange(ref _lastAudioEndTicks, chunk.Timestamp.Ticks100ns + chunk.Duration.Ticks);
         if (priorEnd != long.MinValue && (chunk.Timestamp.Ticks100ns < priorEnd - TimeSpan.FromMilliseconds(1).Ticks || chunk.Timestamp.Ticks100ns > priorEnd + TimeSpan.FromMilliseconds(5).Ticks)) Interlocked.Increment(ref _audioContinuityFaults);
@@ -1064,9 +1123,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         return difference >= .03 ? $"Capture: {_capture.CurrentFormat.Display} · observed {observed:0.###} fps" : $"Capture: {_capture.CurrentFormat.Display}";
     }
     private FieldReconstructionOptions? CurrentFieldReconstruction => CaptureFormatCatalog.FieldReconstructionFor(SelectedInterpretationFormat);
-    private string? CurrentTimingProfileKey => SelectedDevice is null || string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id)
+    private string? ActiveNativeFormatId => !string.IsNullOrWhiteSpace(_selectedCaptureFormat?.Id)
+        ? _selectedCaptureFormat.Id
+        : _capture is null ? null : NativeModes().FirstOrDefault(option => SameNativeFormat(option.Format!, _capture.CurrentFormat))?.Id;
+    private string? CurrentTimingProfileKey => SelectedDevice is null || ActiveNativeFormatId is not { } nativeFormatId
         ? null
-        : VideoTimingProfileKey.Create(SelectedDevice.Id, _selectedCaptureFormat.Id, CurrentFieldReconstruction);
+        : VideoTimingProfileKey.Create(SelectedDevice.Id, nativeFormatId, CurrentFieldReconstruction);
     private VideoTimingOffset EffectiveVideoTimingOffset
     {
         get
@@ -1111,20 +1173,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
     private static bool ValidReconstructionRate(Rational rate) => rate == Rational.From(25) || rate == Rational.From(30_000, 1_001);
     private static string NativeFormatDisplay(CaptureFormat format) => CaptureFormatFormatter.Format(format);
-    private void ApplyDetectedCaptureDefaults(CaptureFormat format)
+    private void ApplyNegotiatedCaptureDefaults(CaptureFormat format) => RebuildInterpretationOptions(format);
+    private CaptureStatusReadout CaptureReadout => CaptureStatusPresenter.Describe(_capture?.CurrentFormat, _observedDeliveredRate, _observedAnalysis, _observedSignal);
+    internal void AccumulateLiveAudio(AudioChunk chunk) => _liveAudioMeter.Add(chunk);
+    internal void RefreshLiveAudioMeter()
     {
-        var matching = NativeModes().FirstOrDefault(option => option.Format == format || option.Format is { } candidate && candidate.Width == format.Width && candidate.Height == format.Height && candidate.FrameRate == format.FrameRate && candidate.ScanMode == format.ScanMode && candidate.InterlaceLayout == format.InterlaceLayout && candidate.PixelFormat == format.PixelFormat);
-        if (matching is null)
+        var reading = _liveAudioMeter.ReadAndReset();
+        if (reading.HasSamples)
         {
-            matching = new CaptureFormatOption("", NativeFormatDisplay(format), format);
-            _allCaptureFormats = [.. _allCaptureFormats, matching];
+            _audioLeftDbfs = reading.LeftDbfs;
+            _audioRightDbfs = reading.RightDbfs;
+            _liveAudioSampleRate = reading.SampleRate;
+            _liveAudioChannels = reading.Channels;
         }
-        _selectedCaptureFormat = matching;
-        RebuildInterpretationOptions(format);
+        else
+        {
+            _audioLeftDbfs = Math.Max(AudioLevelAccumulator.FloorDbfs, _audioLeftDbfs - 6);
+            _audioRightDbfs = Math.Max(AudioLevelAccumulator.FloorDbfs, _audioRightDbfs - 6);
+        }
+        Changed(nameof(AudioLeftLevel)); Changed(nameof(AudioRightLevel)); Changed(nameof(LiveAudioChannels)); Changed(nameof(LiveAudioFormatText)); Changed(nameof(LiveAudioLevelText));
     }
     private void RefreshInterpretationDisplay()
     {
-        Changed(nameof(DetectedCaptureText)); Changed(nameof(InterpretationText)); Changed(nameof(FieldReconstructionHelpText)); Changed(nameof(VisualReviewResolutionText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); Changed(nameof(VideoTimingOffsetMilliseconds)); Changed(nameof(IsVideoTimingOffsetManual)); Changed(nameof(VideoTimingOffsetModeText)); Changed(nameof(TimingCorrectionText)); Changed(nameof(FieldReconstructionAboutText)); Changed(nameof(AboutTimingDiagnosticsText)); RefreshPerformanceDisplay();
+        Changed(nameof(DriverCaptureText)); Changed(nameof(ObservedDeliveryText)); Changed(nameof(SourceCadenceText)); Changed(nameof(InterpretationText)); Changed(nameof(FieldReconstructionHelpText)); Changed(nameof(VisualReviewResolutionText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); Changed(nameof(VideoTimingOffsetMilliseconds)); Changed(nameof(IsVideoTimingOffsetManual)); Changed(nameof(VideoTimingOffsetModeText)); Changed(nameof(TimingCorrectionText)); Changed(nameof(FieldReconstructionAboutText)); Changed(nameof(AboutTimingDiagnosticsText)); RefreshPerformanceDisplay();
     }
     private void RefreshPerformanceDisplay() { Changed(nameof(BufferEstimateText)); Changed(nameof(BufferEstimateWarning)); Changed(nameof(IsBufferEstimateHigh)); Changed(nameof(IsBufferEstimateVeryHigh)); }
     private async Task StopCaptureAsync()
@@ -1151,7 +1222,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposing, 1) != 0) return;
         _log.Write("shutdown", "View model disposal started; canceling capture lifetime.");
-        _lifetimeCts.Cancel(); _memoryTimer.Stop(); _settingsReconnectCts?.Cancel(); SaveSettings(immediate: true);
+        _lifetimeCts.Cancel(); _memoryTimer.Stop(); _audioMeterTimer.Stop(); _settingsReconnectCts?.Cancel(); SaveSettings(immediate: true);
         await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync();
         var settingsTask = _settingsReconnectTask;
         if (settingsTask is not null) { try { await settingsTask; } catch (OperationCanceledException) { } }

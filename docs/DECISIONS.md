@@ -16,6 +16,9 @@ This concise log records durable project choices. Evidence and open questions be
 | Hold | Suppresses new automatic events but does not stop capture or buffering. Once returned to ARMED, the next automatic event is immediately admissible even if a review is displayed. |
 | Persistence | Capture and presentation preferences persist per device/profile; Hold, media, and session history do not. |
 | Reconstruction selection | The selected interpretation is the sole runtime reconstruction truth; reconstructed rate/order choices are formats, not a second checkbox state. |
+| Capture-mode selection | Auto retains backend ranking/fallback. Selecting a named native mode makes one strict exact request; the simplified catalog hides advanced modes unless Show all is enabled, while a selected advanced mode always remains visible. |
+| Capture truth labels | Driver-negotiated mode, observed application delivery, and physical-source cadence are shown separately. Passive cadence is explicitly estimated; authoritative wording requires authoritative hardware/provider metadata. |
+| Live audio meter | Display peak dBFS from incoming `AudioChunk` samples at a coalesced 25 Hz UI rate. Metering continues during Hold and historical review without changing detector admission or capture behavior. |
 | Visual detector engines | Run one selected lightweight deterministic engine per event: Human Clap by default, or Flash / Test Signal for electronic cues. Capture, timing, reconstruction, review, and history remain shared. |
 | Audio-only fallback | A strong impulsive transient without a visual match is retained as a reviewable Audio Candidate, not a confirmed sync result or normal history entry; weaker unmatched transients are discarded. |
 | History | Keep the newest 3, 5, or 10 finalized automatic results (default 3) as immutable processed review-window snapshots in bounded RAM. History depth persists; captured history media does not. |

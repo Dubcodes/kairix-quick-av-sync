@@ -23,8 +23,8 @@ The self-contained EXE needs no separate .NET installation or installer. Adminis
 First run:
 
 1. Download and run the self-contained EXE.
-2. Select the capture device and confirm that **Detected Capture** matches the Media Foundation mode actually delivered.
-3. Choose **Resolution** and **Format** under **Input**, with **Pixel format** under **Settings → Capture**. These controls resolve to one exact native capture mode and are remembered per device.
+2. Select the capture device and confirm that **Driver capture** matches the Media Foundation mode actually delivered.
+3. Leave **Capture mode** on Auto or choose one exact native driver mode. The choice is remembered per device; **Show all capture modes** reveals advanced modes without hiding one that is already selected. Choose **Interpretation** separately when woven-field reconstruction is required.
 4. If a progressive capture frame contains two woven fields, enable **Reconstruct interlaced fields** and select the matching top-first or bottom-first interpretation.
 5. Clap and review the sync result. Manual timeline scrubbing and Audio/Visual corrections remain available.
 
@@ -50,8 +50,8 @@ Download [kairix_av_sync_test_signal_for_browser.html](kairix_av_sync_test_signa
 
 ## Workflow
 
-1. Select a video source. **Detected Capture** is read-only and always describes the authoritative Media Foundation output using the real raster, numeric rate/scan, and pixel format.
-2. Choose the interpretation **Resolution**, **Format**, and **Pixel format**. A valid combination reconnects to the matching exact native mode; unavailable combinations are not offered and explicit selection never silently falls back.
+1. Select a video source. **Driver capture** is read-only and describes the final negotiated Media Foundation output. **Observed delivery** is the measured application cadence. **Source cadence** remains Unknown or explicitly estimated unless an authoritative provider reports it.
+2. Leave **Capture mode** on Auto for backend ranking/fallback, or choose a named raster/rate/scan/pixel mode for a strict exact request. Choose **Interpretation** independently; reconstruction does not relabel or change the selected driver mode.
 3. For woven capture such as `1920×1080 · 25.000p · YUY2` containing a 50i source, enable **Reconstruct interlaced fields** and select `25.000p → 50.000i · Top first` or `Bottom first`. This changes review cadence, not the authoritative detected capture metadata.
 4. Enable **Automatic detection**, **Audio trigger**, and **Visual clap match** under **Settings → Detection**. The main state reads **ARMED**, **HOLD**, **TRIGGER OFF**, or **AUTO OFF** truthfully.
 5. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
@@ -119,7 +119,7 @@ Every successful `main` push runs the full Windows validation before packaging. 
 - Timing models preserve 100 ns media time, clock domains, raw values, and device/QPC, stream timestamp, and arrival-fallback quality separately. Results are refused when clocks are not demonstrably comparable.
 - Each native video sample has a stable native-sample identity and retains factual device timestamp, sample time, Source Reader timestamp, and monotonic host arrival observations. A reconstructed pair shares those observations. Only its first visual review timestamp is derived. Timing reports therefore distinguish reconstructed review cadence (for example 50 fields/s) from native transport cadence (25 samples/s), and never fabricate field-rate hardware observations.
 - Frame rates are rational. Progressive, interlaced, and unknown scan metadata remain distinct; known interlaced modes preserve full-frame/single-field layout and field order instead of silently assuming progressive timing.
-- Native capture and temporal interpretation are separate. Enabling reconstruction on a valid 25p or 29.97p progressive transport produces 50i or 59.94i field positions while **Detected Capture** remains the real progressive Media Foundation mode.
+- Native capture and temporal interpretation are separate. Enabling reconstruction on a valid 25p or 29.97p progressive transport produces 50i or 59.94i field positions while **Driver capture** remains the real progressive Media Foundation mode.
 - Visual analysis is deterministic multi-scale downscaled-luma motion analysis. Coarse evidence rejects broad camera/exposure changes and fine cells retain localized motion. Selection separates the rapid approach peak from a bounded one-to-three-position contact/settle search, chooses the earliest credible contact, and keeps expected-time proximity from forcing an approaching-hand frame. Sensitivity changes acceptance without bypassing rejection gates.
 - The Windows backend uses Media Foundation source readers for video and shared-mode WASAPI for audio. Pairing prefers exact device Container IDs, then hardware parents, and uses a unique-name fallback only when unambiguous; it never silently substitutes the default microphone.
 - Historical native capture validation includes an XI100DUSB HDMI device and Logitech C920 UVC webcam, and current owner testing provides stronger evidence for USB Capture SDI operation. The present HDMI setup has also shown instability; that observation is not a conclusion that the HDMI card is defective. Hardware and driver compatibility may vary.

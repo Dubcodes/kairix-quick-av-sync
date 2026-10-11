@@ -424,6 +424,7 @@ public sealed class AppSettings
     public int VisualSensitivity { get; set; } = 50;
     public int AudioSensitivity { get; set; } = 50;
     public int SessionHistoryDepth { get; set; } = 3;
+    public bool ShowAllCaptureModes { get; set; }
     public double RollingBufferSeconds { get; set; } = 5;
     public double WorkWindowMilliseconds { get; set; } = 300;
     public int DetectionWidth { get; set; } = 640;
