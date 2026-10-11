@@ -21,15 +21,15 @@ jobs:
       - run: dotnet build Kairix.QuickAVSync.sln -c Release --no-restore -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Core.Tests/Kairix.QuickAVSync.Core.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Windows.Tests/Kairix.QuickAVSync.Windows.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
-      - name: Package both Windows variants
+      - name: Package stable Windows release assets
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -BuildId '${{ github.ref_name }}' -SourceCommit '${{ github.sha }}' -BuildChannel Recommended
+        run: ./scripts/package-windows.ps1 -BuildId '${{ github.ref_name }}' -SourceCommit '${{ github.sha }}' -BuildChannel Release
       - uses: actions/upload-artifact@v4
         with:
           name: Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64
           path: artifacts/package/*
           if-no-files-found: error
-      - name: Create prerelease and upload verified assets
+      - name: Create release and upload verified assets
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,8 +38,32 @@ jobs:
           $tag = '${{ github.ref_name }}'
           $notes = Join-Path $PWD "docs/RELEASE_NOTES_$tag.md"
           if (-not (Test-Path -LiteralPath $notes -PathType Leaf)) { throw "Release notes were not found: $notes" }
-          $assets = @(Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts/package') -File | ForEach-Object FullName)
-          if ($assets.Count -ne 4) { throw 'Expected two EXEs, one ZIP, and SHA256SUMS.txt before creating the release.' }
+          $packageDirectory = Join-Path $PWD 'artifacts/package'
+          $expectedNames = @(
+            "Kairix.QuickAVSync-$tag-win-x64.exe",
+            "Kairix-Quick-AV-Sync-$tag-win-x64.zip",
+            'Kairix-AV-Sync-Test-Signal.html',
+            'SHA256SUMS.txt'
+          )
+          $actualNames = @(Get-ChildItem -LiteralPath $packageDirectory -File | ForEach-Object Name)
+          if (@(Compare-Object $expectedNames $actualNames).Count -ne 0) { throw "Release asset names do not match the required set: $($actualNames -join ', ')" }
+
+          $checksummedNames = $expectedNames[0..2]
+          $checksumLines = @(Get-Content -LiteralPath (Join-Path $packageDirectory 'SHA256SUMS.txt'))
+          if ($checksumLines.Count -ne 3) { throw 'SHA256SUMS.txt must contain exactly three entries.' }
+          $verifiedNames = foreach ($line in $checksumLines) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Invalid checksum line: $line" }
+            $name = $Matches[2]
+            if ($checksummedNames -notcontains $name) { throw "Unexpected checksummed asset: $name" }
+            $asset = Join-Path $packageDirectory $name
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Checksummed asset is missing: $name" }
+            $actual = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches[1]) { throw "Checksum mismatch: $name" }
+            $name
+          }
+          if (@(Compare-Object $checksummedNames $verifiedNames).Count -ne 0) { throw 'SHA256SUMS.txt does not cover the exact three public assets.' }
+
+          $assets = $expectedNames | ForEach-Object { Join-Path $packageDirectory $_ }
           $arguments = @($tag) + $assets + @("--repo", "${{ github.repository }}", "--title", "Kairix Quick A/V Sync $tag", "--notes-file", $notes, "--verify-tag")
           if ($tag -match '-') { $arguments += '--prerelease' }
           gh release create @arguments

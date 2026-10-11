@@ -6,26 +6,26 @@ Kairix Quick A/V Sync is a small Windows 10/11 utility for measuring the timing 
 
 ## Download
 
-### Recommended
+### Stable release
 
-**Kairix Quick A/V Sync v0.1.2-alpha** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v0.1.2-alpha/Kairix.QuickAVSync-v0.1.2-alpha-win-x64.exe) — **RECOMMENDED for most users**.
+**Kairix Quick A/V Sync v1.0.0** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v1.0.0/Kairix.QuickAVSync-v1.0.0-win-x64.exe) — the normal download for Windows 10/11 x64.
 
-This is the deliberately conservative, physically tested public alpha download. It was validated with a Logitech HD Pro Webcam C920 at 1920×1080 30p NV12 with its paired microphone. Broad capture-device compatibility remains under development.
+The stable package also provides a ZIP containing the application and browser test signal, an independent copy of that test signal, and `SHA256SUMS.txt` covering all three public assets. Hardware compatibility remains device- and driver-dependent; see the release notes and current-state document for the evidence boundary.
 
 ### Latest development
 
 **Latest Development Build** — [open the newest public development prerelease](https://github.com/Dubcodes/kairix-quick-av-sync/releases) and choose the self-contained `dev-YYYYMMDD-<commit>-win-x64.exe` asset.
 
-Development builds contain newer experimental work and identify their exact source commit. They may be less reliable or include recently changed or unfinished functionality. Testers can use the releases page above, but ordinary users should choose the recommended release.
+Development builds contain newer experimental work and identify their exact source commit. They may be less reliable or include recently changed or unfinished functionality. Testers can use the releases page above, but ordinary users should choose the stable release.
 
-The self-contained EXE needs no separate .NET installation or installer. Administrator rights are not normally expected, although Windows privacy settings and capture-device drivers still control hardware access. This is an unsigned public alpha, so Windows SmartScreen may show an **Unknown Publisher** warning. Download builds only from this repository's Releases page. Hardware compatibility remains under active testing.
+The self-contained EXE needs no separate .NET installation or installer. Administrator rights are not normally expected, although Windows privacy settings and capture-device drivers still control hardware access. The application is currently unsigned, so Windows SmartScreen may show an **Unknown Publisher** warning. Download builds only from this repository's Releases page.
 
 First run:
 
 1. Download and run the self-contained EXE.
 2. Select the capture device and confirm that **Driver capture** matches the Media Foundation mode actually delivered.
 3. Leave **Capture mode** on Auto or choose one exact native driver mode. The choice is remembered per device; **Show all capture modes** reveals advanced modes without hiding one that is already selected. Choose **Interpretation** separately when woven-field reconstruction is required.
-4. If a progressive capture frame contains two woven fields, enable **Reconstruct interlaced fields** and select the matching top-first or bottom-first interpretation.
+4. If a progressive transport frame contains two woven fields, choose the matching top-first or bottom-first reconstructed **Interpretation** offered for that selected transport.
 5. Clap and review the sync result. Manual timeline scrubbing and Audio/Visual corrections remain available.
 
 ## Platform support
@@ -52,17 +52,17 @@ Download [kairix_av_sync_test_signal_for_browser.html](kairix_av_sync_test_signa
 
 1. Select a video source. **Driver capture** is read-only and describes the final negotiated Media Foundation output. **Observed delivery** is the measured application cadence. **Source cadence** remains Unknown or explicitly estimated unless an authoritative provider reports it.
 2. Leave **Capture mode** on Auto for backend ranking/fallback, or choose a named raster/rate/scan/pixel mode for a strict exact request. Choose **Interpretation** independently; reconstruction does not relabel or change the selected driver mode.
-3. For woven capture such as `1920×1080 · 25.000p · YUY2` containing a 50i source, enable **Reconstruct interlaced fields** and select `25.000p → 50.000i · Top first` or `Bottom first`. This changes review cadence, not the authoritative detected capture metadata.
+3. For woven capture such as `1920×1080 · 25.000p · YUY2` containing a 50i source, select `25.000p → 50.000i · Top first` or `Bottom first` under **Interpretation**. Only choices valid for the selected or negotiated transport are offered. This changes review cadence, not the authoritative detected capture metadata.
 4. Enable **Automatic detection**, **Audio trigger**, and **Visual clap match** under **Settings → Detection**. The main state reads **ARMED**, **HOLD**, **TRIGGER OFF**, or **AUTO OFF** truthfully.
 5. Review the waveform, automatic candidate thumbnail, confidence, and plain-language **AUTO RESULT**.
 6. Click or drag the timeline to scrub to the nearest real temporal image. **Pre V/Nxt V**, mouse wheel, and Left/Right step one frame or field; Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
 7. Drag the yellow **AUDIO** marker or use **Pre A/Nxt A** (Ctrl+Left/Ctrl+Right) for deterministic 1.0 ms audio adjustments. Audio changes never move the visual playhead.
 8. Press Enter to commit the playhead as **MANUAL RESULT**. The automatic candidate remains available from its thumbnail for comparison.
-9. Clap again; the previous event moves into the three-item session history once.
+9. Clap again; the previous event moves into bounded session history once. Choose a depth of 3, 5, or 10 under Review. The compact trend graph uses only those retained results and selecting an entry reopens its immutable review snapshot in Hold.
 
 **Manual Clap** (Space) freezes a work window around the latest rolling-buffer position. Capture and rolling buffers continue while reviewing. Press H once to toggle Hold for new automatic detections; press it again to resume. Hold never stops capture or buffering and resets off at launch.
 
-The left side is split into a collapsible **Settings** column and an always-visible operational capture column beside the video. A theme-aware left navigation strip names Appearance, Detection, Review, Capture, Shortcuts, and About; a small chevron replaces the old large hide control and a narrow reopen rail remains when collapsed. Engineering timing/reconstruction data is confined to About. Detection groups the automatic master switches with practical visual and audio sensitivity controls. Detection and review rasters never change native capture or timestamp math. Light is the new-install default; Graphite, Midnight, High Contrast, Synthwave, Terminal, and Solar Flare remain available and persistent. Appearance offers six presentation-only waveform styles: Centered Fill, Centered Bars, Centered Line, Peak Fill, Peak Bars, and Peak Line. Its independent amplitude choices are Auto Gain, Linear, dB · 60 dB, and dB · 96 dB. Auto Gain is calculated once for the displayed review snapshot, targets a useful peak at 90% height, and deliberately leaves signals below -50 dBFS unboosted. Neither setting changes audio samples, detection, timestamps, markers, or results. The default work window is ±300 ms; previously saved values remain unchanged.
+The left side is split into a collapsible **Settings** column and an always-visible operational capture column beside the video. A theme-aware left navigation strip names Detection, Appearance, Review, Capture, Shortcuts, and About; a small chevron replaces the old large hide control and a narrow reopen rail remains when collapsed. Engineering timing/reconstruction data is confined to About. Detection groups the automatic master switches with practical visual and audio sensitivity controls. Detection and review rasters never change native capture or timestamp math. Light is the new-install default; Graphite, Midnight, High Contrast, Synthwave, Terminal, and Solar Flare remain available and persistent. Appearance offers six presentation-only waveform styles: Centered Fill, Centered Bars, Centered Line, Peak Fill, Peak Bars, and Peak Line. Its independent amplitude choices are Auto Gain, Linear, dB · 60 dB, and dB · 96 dB. Auto Gain is calculated once for the displayed review snapshot, targets a useful peak at 90% height, and deliberately leaves signals below -50 dBFS unboosted. Neither setting changes audio samples, detection, timestamps, markers, or results. The default work window is ±300 ms; previously saved values remain unchanged.
 
 ## Video timing compensation
 
@@ -105,13 +105,11 @@ dotnet test tests/Kairix.QuickAVSync.Windows.Tests -c Release
 # Public, self-contained x64 distribution (larger; no installed .NET required)
 dotnet publish src/Kairix.QuickAVSync -p:PublishProfile=win-x64-self-contained
 
-# Smaller single-file build (requires .NET 10 Desktop Runtime)
-dotnet publish src/Kairix.QuickAVSync -p:PublishProfile=win-x64-framework-dependent
 ```
 
-Self-contained is the simplest public download but includes the runtime. Framework-dependent is substantially smaller but needs the matching Windows Desktop Runtime. Outputs go to `artifacts/publish/` and are intentionally ignored by Git. `scripts/package-windows.ps1` creates both identified EXEs, a ZIP containing both variants, and `SHA256SUMS.txt`; it fails if an expected asset is missing, empty, or cannot be checksummed.
+The self-contained public download includes the runtime. Outputs go to `artifacts/publish/` and are intentionally ignored by Git. `scripts/package-windows.ps1` creates exactly one identified EXE, one ZIP containing that EXE plus the browser test signal, one independent byte-identical browser test signal, and `SHA256SUMS.txt`; all staging remains under `artifacts/` and the script fails if an expected asset is missing, empty, different, or cannot be checksummed.
 
-Every successful `main` push runs the full Windows validation before packaging. Its exact package set is uploaded as a commit-identified Actions artifact and then published as a uniquely tagged `dev-YYYYMMDD-<short-sha>` prerelease titled **Latest Development Build**. Rerunning the workflow cannot create a duplicate release for the same commit, and old development prereleases are retained. Recommended `v*` releases remain an explicit promotion decision and are never created automatically from `main`.
+Every successful `main` push runs the full Windows validation before packaging. Its exact package set is uploaded as a commit-identified Actions artifact and then published as a uniquely tagged `dev-YYYYMMDD-<short-sha>` prerelease titled **Latest Development Build**. Rerunning the workflow cannot create a duplicate release for the same commit, and old development prereleases are retained. Stable `v*` releases remain an explicit promotion decision and are never created automatically from `main`.
 
 ## Implemented and still under testing
 

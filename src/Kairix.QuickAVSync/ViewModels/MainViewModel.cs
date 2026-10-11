@@ -1229,7 +1229,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         await _reconnectGate.WaitAsync();
         try { await StopCaptureAsync(); _log.Write("shutdown", "Capture disposal completed."); }
         catch (CaptureWorkerTerminationException ex) { _log.Write("shutdown.failure", ex.Message); }
-        finally { _reconnectGate.Release(); _lifetimeCts.Dispose(); _settingsService.Dispose(); }
+        finally { _reconnectGate.Release(); _lifetimeCts.Dispose(); _settingsService.Dispose(); _log.Dispose(); }
     }
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? name = null) { if (EqualityComparer<T>.Default.Equals(field, value)) return false; field = value; Changed(name); return true; }
     private void Changed([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));

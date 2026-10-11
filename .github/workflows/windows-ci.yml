@@ -34,7 +34,7 @@ jobs:
           $projectDate = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTimeOffset]::UtcNow, 'New Zealand Standard Time').ToString('yyyyMMdd')
           $buildId = "dev-$projectDate-$shortSha"
           "build_id=$buildId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-      - name: Package both Windows variants
+      - name: Package Windows release assets
         if: github.event_name == 'push'
         shell: pwsh
         run: ./scripts/package-windows.ps1 -BuildId '${{ steps.identity.outputs.build_id }}' -SourceCommit '${{ github.sha }}' -BuildChannel Development

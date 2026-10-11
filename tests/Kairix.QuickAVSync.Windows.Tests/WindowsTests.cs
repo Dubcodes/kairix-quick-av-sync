@@ -302,6 +302,26 @@ public sealed class MainViewModelHistoryIntegrationTests
 
 public sealed class SettingsTests
 {
+    [Fact]
+    public void LoggerFlushesItsBoundedBackgroundQueueOnDispose()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "logger-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "current.log");
+            using (var logger = new AppLogger(path))
+            {
+                logger.Write("capture.samples", "callback-safe diagnostic");
+                logger.Write("shutdown", "flush marker");
+            }
+            var content = File.ReadAllText(path);
+            Assert.Contains("callback-safe diagnostic", content);
+            Assert.Contains("flush marker", content);
+        }
+        finally { Directory.Delete(directory, true); }
+    }
+
     [Fact] public void RoundTripsOnlyAllowedConfiguration()
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-{Guid.NewGuid():N}.json");

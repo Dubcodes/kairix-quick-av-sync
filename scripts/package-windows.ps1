@@ -8,7 +8,7 @@ param(
     [string] $SourceCommit,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Recommended', 'Development')]
+    [ValidateSet('Release', 'Development')]
     [string] $BuildChannel
 )
 
@@ -19,13 +19,17 @@ $repositoryRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoo
 $project = Join-Path $repositoryRoot 'src/Kairix.QuickAVSync/Kairix.QuickAVSync.csproj'
 $publishRoot = Join-Path $repositoryRoot 'artifacts/publish'
 $packageDirectory = Join-Path $repositoryRoot 'artifacts/package'
-$zipStagingDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "kairix-$BuildId-$PID"
+$stagingRoot = Join-Path $repositoryRoot 'artifacts/staging'
+$zipStagingDirectory = Join-Path $stagingRoot "$BuildId-$PID"
+$canonicalHtml = Join-Path $repositoryRoot 'kairix_av_sync_test_signal_for_browser.html'
 
 $selfContainedSource = Join-Path $publishRoot 'self-contained/Kairix.QuickAVSync.exe'
 $selfContainedName = "Kairix.QuickAVSync-$BuildId-win-x64.exe"
 $zipName = "Kairix-Quick-AV-Sync-$BuildId-win-x64.zip"
 $selfContainedAsset = Join-Path $packageDirectory $selfContainedName
 $zipAsset = Join-Path $packageDirectory $zipName
+$htmlName = 'Kairix-AV-Sync-Test-Signal.html'
+$htmlAsset = Join-Path $packageDirectory $htmlName
 $checksumAsset = Join-Path $packageDirectory 'SHA256SUMS.txt'
 
 function Assert-ChildPath([string] $Parent, [string] $Child, [string] $Description) {
@@ -37,7 +41,8 @@ function Assert-ChildPath([string] $Parent, [string] $Child, [string] $Descripti
 }
 
 Assert-ChildPath $repositoryRoot $packageDirectory 'Package directory'
-Assert-ChildPath ([System.IO.Path]::GetTempPath()) $zipStagingDirectory 'ZIP staging directory'
+Assert-ChildPath $repositoryRoot $stagingRoot 'Staging root'
+Assert-ChildPath $stagingRoot $zipStagingDirectory 'ZIP staging directory'
 
 try {
     if (Test-Path -LiteralPath $packageDirectory) {
@@ -46,7 +51,13 @@ try {
     New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
     New-Item -ItemType Directory -Path $zipStagingDirectory -Force | Out-Null
 
+    if (-not (Test-Path -LiteralPath $canonicalHtml -PathType Leaf) -or (Get-Item -LiteralPath $canonicalHtml).Length -le 0) {
+        throw "Canonical browser test signal is missing or empty: $canonicalHtml"
+    }
+
     $commonProperties = @(
+        '--no-restore',
+        '-p:NuGetAudit=false',
         "-p:BuildId=$BuildId",
         "-p:SourceCommit=$SourceCommit",
         "-p:BuildChannel=$BuildChannel",
@@ -63,12 +74,18 @@ try {
     }
 
     Copy-Item -LiteralPath $selfContainedSource -Destination $selfContainedAsset
+    Copy-Item -LiteralPath $canonicalHtml -Destination $htmlAsset
+    if ((Get-FileHash -LiteralPath $canonicalHtml -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $htmlAsset -Algorithm SHA256).Hash) {
+        throw 'Packaged browser test signal differs from the canonical repository file.'
+    }
     Copy-Item -LiteralPath $selfContainedAsset -Destination (Join-Path $zipStagingDirectory $selfContainedName)
+    Copy-Item -LiteralPath $htmlAsset -Destination (Join-Path $zipStagingDirectory $htmlName)
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $zipStagingDirectory
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $zipStagingDirectory
     Compress-Archive -Path (Join-Path $zipStagingDirectory '*') -DestinationPath $zipAsset -Force
 
-    $publicAssets = @($selfContainedAsset, $zipAsset)
+    $publicAssets = @($selfContainedAsset, $zipAsset, $htmlAsset)
     $checksumLines = foreach ($asset in $publicAssets) {
         if (-not (Test-Path -LiteralPath $asset -PathType Leaf) -or (Get-Item -LiteralPath $asset).Length -le 0) {
             throw "Package asset is missing or empty: $asset"
@@ -91,5 +108,8 @@ try {
 finally {
     if (Test-Path -LiteralPath $zipStagingDirectory) {
         Remove-Item -LiteralPath $zipStagingDirectory -Recurse -Force
+    }
+    if ((Test-Path -LiteralPath $stagingRoot) -and -not (Get-ChildItem -LiteralPath $stagingRoot -Force | Select-Object -First 1)) {
+        Remove-Item -LiteralPath $stagingRoot -Force
     }
 }

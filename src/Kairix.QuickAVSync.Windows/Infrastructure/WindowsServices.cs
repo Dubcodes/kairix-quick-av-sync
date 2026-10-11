@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading.Channels;
 using Kairix.QuickAVSync.Capture;
 using Kairix.QuickAVSync.Models;
 using Kairix.QuickAVSync.Services;
@@ -99,23 +100,57 @@ public sealed class MemoryStatusService
     }
 }
 
-public sealed class AppLogger(string? path = null) : IDiagnosticSink
+public sealed class AppLogger : IDiagnosticSink, IDisposable
 {
-    private readonly string _path = path ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairix", "QuickAVSync", "logs", "current.log");
-    private readonly object _gate = new();
+    private readonly string _path;
+    private readonly Channel<string> _lines;
+    private readonly Task _writerTask;
+    private int _disposed;
+
+    public AppLogger(string? path = null)
+    {
+        _path = path ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kairix", "QuickAVSync", "logs", "current.log");
+        _lines = Channel.CreateBounded<string>(new BoundedChannelOptions(1024)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest
+        });
+        _writerTask = Task.Run(WriteLoopAsync);
+    }
+
     public string Path => _path;
     public void Write(string message) => Write("app", message);
     public void Write(string category, string message)
     {
-        try
+        if (Volatile.Read(ref _disposed) == 0)
+            _lines.Writer.TryWrite($"{DateTimeOffset.Now:O} [{category}] {message}");
+    }
+
+    private async Task WriteLoopAsync()
+    {
+        var batch = new List<string>(64);
+        await foreach (var line in _lines.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            lock (_gate)
+            batch.Add(line);
+            while (batch.Count < 256 && _lines.Reader.TryRead(out var next)) batch.Add(next);
+            try
             {
                 Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
-                if (File.Exists(_path) && new FileInfo(_path).Length > 1_000_000) File.Move(_path, System.IO.Path.ChangeExtension(_path, ".previous.log"), true);
-                File.AppendAllText(_path, $"{DateTimeOffset.Now:O} [{category}] {message}{Environment.NewLine}");
+                if (File.Exists(_path) && new FileInfo(_path).Length > 1_000_000)
+                    File.Move(_path, System.IO.Path.ChangeExtension(_path, ".previous.log"), true);
+                await File.AppendAllLinesAsync(_path, batch).ConfigureAwait(false);
             }
+            catch { }
+            finally { batch.Clear(); }
         }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        _lines.Writer.TryComplete();
+        try { _writerTask.GetAwaiter().GetResult(); }
         catch { }
     }
 }

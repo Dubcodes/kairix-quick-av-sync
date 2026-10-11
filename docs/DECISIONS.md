@@ -21,7 +21,7 @@ This concise log records durable project choices. Evidence and open questions be
 | Live audio meter | Display peak dBFS from incoming `AudioChunk` samples at a coalesced 25 Hz UI rate. Metering continues during Hold and historical review without changing detector admission or capture behavior. |
 | Visual detector engines | Run one selected lightweight deterministic engine per event: Human Clap by default, or Flash / Test Signal for electronic cues. Capture, timing, reconstruction, review, and history remain shared. |
 | Audio-only fallback | A strong impulsive transient without a visual match is retained as a reviewable Audio Candidate, not a confirmed sync result or normal history entry; weaker unmatched transients are discarded. |
-| History | Keep the newest 3, 5, or 10 finalized automatic results (default 3) as immutable processed review-window snapshots in bounded RAM. History depth persists; captured history media does not. |
+| History | Keep the newest 3, 5, or 10 finalized automatic results (default 3) as immutable processed review-window snapshots in bounded RAM. Derive the trend graph from that same collection without another media store. History depth persists; captured history media does not. |
 | Privacy | No telemetry, accounts, database, cloud dependency, or media persistence. |
 | Browser source | Ship one offline-capable HTML A/V sync test signal with the repository. |
-| Releases | Recommended `v*` releases are deliberate promotions; validated `main` commits produce separate development prereleases. |
+| Releases | Stable `v*` releases are deliberate promotions. Public assets are exactly one self-contained x64 EXE, one ZIP, one independent canonical browser-signal HTML file, and SHA256SUMS; validated `main` commits produce separate development prereleases with the same shape. |

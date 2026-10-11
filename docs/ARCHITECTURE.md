@@ -44,7 +44,7 @@ Windows infrastructure:
 - Config Manager/SetupAPI Container ID lookup;
 - MMDevice endpoint/property enumeration;
 - WASAPI shared-mode PCM capture with endpoint QPC timestamps;
-- Windows memory/process status, bounded local logging, and settings persistence.
+- Windows memory/process status, bounded queued local logging, and settings persistence. The single log writer batches disk work away from capture callbacks and is flushed on application disposal.
 
 Media Foundation native-mode diagnostics retain whether the interlace attribute was present, its raw value, interpreted scan/layout/order, and the final negotiated media type. Missing metadata never silently becomes progressive.
 
@@ -60,7 +60,7 @@ Passive source estimates never change capture or reconstruction settings. A stro
 
 ### `Kairix.QuickAVSync` (`net10.0-windows`, WPF)
 
-Views, custom waveform/sync controls, commands, presentation state, WPF image conversion, and composition of the Core and Windows backends. WPF remains the right V1 choice; this pass deliberately did not introduce another UI framework. The view model owns each event-analysis, passive-analysis, debounced-reconnect, and capture lifetime: supersession cancels and awaits work, generation checks reject stale UI delivery, and capture callbacks are detached before a retiring session's buffers are cleared.
+Views, custom waveform/sync/trend controls, commands, presentation state, WPF image conversion, and composition of the Core and Windows backends. The trend control projects numeric points directly from the bounded session-history collection and never retains historical media independently. WPF remains the right V1 choice; this pass deliberately did not introduce another UI framework. The view model owns each event-analysis, passive-analysis, debounced-reconnect, and capture lifetime: supersession cancels and awaits work, generation checks reject stale UI delivery, and capture callbacks are detached before a retiring session's buffers are cleared.
 
 ## Capture and timing flow
 

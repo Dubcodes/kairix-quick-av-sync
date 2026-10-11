@@ -39,8 +39,8 @@ jobs:
 
           $expectedNames = @(
             "Kairix.QuickAVSync-$buildId-win-x64.exe",
-            "Kairix.QuickAVSync-$buildId-win-x64-framework-dependent.exe",
             "Kairix-Quick-AV-Sync-$buildId-win-x64.zip",
+            'Kairix-AV-Sync-Test-Signal.html',
             'SHA256SUMS.txt'
           )
           foreach ($name in $expectedNames) {
@@ -52,13 +52,18 @@ jobs:
 
           $checksumLines = @(Get-Content -LiteralPath (Join-Path $packageDirectory 'SHA256SUMS.txt'))
           if ($checksumLines.Count -ne 3) { throw 'SHA256SUMS.txt must contain exactly three public asset checksums.' }
-          foreach ($line in $checksumLines) {
+          $checksummedNames = $expectedNames[0..2]
+          $verifiedNames = foreach ($line in $checksumLines) {
             if ($line -notmatch '^([0-9a-f]{64})  (.+)$') { throw "Invalid checksum line: $line" }
-            $asset = Join-Path $packageDirectory $Matches[2]
-            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Checksummed asset is missing: $($Matches[2])" }
+            $name = $Matches[2]
+            if ($checksummedNames -notcontains $name) { throw "Unexpected checksummed asset: $name" }
+            $asset = Join-Path $packageDirectory $name
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Checksummed asset is missing: $name" }
             $actual = (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne $Matches[1]) { throw "Checksum mismatch: $($Matches[2])" }
+            if ($actual -ne $Matches[1]) { throw "Checksum mismatch: $name" }
+            $name
           }
+          if (@(Compare-Object $checksummedNames $verifiedNames).Count -ne 0) { throw 'SHA256SUMS.txt does not cover the exact three public assets.' }
           "build_id=$buildId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Create the public development prerelease
         shell: pwsh
@@ -83,14 +88,14 @@ jobs:
             '',
             'This build was produced from the current `main` commit after the required Windows validation passed.',
             '',
-            'It is newer than the recommended release and may contain recently changed or unfinished functionality. Use the recommended release if stability is more important.',
+            'It is newer than the stable release and may contain recently changed or unfinished functionality. Use the stable release if stability is more important.',
             '',
-            'The self-contained Windows x64 EXE is recommended for ordinary use. The smaller framework-dependent EXE requires the matching .NET Desktop Runtime.',
+            'The self-contained Windows x64 EXE is the normal application download. The standalone browser test signal is also included as an independent asset and inside the ZIP.',
             '',
             'All development prereleases are retained to provide rollback history; at least the five newest successful builds remain public.'
           ) | Set-Content -LiteralPath $notesPath -Encoding utf8
 
           $assets = @(Get-ChildItem -LiteralPath (Join-Path $PWD 'artifacts/package') -File | ForEach-Object FullName)
-          if ($assets.Count -ne 4) { throw 'Expected two EXEs, one ZIP, and SHA256SUMS.txt.' }
+          if ($assets.Count -ne 4) { throw 'Expected one EXE, one ZIP, the browser test signal, and SHA256SUMS.txt.' }
           gh release create $buildId @assets --repo '${{ github.repository }}' --target $sha --title "Latest Development Build · $buildId" --notes-file $notesPath --prerelease
           if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
