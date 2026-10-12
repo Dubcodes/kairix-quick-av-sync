@@ -9,15 +9,36 @@ public sealed class BoundedReviewHistoryTests
     [InlineData(3)]
     [InlineData(5)]
     [InlineData(10)]
+    [InlineData(20)]
     public void HistoryRetainsOnlyTheConfiguredNewestResults(int capacity)
     {
         var history = new SessionHistoryService(capacity);
-        for (var i = 0; i < 12; i++) history.Add(Result(i));
+        for (var i = 0; i < 21; i++) history.Add(Result(i));
 
         Assert.Equal(capacity, history.Capacity);
         Assert.Equal(capacity, history.Items.Count);
-        Assert.Equal(11, history.Items[0].Result.SignedMilliseconds);
-        Assert.Equal(12 - capacity, history.Items[^1].Result.SignedMilliseconds);
+        Assert.Equal(20, history.Items[0].Result.SignedMilliseconds);
+        Assert.Equal(21 - capacity, history.Items[^1].Result.SignedMilliseconds);
+    }
+
+    [Fact]
+    public void TwentyFirstResultEvictsOnlyTheOldestAndShrinkingKeepsTheNewest()
+    {
+        var history = new SessionHistoryService(20);
+        for (var i = 0; i < 20; i++) history.Add(Result(i));
+        Assert.Equal(Enumerable.Range(0, 20).Reverse().Select(value => (double)value), history.Items.Select(item => item.Result.SignedMilliseconds));
+
+        history.Add(Result(20));
+        Assert.Equal(20, history.Items.Count);
+        Assert.Equal(20, history.Items[0].Result.SignedMilliseconds);
+        Assert.Equal(1, history.Items[^1].Result.SignedMilliseconds);
+
+        history.SetCapacity(10);
+        Assert.Equal(Enumerable.Range(11, 10).Reverse().Select(value => (double)value), history.Items.Select(item => item.Result.SignedMilliseconds));
+        history.SetCapacity(5);
+        Assert.Equal([20d, 19d, 18d, 17d, 16d], history.Items.Select(item => item.Result.SignedMilliseconds));
+        history.SetCapacity(3);
+        Assert.Equal([20d, 19d, 18d], history.Items.Select(item => item.Result.SignedMilliseconds));
     }
 
     [Fact]

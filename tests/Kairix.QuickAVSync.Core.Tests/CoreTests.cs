@@ -314,6 +314,72 @@ public sealed class VisualDetectorTests(ITestOutputHelper output)
     [Fact] public async Task WholeFrameCameraMovementIsRejected() { var frames = Enumerable.Range(0, 12).Select(i => new VideoFrame(Ticks(i), 320, 180, Enumerable.Range(0, 320 * 180).Select(p => (byte)(25 + ((p % 320 + i * 5) % 80))).ToArray(), i)).ToArray(); Assert.Null(await new MotionVisualClapDetector().DetectAsync(frames, frames[6].Timestamp, default)); }
     [Fact] public async Task RandomSparseNoiseIsRejected() { var frames = Enumerable.Range(0, 12).Select(i => Frame(i, pixels => { var random = new Random(100 + i); for (var n = 0; n < 18; n++) pixels[random.Next(pixels.Length)] = 220; })).ToArray(); Assert.Null(await new MotionVisualClapDetector().DetectAsync(frames, frames[6].Timestamp, default)); }
     [Fact] public async Task SensitivityChangesWeakDistantAcceptanceWithoutChangingConfidence() { var frames = HighResolutionDistantFrames(); var detector = new MotionVisualClapDetector(); var low = await detector.DetectAsync(frames, frames[4].Timestamp, default, new(0)); var medium = await detector.DetectAsync(frames, frames[4].Timestamp, default, new(50)); var high = await detector.DetectAsync(frames, frames[4].Timestamp, default, new(100)); Assert.Null(low); Assert.NotNull(medium); Assert.NotNull(high); Assert.Equal(medium!.TemporalIndex, high!.TemporalIndex); Assert.Equal(medium.Confidence, high.Confidence, 10); Assert.InRange(high.Confidence, .12, .95); }
+    [Theory]
+    [InlineData(0, .1000, .810)]
+    [InlineData(25, .0300, .745)]
+    [InlineData(50, .0080, .680)]
+    [InlineData(75, .0050, .615)]
+    [InlineData(90, .0035, .576)]
+    [InlineData(100, .0025, .550)]
+    public void HumanClapSensitivityUsesDocumentedControlPoints(int sensitivity, double evidence, double pattern)
+    {
+        var thresholds = MotionVisualClapDetector.ThresholdsFor(sensitivity);
+        Assert.Equal(evidence, thresholds.Evidence, 6);
+        Assert.Equal(pattern, thresholds.PatternQuality, 6);
+    }
+
+    [Fact]
+    public async Task NormalHumanClapPassesAtTheMiddleOfTheSlider()
+    {
+        var frames = BrowserClapFrames(contact: true);
+        var detector = new MotionVisualClapDetector();
+        var candidate = await detector.DetectAsync(frames, frames[5].Timestamp, default, new(50));
+        Assert.NotNull(candidate);
+        Assert.Equal("accepted", detector.LatestAttemptDiagnostic!.Outcome);
+    }
+
+    [Fact]
+    public async Task WeakerStructuredClapFailsLowSensitivityAndPassesNormalSensitivity()
+    {
+        var frames = WeakStructuredClapFrames();
+        var detector = new MotionVisualClapDetector();
+        Assert.Null(await detector.DetectAsync(frames, frames[4].Timestamp, default, new(0)));
+        var rejected = detector.LatestAttemptDiagnostic;
+        Assert.NotNull(rejected);
+        Assert.Contains(rejected!.Outcome, new[] { "insufficient evidence", "pattern quality" });
+
+        var accepted = await detector.DetectAsync(frames, frames[4].Timestamp, default, new(50));
+        Assert.NotNull(accepted);
+        Assert.Equal("accepted", detector.LatestAttemptDiagnostic!.Outcome);
+    }
+
+    [Fact]
+    public async Task HighSensitivityNeverBypassesApproachOrGlobalMotionRejection()
+    {
+        var onset = Enumerable.Range(0, 11).Select(i => Frame(i, pixels => { if (i is >= 5 and <= 7) FillRect(pixels, 320, 135, 70, 50, 40, 220); })).ToArray();
+        var global = Enumerable.Range(0, 11).Select(i => new VideoFrame(Ticks(i), 320, 180, Enumerable.Repeat((byte)(i == 5 ? 220 : 30), 320 * 180).ToArray(), i)).ToArray();
+        var detector = new MotionVisualClapDetector();
+        Assert.Null(await detector.DetectAsync(onset, onset[5].Timestamp, default, new(100)));
+        Assert.NotEqual("accepted", detector.LatestAttemptDiagnostic!.Outcome);
+        Assert.Null(await detector.DetectAsync(global, global[5].Timestamp, default, new(100)));
+        Assert.NotEqual("accepted", detector.LatestAttemptDiagnostic!.Outcome);
+    }
+
+    [Fact]
+    public async Task HumanClapDetectionAndDiagnosticsAreDeterministic()
+    {
+        var frames = WeakStructuredClapFrames();
+        var firstDetector = new MotionVisualClapDetector();
+        var secondDetector = new MotionVisualClapDetector();
+        var first = await firstDetector.DetectAsync(frames, frames[4].Timestamp, default, new(75));
+        var second = await secondDetector.DetectAsync(frames, frames[4].Timestamp, default, new(75));
+        Assert.NotNull(first); Assert.NotNull(second);
+        Assert.Equal(first!.TemporalIndex, second!.TemporalIndex);
+        Assert.Equal(first.Confidence, second.Confidence, 10);
+        Assert.Equal(firstDetector.LatestAttemptDiagnostic, secondDetector.LatestAttemptDiagnostic);
+        Assert.DoesNotContain(typeof(HumanClapAttemptDiagnostic).GetProperties(), property =>
+            property.PropertyType == typeof(VideoFrame) || property.Name.Contains("Frame", StringComparison.OrdinalIgnoreCase));
+    }
     [Fact] public async Task BrowserStyleBlocksSelectExactContactWithStrongConfidence() { var frames = BrowserClapFrames(contact: true); var candidate = await new MotionVisualClapDetector().DetectAsync(frames, frames[5].Timestamp, default); Assert.NotNull(candidate); Assert.Equal(5, candidate!.TemporalIndex); Assert.InRange(candidate.Confidence, .75, .95); }
     [Fact] public async Task BrowserStyleBlocksWithoutContactOrSettleAreRejected() { var frames = BrowserClapFrames(contact: false); Assert.Null(await new MotionVisualClapDetector().DetectAsync(frames, frames[6].Timestamp, default, new(100))); }
     [Fact] public async Task LaterCleanContactBeatsEarlierWeakMotion() { var frames = CompetingClapFrames(); var candidate = await new MotionVisualClapDetector().DetectAsync(frames, frames[3].Timestamp, default, new(100)); Assert.NotNull(candidate); Assert.Equal(9, candidate!.TemporalIndex); Assert.True(candidate.Confidence >= .7); }
@@ -349,6 +415,14 @@ public sealed class VisualDetectorTests(ITestOutputHelper output)
         if (i == 2) FillRectSized(pixels, 640, 360, 302, 170, 5, 7, 68);
         if (i is >= 3 and <= 6) FillRectSized(pixels, 640, 360, 315, 170, 10, 7, 68);
         if (i == 7) FillRectSized(pixels, 640, 360, 334, 170, 10, 7, 68);
+        return new VideoFrame(new(i * 200_000L, TimingQuality.StreamTimestamp), 640, 360, pixels, i);
+    }).ToArray();
+    private static VideoFrame[] WeakStructuredClapFrames() => Enumerable.Range(0, 10).Select(i =>
+    {
+        var pixels = Enumerable.Repeat((byte)45, 640 * 360).ToArray();
+        if (i == 2) FillRectSized(pixels, 640, 360, 302, 170, 5, 7, 57);
+        if (i is >= 3 and <= 6) FillRectSized(pixels, 640, 360, 315, 170, 10, 7, 57);
+        if (i == 7) FillRectSized(pixels, 640, 360, 334, 170, 10, 7, 57);
         return new VideoFrame(new(i * 200_000L, TimingQuality.StreamTimestamp), 640, 360, pixels, i);
     }).ToArray();
     private static VideoFrame[] ScaledClapFrames(int width, int height) => Enumerable.Range(0, 10).Select(i =>

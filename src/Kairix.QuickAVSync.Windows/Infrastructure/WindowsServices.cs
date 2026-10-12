@@ -58,7 +58,7 @@ public sealed class SettingsService(string? path = null) : IDisposable
             AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual,
             VisualDetector = Enum.IsDefined(value.VisualDetector) ? value.VisualDetector : VisualDetectorKind.HumanClap,
             VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), AudioSensitivity = Math.Clamp(value.AudioSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30),
-            SessionHistoryDepth = value.SessionHistoryDepth switch { 5 => 5, 10 => 10, _ => 3 },
+            SessionHistoryDepth = value.SessionHistoryDepth switch { 5 => 5, 10 => 10, 20 => 20, _ => 3 },
             ShowAllCaptureModes = value.ShowAllCaptureModes,
             WorkWindowMilliseconds = Math.Clamp(value.WorkWindowMilliseconds, 50, 2000),
             DetectionWidth = value.DetectionWidth is > 0 and <= 8192 ? value.DetectionWidth : 640,

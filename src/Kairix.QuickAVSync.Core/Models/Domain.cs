@@ -223,6 +223,21 @@ public sealed record VisualDetectionTrace(
     double ChangedFraction = 0,
     double OnsetQuality = 0);
 
+public sealed record HumanClapAttemptDiagnostic(
+    int Sensitivity,
+    double ApproachEvidence,
+    double RequiredEvidenceThreshold,
+    double ApproachQuality,
+    double ContinuityQuality,
+    double DropQuality,
+    double SettleQuality,
+    double PatternQuality,
+    double RequiredPatternQuality,
+    double? CandidateMargin,
+    string Outcome);
+
+public readonly record struct HumanClapSensitivityThresholds(double Evidence, double PatternQuality);
+
 public sealed record VisualCandidate(
     MediaTimestamp Timestamp,
     int TemporalIndex,

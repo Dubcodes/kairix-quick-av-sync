@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.ExceptionServices;
 using System.Collections.ObjectModel;
+using System.Windows.Input;
 using Kairix.QuickAVSync.Capture;
 using Kairix.QuickAVSync.Controls;
 using Kairix.QuickAVSync.Models;
@@ -87,6 +88,30 @@ public sealed class CaptureModeAndAudioUiTests
             Assert.Single(HistoryTrendSeries.Build(history));
             history.Clear();
             Assert.Empty(HistoryTrendSeries.Build(history));
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public void HistoryTrendPointExecutesTheSameSelectionCommandWithTheExactSessionResult()
+    {
+        Assert.Contains("SelectionCommand=\"{Binding SelectHistoryCommand}\"", Ui);
+        RunSta(() =>
+        {
+            var newest = new SessionResult(DateTime.UtcNow, new(3, "newest"), .8);
+            var middle = new SessionResult(DateTime.UtcNow.AddSeconds(-1), new(-2, "middle"), .7);
+            var oldest = new SessionResult(DateTime.UtcNow.AddSeconds(-2), new(1, "oldest"), .6);
+            object? selected = null;
+            var graph = new HistoryTrendGraph
+            {
+                ItemsSource = new ObservableCollection<SessionResult>([newest, middle, oldest]),
+                SelectionCommand = new TestCommand(parameter => selected = parameter)
+            };
+
+            var middlePoint = HistoryTrendSeries.Build([newest, middle, oldest]).Single(point => point.Milliseconds == -2);
+            Assert.True(graph.ExecutePoint(middlePoint));
+            Assert.Same(middle, selected);
+            Assert.Same(middle.Snapshot, ((SessionResult)selected!).Snapshot);
             return Task.CompletedTask;
         });
     }
@@ -214,6 +239,13 @@ public sealed class CaptureModeAndAudioUiTests
             var format = options.PreferredNativeFormatId switch { "advanced" => AdvancedFormat, "thirty" => ThirtyFormat, _ => RecommendedFormat };
             return Task.FromResult<ICaptureSession>(new FakeCaptureSession(format));
         }
+    }
+
+    private sealed class TestCommand(Action<object?> execute) : ICommand
+    {
+        public event EventHandler? CanExecuteChanged { add { } remove { } }
+        public bool CanExecute(object? parameter) => true;
+        public void Execute(object? parameter) => execute(parameter);
     }
 
     private sealed class FakeCaptureSession(CaptureFormat format) : ICaptureSession

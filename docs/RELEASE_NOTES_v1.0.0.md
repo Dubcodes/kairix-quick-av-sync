@@ -6,13 +6,14 @@ Kairix Quick A/V Sync v1.0.0 is the first stable Windows release. It measures au
 
 - Continuous automatic detection with explicit Armed and Hold states.
 - Manual timeline review with independent visual and audio markers.
-- Bounded, configurable 3/5/10-event session history with immutable in-memory review snapshots.
+- Bounded, configurable 3/5/10/20-event session history with immutable in-memory review snapshots.
 - Clickable historical results that reopen the exact retained review in Hold.
 - Compact session-history trend graph with a signed zero reference and no additional media retention.
 - Exact native capture-mode selection and transport-specific interpretation choices, including supported woven-field reconstruction.
 - Live mono/stereo input audio metering with actual sample-rate and channel display, continuing during Hold and history review.
 - Separate **Driver capture**, **Observed delivery**, and **Source cadence** reporting; source cadence remains Unknown or explicitly estimated unless authoritative evidence exists.
 - Editable 0–100 visual and audio sensitivity controls, structured shortcut help, persistent themes, and configurable review presentation.
+- Human Clap sensitivity controls acceptance while approach, contact, settle, and broad-motion rejection remain active across the full range.
 - A standalone browser A/V test signal supplied independently and inside the ZIP.
 
 ## Download

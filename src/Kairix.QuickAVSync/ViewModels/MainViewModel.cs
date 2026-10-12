@@ -139,7 +139,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ObservableCollection<ThemeOption> Themes { get; } = [];
     public ObservableCollection<string> AudioDisplayStyles { get; } = ["Centered Fill", "Centered Bars", "Centered Line", "Peak Fill", "Peak Bars", "Peak Line"];
     public ObservableCollection<string> AudioDisplayAmplitudes { get; } = [WaveformDisplayTransform.AutoGain, WaveformDisplayTransform.Linear, WaveformDisplayTransform.Db60, WaveformDisplayTransform.Db96];
-    public ObservableCollection<int> SessionHistoryDepths { get; } = [3, 5, 10];
+    public ObservableCollection<int> SessionHistoryDepths { get; } = [3, 5, 10, 20];
     public ObservableCollection<SessionResult> RecentResults { get; } = [];
     public ICommand RefreshCommand { get; }
     public ICommand ReconnectCommand { get; }
@@ -353,7 +353,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         get => _settings.SessionHistoryDepth;
         set
         {
-            var normalized = value switch { 5 => 5, 10 => 10, _ => 3 };
+            var normalized = value switch { 5 => 5, 10 => 10, 20 => 20, _ => 3 };
             if (_settings.SessionHistoryDepth == normalized) return;
             _settings.SessionHistoryDepth = normalized; _history.SetCapacity(normalized); RefreshRecentResults(); Changed(); Changed(nameof(HistoryMemoryText)); SaveSettings();
         }
@@ -846,6 +846,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var candidate = AutoVisual
                 ? await detector.DetectAsync(built.Timeline.Frames, pending.ExpectedRawVisualTimestamp, cancellationToken, new(VisualSensitivity))
                 : null;
+            var humanDiagnostic = (detector as MotionVisualClapDetector)?.LatestAttemptDiagnostic;
             stopwatch.Stop();
             var analyzed = built.Timeline.Frames.FirstOrDefault();
             var audioQuality = AudioCandidateClassifier.Evaluate(transient);
@@ -854,6 +855,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var outcome = ReviewTimeline.ClassifyAutomaticOutcome(candidate, transient);
             if (outcome == AutomaticEventOutcome.Rejected)
             {
+                if (humanDiagnostic is not null) RecordHumanClapAttemptDiagnostics(humanDiagnostic, built.Timeline.Analysis, stopwatch.Elapsed, "AUTOMATIC EVENT REJECTED");
                 _log.Write("viewer.state", $"automatic event rejected generation={generation}; displayed review unchanged");
                 return;
             }
@@ -873,7 +875,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             AutoThumbnail = candidate is null ? null : ToBitmap(candidate.Frame); _isReview = true; _manualReview = false; Changed(nameof(IsInReview));
             if (candidate is null)
             {
-                RecordAudioCandidateDiagnostics(transient, detectorKind, built.Timeline.Analysis, stopwatch.Elapsed, audioQuality);
+                RecordAudioCandidateDiagnostics(transient, detectorKind, built.Timeline.Analysis, stopwatch.Elapsed, audioQuality, humanDiagnostic);
                 Status = "REVIEW · AUDIO CANDIDATE · ARMED";
                 _log.Write("viewer.state", $"strong audio candidate retained generation={generation} frames={_reviewFrames.Count}; no history entry");
             }
@@ -982,11 +984,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _log.Write("visual.event", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
     }
 
-    private void RecordAudioCandidateDiagnostics(AudioTransient transient, VisualDetectorKind detectorKind, FrameTimingAnalysis timeline, TimeSpan elapsed, AudioCandidateQuality quality)
+    private void RecordAudioCandidateDiagnostics(AudioTransient transient, VisualDetectorKind detectorKind, FrameTimingAnalysis timeline,
+        TimeSpan elapsed, AudioCandidateQuality quality, HumanClapAttemptDiagnostic? humanDiagnostic = null)
     {
-        LastEventDiagnosticsText = $"Detector {detectorKind} · AUDIO CANDIDATE · visual not found\nAudio {transient.Timestamp.Ticks100ns} · peak {transient.Peak:0.000} · noise {transient.NoiseFloor:0.0000} · RMS {transient.WindowRms:0.000} · crest {transient.CrestFactor:0.00} · peak/noise {transient.PeakToNoiseRatio:0.0} · attack {transient.AttackRatio:0.0}\nAudio fallback quality {quality.Quality:0.000} · passed {quality.Passed}\nAnalysis {elapsed.TotalMilliseconds:0.0} ms · frames {_reviewFrames.Count}\nTimestamp faults: duplicate {timeline.Primary.DuplicateCount}, backwards {timeline.Primary.BackwardCount}, gaps {timeline.Primary.LargeGapCount}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
+        var human = humanDiagnostic is null ? "" : $"\n{DescribeHumanClapAttempt(humanDiagnostic)}";
+        LastEventDiagnosticsText = $"Detector {detectorKind} · AUDIO CANDIDATE · visual not found\nAudio {transient.Timestamp.Ticks100ns} · peak {transient.Peak:0.000} · noise {transient.NoiseFloor:0.0000} · RMS {transient.WindowRms:0.000} · crest {transient.CrestFactor:0.00} · peak/noise {transient.PeakToNoiseRatio:0.0} · attack {transient.AttackRatio:0.0}\nAudio fallback quality {quality.Quality:0.000} · passed {quality.Passed}{human}\nAnalysis {elapsed.TotalMilliseconds:0.0} ms · frames {_reviewFrames.Count}\nTimestamp faults: duplicate {timeline.Primary.DuplicateCount}, backwards {timeline.Primary.BackwardCount}, gaps {timeline.Primary.LargeGapCount}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
         _log.Write("visual.event", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
     }
+
+    private void RecordHumanClapAttemptDiagnostics(HumanClapAttemptDiagnostic diagnostic, FrameTimingAnalysis timeline, TimeSpan elapsed, string heading)
+    {
+        LastEventDiagnosticsText = $"Detector HumanClap · {heading}\n{DescribeHumanClapAttempt(diagnostic)}\nAnalysis {elapsed.TotalMilliseconds:0.0} ms\nTimestamp faults: duplicate {timeline.Primary.DuplicateCount}, backwards {timeline.Primary.BackwardCount}, gaps {timeline.Primary.LargeGapCount}, audio continuity {Volatile.Read(ref _audioContinuityFaults)}";
+        _log.Write("visual.event", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
+    }
+
+    private static string DescribeHumanClapAttempt(HumanClapAttemptDiagnostic diagnostic) =>
+        $"Sensitivity {diagnostic.Sensitivity} · evidence {diagnostic.ApproachEvidence:0.0000} / required {diagnostic.RequiredEvidenceThreshold:0.0000}\nApproach {diagnostic.ApproachQuality:0.000} · continuity {diagnostic.ContinuityQuality:0.000} · drop {diagnostic.DropQuality:0.000} · settle {diagnostic.SettleQuality:0.000}\nPattern {diagnostic.PatternQuality:0.000} / required {diagnostic.RequiredPatternQuality:0.000} · margin {(diagnostic.CandidateMargin is { } margin ? margin.ToString("0.000") : "n/a")} · outcome {diagnostic.Outcome}";
     private static int FindNearest(IReadOnlyList<VideoFrame> frames, MediaTimestamp mark) => ReviewTimeline.NearestFrameIndex(frames, mark, 0);
     private void Step(int amount) { if (_review is null || _reviewFrames.Count == 0) return; _playheadIndex = Math.Clamp(_playheadIndex + amount, 0, _reviewFrames.Count - 1); _review.MovePlayhead(_reviewFrames[_playheadIndex].Timestamp); ShowPlayhead(); NotifyMarkers(); }
     public void StepTimeline(int amount) => Step(amount);

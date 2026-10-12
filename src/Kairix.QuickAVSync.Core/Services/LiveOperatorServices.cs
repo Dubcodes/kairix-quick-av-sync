@@ -1,3 +1,4 @@
+using System.Globalization;
 using Kairix.QuickAVSync.Models;
 
 namespace Kairix.QuickAVSync.Services;
@@ -41,11 +42,11 @@ public sealed record AudioLevelReading(
     int Channels,
     int AggregatedChunks);
 
-public readonly record struct HistoryTrendPoint(int Position, int TotalPositions, double Milliseconds, bool IsNewest);
+public readonly record struct HistoryTrendPoint(int Position, int TotalPositions, int NewestFirstIndex, double Milliseconds, bool IsNewest);
 
 public static class HistoryTrendSeries
 {
-    public const int MaximumPoints = 10;
+    public const int MaximumPoints = 20;
 
     public static IReadOnlyList<HistoryTrendPoint> Build(IEnumerable<SessionResult> newestFirst)
     {
@@ -55,10 +56,13 @@ public static class HistoryTrendSeries
         {
             var result = retained[position].Result;
             if (!result.TimingComparable || !double.IsFinite(result.SignedMilliseconds)) continue;
-            points.Add(new(position, retained.Length, result.SignedMilliseconds, position == retained.Length - 1));
+            points.Add(new(position, retained.Length, retained.Length - 1 - position, result.SignedMilliseconds, position == retained.Length - 1));
         }
         return points;
     }
+
+    public static string FormatTooltip(double milliseconds) =>
+        milliseconds.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture) + " ms";
 }
 
 public sealed class AudioLevelAccumulator

@@ -58,7 +58,7 @@ Download [kairix_av_sync_test_signal_for_browser.html](kairix_av_sync_test_signa
 6. Click or drag the timeline to scrub to the nearest real temporal image. **Pre V/Nxt V**, mouse wheel, and Left/Right step one frame or field; Shift+Left/Right step five. The result becomes **MANUAL PREVIEW** and follows the playhead immediately.
 7. Drag the yellow **AUDIO** marker or use **Pre A/Nxt A** (Ctrl+Left/Ctrl+Right) for deterministic 1.0 ms audio adjustments. Audio changes never move the visual playhead.
 8. Press Enter to commit the playhead as **MANUAL RESULT**. The automatic candidate remains available from its thumbnail for comparison.
-9. Clap again; the previous event moves into bounded session history once. Choose a depth of 3, 5, or 10 under Review. The compact trend graph uses only those retained results and selecting an entry reopens its immutable review snapshot in Hold.
+9. Clap again; the previous event moves into bounded session history once. Choose a depth of 3, 5, 10, or 20 under Review. The compact trend graph uses only those retained results; hover a point for its signed value or select it to reopen the immutable review snapshot in Hold.
 
 **Manual Clap** (Space) freezes a work window around the latest rolling-buffer position. Capture and rolling buffers continue while reviewing. Press H once to toggle Hold for new automatic detections; press it again to resume. Hold never stops capture or buffering and resets off at launch.
 

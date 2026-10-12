@@ -26,4 +26,4 @@ Authoritative capture metadata describes what the backend delivered. The selecte
 
 Driver-negotiated capture mode, observed delivery cadence, and inferred physical-source cadence are separate facts. Passive image analysis must be labelled estimated and must report Unknown when scene evidence is insufficient; only an authoritative provider may label source cadence authoritative.
 
-Settings persist per applicable device/profile. Media is bounded in RAM, session history is limited to the configured 3, 5, or 10 results, and no captured media is written to disk.
+Settings persist per applicable device/profile. Media is bounded in RAM, session history is limited to the configured 3, 5, 10, or 20 results, and no captured media is written to disk.

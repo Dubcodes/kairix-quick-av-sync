@@ -107,6 +107,27 @@ public sealed class WaveformBuilder
 
 public sealed class MotionVisualClapDetector : IVisualClapDetector
 {
+    public HumanClapAttemptDiagnostic? LatestAttemptDiagnostic { get; private set; }
+
+    public static HumanClapSensitivityThresholds ThresholdsFor(int sensitivity)
+    {
+        var clamped = Math.Clamp(sensitivity, 0, 100);
+        // Named control points keep the middle of the slider compatible with the
+        // useful historical evidence scale while retaining strict and permissive ends.
+        (int Sensitivity, double Evidence)[] evidencePoints =
+        [
+            (0, .1000),
+            (25, .0300),
+            (50, .0080),
+            (75, .0050),
+            (90, .0035),
+            (100, .0025)
+        ];
+        var evidence = Interpolate(evidencePoints, clamped);
+        var normalized = clamped / 100d;
+        return new(evidence, .81 - normalized * .26);
+    }
+
     public static string DetailDescription(int width, int height)
     {
         if (width < 2 || height < 2) return "unavailable";
@@ -116,10 +137,14 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
 
     public Task<VisualCandidate?> DetectAsync(IReadOnlyList<VideoFrame> frames, MediaTimestamp expected, CancellationToken cancellationToken, VisualDetectionOptions? options = null) => Task.Run(() =>
     {
-        if (frames.Count < 4) return null;
-        var sensitivity = (options ?? new()).NormalizedSensitivity;
-        var qualityThreshold = .81 - sensitivity * .26;
-        var acceptedEvidenceThreshold = .10 - sensitivity * .095;
+        var sensitivity = (options ?? new()).ClampedSensitivity;
+        var thresholds = ThresholdsFor(sensitivity);
+        LatestAttemptDiagnostic = null;
+        if (frames.Count < 4)
+        {
+            LatestAttemptDiagnostic = Diagnostic(0, 0, 0, 0, 0, 0, null, "insufficient frames");
+            return null;
+        }
         const double minimumEvidence = .0025;
         var features = Enumerable.Repeat(VisualTransitionFeatures.Empty, frames.Count).ToArray();
         var evidence = new double[frames.Count];
@@ -171,7 +196,6 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
             {
                 var dropQuality = Math.Clamp((peak - scoringContact) / Math.Max(peak, .0001), 0, 1);
                 var settleQuality = Math.Clamp((peak - postMean) / Math.Max(peak, .0001), 0, 1);
-                if (dropQuality < .18 || settleQuality < .12) return;
                 var localizedQuality = Math.Clamp((peak - baseline) / Math.Max(peak + .025, .0001), 0, 1);
                 var absoluteStrength = Math.Clamp(peak / .12, 0, 1);
                 var patternQuality = candidateApproachQuality * .27 + candidateContinuity * .16 + dropQuality * .23 + settleQuality * .19 + localizedQuality * .1 + absoluteStrength * .05;
@@ -184,19 +208,61 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
                 candidates.Add(new(approachIndex, contactIndex, selectionScore, patternQuality, peak, observedContact, postMean, candidateApproachQuality, candidateContinuity, dropQuality, settleQuality));
             }
         }
-        if (candidates.Count == 0) return null;
-        var strongestQuality = candidates.Max(candidate => candidate.PatternQuality);
-        var ranked = candidates.Where(candidate => candidate.PatternQuality >= strongestQuality - .18)
+        if (candidates.Count == 0)
+        {
+            LatestAttemptDiagnostic = Diagnostic(evidence.DefaultIfEmpty().Max(), 0, 0, 0, 0, 0, null, "approach structure");
+            return null;
+        }
+        var structurallyValid = candidates.Where(candidate => candidate.DropQuality >= .18 && candidate.SettleQuality >= .12).ToArray();
+        if (structurallyValid.Length == 0)
+        {
+            var plausible = candidates.OrderByDescending(candidate => candidate.PatternQuality).First();
+            LatestAttemptDiagnostic = From(plausible, null, plausible.DropQuality < .18 ? "drop" : "settle");
+            return null;
+        }
+        var strongestQuality = structurallyValid.Max(candidate => candidate.PatternQuality);
+        var ranked = structurallyValid.Where(candidate => candidate.PatternQuality >= strongestQuality - .18)
             .OrderByDescending(candidate => candidate.SelectionScore).ThenBy(candidate => candidate.ContactIndex).ToArray();
         var best = ranked[0];
-        if (best.PatternQuality < qualityThreshold || best.ApproachEvidence < acceptedEvidenceThreshold) return null;
         var dominance = ranked.Length == 1 ? 1 : Math.Clamp((best.PatternQuality - ranked[1].PatternQuality) / .25, 0, 1);
+        if (best.ApproachEvidence < thresholds.Evidence)
+        {
+            LatestAttemptDiagnostic = From(best, dominance, "insufficient evidence");
+            return null;
+        }
+        if (best.PatternQuality < thresholds.PatternQuality)
+        {
+            LatestAttemptDiagnostic = From(best, dominance, "pattern quality");
+            return null;
+        }
         var confidence = Math.Clamp(.1 + best.PatternQuality * .75 + dominance * .1, .1, .95);
+        LatestAttemptDiagnostic = From(best, dominance, "accepted");
         var chosen = frames[best.ContactIndex];
         return new VisualCandidate(chosen.Timestamp, chosen.TemporalIndex, confidence, best.SelectionScore * 10, chosen,
             new(best.ApproachIndex, best.ContactIndex, best.ContactIndex - best.ApproachIndex, best.ApproachEvidence, best.ContactEvidence, best.PostEvidence,
                 VisualDetectorKind.HumanClap, best.ApproachQuality, best.ContinuityQuality, best.DropQuality, best.SettleQuality, dominance));
+
+        HumanClapAttemptDiagnostic From(ContactEvaluation candidate, double? margin, string outcome) =>
+            Diagnostic(candidate.ApproachEvidence, candidate.ApproachQuality, candidate.ContinuityQuality, candidate.DropQuality,
+                candidate.SettleQuality, candidate.PatternQuality, margin, outcome);
+
+        HumanClapAttemptDiagnostic Diagnostic(double approachEvidence, double approachQuality, double continuityQuality,
+            double dropQuality, double settleQuality, double patternQuality, double? margin, string outcome) =>
+            new(sensitivity, approachEvidence, thresholds.Evidence, approachQuality, continuityQuality, dropQuality,
+                settleQuality, patternQuality, thresholds.PatternQuality, margin, outcome);
     }, cancellationToken);
+
+    private static double Interpolate(IReadOnlyList<(int Sensitivity, double Evidence)> points, int sensitivity)
+    {
+        for (var index = 1; index < points.Count; index++)
+        {
+            if (sensitivity > points[index].Sensitivity) continue;
+            var lower = points[index - 1]; var upper = points[index];
+            var fraction = (sensitivity - lower.Sensitivity) / (double)(upper.Sensitivity - lower.Sensitivity);
+            return lower.Evidence + (upper.Evidence - lower.Evidence) * fraction;
+        }
+        return points[^1].Evidence;
+    }
 
     private sealed record ContactEvaluation(
         int ApproachIndex,
@@ -391,13 +457,12 @@ public sealed class FlashTestSignalVisualDetector : IVisualClapDetector
 
 public static class VisualDetectorFactory
 {
-    private static readonly IVisualClapDetector HumanClap = new MotionVisualClapDetector();
     private static readonly IVisualClapDetector Flash = new FlashTestSignalVisualDetector();
 
     public static IVisualClapDetector Create(VisualDetectorKind kind) => kind switch
     {
         VisualDetectorKind.FlashTestSignal => Flash,
-        _ => HumanClap
+        _ => new MotionVisualClapDetector()
     };
 }
 
@@ -416,7 +481,7 @@ public sealed class SessionHistoryService(int capacity = 3)
     public int Capacity => _capacity;
     public void Add(SessionResult item) { _items.AddFirst(item); while (_items.Count > _capacity) _items.RemoveLast(); }
     public void SetCapacity(int capacity) { _capacity = NormalizeCapacity(capacity); while (_items.Count > _capacity) _items.RemoveLast(); }
-    private static int NormalizeCapacity(int capacity) => capacity switch { 5 => 5, 10 => 10, _ => 3 };
+    private static int NormalizeCapacity(int capacity) => capacity switch { 5 => 5, 10 => 10, 20 => 20, _ => 3 };
 }
 
 public sealed record HistoryReviewWorkspace(

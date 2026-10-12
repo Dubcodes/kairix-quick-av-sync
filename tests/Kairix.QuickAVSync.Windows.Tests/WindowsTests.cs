@@ -223,7 +223,9 @@ public sealed class MainViewModelHistoryIntegrationTests
         var (viewModel, directory) = CreateViewModel();
         try
         {
-            Assert.Equal(new[] { 3, 5, 10 }, viewModel.SessionHistoryDepths);
+            Assert.Equal(new[] { 3, 5, 10, 20 }, viewModel.SessionHistoryDepths);
+            viewModel.SessionHistoryDepth = 20;
+            Assert.Equal(20, viewModel.SessionHistoryDepth);
             viewModel.SessionHistoryDepth = 10;
             for (var index = 0; index < 10; index++) FinalizeThroughViewModel(viewModel, AutomaticScenario(validTimeline: false, eventTicks: index * 1_000_000));
             Assert.Equal(10, viewModel.RecentResults.Count);
@@ -865,7 +867,7 @@ public sealed class OperatorUiContractTests
         Assert.Contains("VisualDetectorSelector", Ui);
         Assert.Contains("Text=\"Session history depth\"", Ui);
         Assert.Contains("ItemsSource=\"{Binding SessionHistoryDepths}\" SelectedItem=\"{Binding SessionHistoryDepth}\"", Ui);
-        Assert.Contains("AutomationProperties.Name=\"Session history depth: retain 3, 5, or 10 events\"", Ui);
+        Assert.Contains("AutomationProperties.Name=\"Session history depth: retain 3, 5, 10, or 20 events\"", Ui);
         Assert.Contains("ItemsSource=\"{Binding VisualDetectors}\" SelectedItem=\"{Binding SelectedVisualDetector}\"", Ui);
         Assert.Equal(2, Ui.Split("IsMoveToPointEnabled=\"True\"").Length - 1);
         Assert.DoesNotContain("Content=\"Reconstruct fields\"", Ui);

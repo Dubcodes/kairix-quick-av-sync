@@ -77,18 +77,35 @@ public sealed class LiveOperatorServicesTests
     [Fact]
     public void HistoryTrendIsBoundedChronologicalAndPreservesSignedValues()
     {
-        var newestFirst = Enumerable.Range(0, 12)
+        var newestFirst = Enumerable.Range(0, 25)
             .Select(index => Result(index % 2 == 0 ? index : -index))
             .ToArray();
 
         var points = HistoryTrendSeries.Build(newestFirst);
 
         Assert.Equal(HistoryTrendSeries.MaximumPoints, points.Count);
-        Assert.Equal(-9, points[0].Milliseconds);
+        Assert.Equal(-19, points[0].Milliseconds);
         Assert.Equal(0, points[^1].Milliseconds);
         Assert.True(points[^1].IsNewest);
         Assert.Contains(points, point => point.Milliseconds > 0);
         Assert.Contains(points, point => point.Milliseconds < 0);
+    }
+
+    [Theory]
+    [InlineData(-43.24, "-43.2 ms")]
+    [InlineData(12.54, "+12.5 ms")]
+    [InlineData(0, "0.0 ms")]
+    public void HistoryTrendTooltipIsOnlyOneSignedValue(double value, string expected) =>
+        Assert.Equal(expected, HistoryTrendSeries.FormatTooltip(value));
+
+    [Fact]
+    public void HistoryTrendPointMapsBackToItsExactNewestFirstIdentity()
+    {
+        var newest = Result(3); var middle = Result(-2); var oldest = Result(1);
+        var points = HistoryTrendSeries.Build([newest, middle, oldest]);
+
+        Assert.Equal([1d, -2d, 3d], points.Select(point => point.Milliseconds));
+        Assert.Equal([2, 1, 0], points.Select(point => point.NewestFirstIndex));
     }
 
     [Fact]

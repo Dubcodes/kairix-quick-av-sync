@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Specialized;
 using System.Globalization;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Media;
 using Kairix.QuickAVSync.Models;
 using Kairix.QuickAVSync.Services;
@@ -10,6 +11,9 @@ namespace Kairix.QuickAVSync.Controls;
 
 public sealed class HistoryTrendGraph : FrameworkElement
 {
+    private const double HitRadius = 8;
+    private readonly List<(Point Center, HistoryTrendPoint Point)> _hitTargets = [];
+
     public static readonly DependencyProperty ItemsSourceProperty = DependencyProperty.Register(
         nameof(ItemsSource), typeof(IEnumerable), typeof(HistoryTrendGraph),
         new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, OnItemsSourceChanged));
@@ -18,6 +22,15 @@ public sealed class HistoryTrendGraph : FrameworkElement
     {
         get => (IEnumerable?)GetValue(ItemsSourceProperty);
         set => SetValue(ItemsSourceProperty, value);
+    }
+
+    public static readonly DependencyProperty SelectionCommandProperty = DependencyProperty.Register(
+        nameof(SelectionCommand), typeof(ICommand), typeof(HistoryTrendGraph));
+
+    public ICommand? SelectionCommand
+    {
+        get => (ICommand?)GetValue(SelectionCommandProperty);
+        set => SetValue(SelectionCommandProperty, value);
     }
 
     protected override void OnRender(DrawingContext context)
@@ -31,6 +44,7 @@ public sealed class HistoryTrendGraph : FrameworkElement
 
         var results = ItemsSource?.Cast<object>().OfType<SessionResult>() ?? [];
         var points = HistoryTrendSeries.Build(results);
+        _hitTargets.Clear();
         if (points.Count == 0)
         {
             DrawEmptyState(context, bounds, mutedBrush);
@@ -61,8 +75,55 @@ public sealed class HistoryTrendGraph : FrameworkElement
             if (previous is { } prior && point.Position == prior.Position + 1)
                 context.DrawLine(linePen, Map(prior), currentPosition);
             context.DrawEllipse(accentBrush, null, currentPosition, point.IsNewest ? 4 : 3, point.IsNewest ? 4 : 3);
+            _hitTargets.Add((currentPosition, point));
             previous = point;
         }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs args)
+    {
+        base.OnMouseMove(args);
+        var hit = FindHit(args.GetPosition(this));
+        ToolTip = hit is null ? null : HistoryTrendSeries.FormatTooltip(hit.Value.Point.Milliseconds);
+        Cursor = hit is null ? null : Cursors.Hand;
+    }
+
+    protected override void OnMouseLeave(MouseEventArgs args)
+    {
+        base.OnMouseLeave(args);
+        ToolTip = null;
+        Cursor = null;
+    }
+
+    protected override void OnMouseLeftButtonDown(MouseButtonEventArgs args)
+    {
+        base.OnMouseLeftButtonDown(args);
+        var hit = FindHit(args.GetPosition(this));
+        if (hit is not null && ExecutePoint(hit.Value.Point)) args.Handled = true;
+    }
+
+    internal bool ExecutePoint(HistoryTrendPoint point)
+    {
+        var result = ItemsSource?.Cast<object>().OfType<SessionResult>().Take(HistoryTrendSeries.MaximumPoints)
+            .ElementAtOrDefault(point.NewestFirstIndex);
+        if (result is null || SelectionCommand is null || !SelectionCommand.CanExecute(result)) return false;
+        SelectionCommand.Execute(result);
+        return true;
+    }
+
+    private (Point Center, HistoryTrendPoint Point)? FindHit(Point position)
+    {
+        (Point Center, HistoryTrendPoint Point)? nearest = null;
+        var distanceSquared = HitRadius * HitRadius;
+        foreach (var target in _hitTargets)
+        {
+            var dx = target.Center.X - position.X; var dy = target.Center.Y - position.Y;
+            var candidateDistance = dx * dx + dy * dy;
+            if (candidateDistance > distanceSquared) continue;
+            distanceSquared = candidateDistance;
+            nearest = target;
+        }
+        return nearest;
     }
 
     private static void OnItemsSourceChanged(DependencyObject owner, DependencyPropertyChangedEventArgs args)
@@ -72,10 +133,11 @@ public sealed class HistoryTrendGraph : FrameworkElement
             CollectionChangedEventManager.RemoveHandler(oldCollection, graph.OnCollectionChanged);
         if (args.NewValue is INotifyCollectionChanged newCollection)
             CollectionChangedEventManager.AddHandler(newCollection, graph.OnCollectionChanged);
+        graph._hitTargets.Clear();
         graph.InvalidateVisual();
     }
 
-    private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args) => InvalidateVisual();
+    private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs args) { _hitTargets.Clear(); InvalidateVisual(); }
 
     private void DrawEmptyState(DrawingContext context, Rect bounds, Brush brush)
     {

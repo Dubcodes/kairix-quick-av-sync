@@ -14,7 +14,7 @@ This focused audit distinguishes verified findings from broader assumptions. It 
 - Video preview delivery is coalesced; discarded previews do not create WPF bitmaps.
 - Live audio presentation is coalesced to 25 Hz and remains independent of automatic-event admission.
 - Event analysis, passive analysis, reconnect work, and capture lifetimes have cancellation/generation guards; retiring capture callbacks are detached before shared media is cleared.
-- Rolling buffers and 3/5/10 session history are bounded. Historical snapshots clone processed review-window media and do not reference mutable rolling buffers.
+- Rolling buffers and 3/5/10/20 session history are bounded. Historical snapshots clone processed review-window media and do not reference mutable rolling buffers.
 - Settings writes are debounced and the bounded logger uses one owned writer task.
 - The trend control uses weak collection-change subscription and has no timer or independent history collection.
 

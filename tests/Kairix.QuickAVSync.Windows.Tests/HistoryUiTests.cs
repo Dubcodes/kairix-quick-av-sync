@@ -13,6 +13,7 @@ public sealed class HistorySettingsAndUiTests
     [InlineData(3)]
     [InlineData(5)]
     [InlineData(10)]
+    [InlineData(20)]
     public void HistoryDepthPreferenceRoundTripsOnlySupportedValues(int depth)
     {
         var path = Path.Combine(Path.GetTempPath(), $"kairix-history-{Guid.NewGuid():N}.json");
