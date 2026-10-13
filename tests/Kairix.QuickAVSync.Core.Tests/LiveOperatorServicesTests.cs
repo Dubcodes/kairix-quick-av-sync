@@ -98,6 +98,24 @@ public sealed class LiveOperatorServicesTests
     public void HistoryTrendTooltipIsOnlyOneSignedValue(double value, string expected) =>
         Assert.Equal(expected, HistoryTrendSeries.FormatTooltip(value));
 
+    [Theory]
+    [InlineData(7.5, 10)]
+    [InlineData(31, 50)]
+    [InlineData(73.4, 100)]
+    [InlineData(101, 200)]
+    public void HistoryTrendRangeUsesCleanContainingNumbers(double value, double expected) =>
+        Assert.Equal(expected, HistoryTrendSeries.NiceRange([value]));
+
+    [Fact]
+    public void HistoryTrendRangeIsSymmetricAndHasASensibleEmptyMinimum()
+    {
+        Assert.Equal(50, HistoryTrendSeries.NiceRange([31]));
+        Assert.Equal(50, HistoryTrendSeries.NiceRange([-31]));
+        Assert.Equal(50, HistoryTrendSeries.NiceRange([-31, 18]));
+        Assert.Equal(10, HistoryTrendSeries.NiceRange([0]));
+        Assert.Equal(10, HistoryTrendSeries.NiceRange([]));
+    }
+
     [Fact]
     public void HistoryTrendPointMapsBackToItsExactNewestFirstIdentity()
     {

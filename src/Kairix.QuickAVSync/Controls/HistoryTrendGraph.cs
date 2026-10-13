@@ -53,18 +53,33 @@ public sealed class HistoryTrendGraph : FrameworkElement
 
         const double horizontalPadding = 9;
         const double verticalPadding = 9;
-        var width = Math.Max(1, bounds.Width - horizontalPadding * 2);
+        var range = HistoryTrendSeries.NiceRange(points.Select(point => point.Milliseconds));
+        var upperLabel = FormatScaleLabel(range);
+        var zeroLabel = FormatScaleLabel(0);
+        var lowerLabel = FormatScaleLabel(-range);
+        var pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        var upperText = ScaleText(upperLabel, mutedBrush, pixelsPerDip);
+        var zeroText = ScaleText(zeroLabel, mutedBrush, pixelsPerDip);
+        var lowerText = ScaleText(lowerLabel, mutedBrush, pixelsPerDip);
+        var labelWidth = Math.Max(upperText.Width, Math.Max(zeroText.Width, lowerText.Width));
+        const double labelGap = 6;
+        var width = Math.Max(1, bounds.Width - horizontalPadding * 2 - labelGap - labelWidth);
         var height = Math.Max(1, bounds.Height - verticalPadding * 2);
         var zeroY = verticalPadding + height / 2;
+        var amplitude = height * .45;
+        var plotRight = horizontalPadding + width;
         var zeroPen = new Pen(borderBrush, 1) { DashStyle = DashStyles.Dash };
-        context.DrawLine(zeroPen, new(horizontalPadding, zeroY), new(horizontalPadding + width, zeroY));
+        context.DrawLine(zeroPen, new(horizontalPadding, zeroY), new(plotRight, zeroY));
+        var labelX = plotRight + labelGap;
+        context.DrawText(upperText, new(labelX, zeroY - amplitude - upperText.Height / 2));
+        context.DrawText(zeroText, new(labelX, zeroY - zeroText.Height / 2));
+        context.DrawText(lowerText, new(labelX, zeroY + amplitude - lowerText.Height / 2));
 
-        var range = Math.Max(10, points.Max(point => Math.Abs(point.Milliseconds)) * 1.15);
         Point Map(HistoryTrendPoint point)
         {
             var xFraction = point.TotalPositions <= 1 ? 1 : point.Position / (double)(point.TotalPositions - 1);
             var yFraction = Math.Clamp(point.Milliseconds / range, -1, 1);
-            return new(horizontalPadding + width * xFraction, zeroY - yFraction * height * .45);
+            return new(horizontalPadding + width * xFraction, zeroY - yFraction * amplitude);
         }
 
         var linePen = new Pen(accentBrush, 1.25);
@@ -146,4 +161,15 @@ public sealed class HistoryTrendGraph : FrameworkElement
             new Typeface("Segoe UI"), 10, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         context.DrawText(formatted, new((bounds.Width - formatted.Width) / 2, (bounds.Height - formatted.Height) / 2));
     }
+
+    private static string FormatScaleLabel(double milliseconds) => milliseconds switch
+    {
+        > 0 => $"+{milliseconds:0} ms",
+        < 0 => $"−{Math.Abs(milliseconds):0} ms",
+        _ => "0 ms"
+    };
+
+    private static FormattedText ScaleText(string text, Brush brush, double pixelsPerDip) =>
+        new(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("Segoe UI"), 9, brush, pixelsPerDip);
 }

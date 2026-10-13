@@ -63,6 +63,17 @@ public static class HistoryTrendSeries
 
     public static string FormatTooltip(double milliseconds) =>
         milliseconds.ToString("+0.0;-0.0;0.0", CultureInfo.InvariantCulture) + " ms";
+
+    public static double NiceRange(IEnumerable<double> milliseconds)
+    {
+        var maximum = milliseconds.Where(double.IsFinite).Select(Math.Abs).DefaultIfEmpty().Max();
+        if (maximum <= 10) return 10;
+
+        var magnitude = Math.Pow(10, Math.Floor(Math.Log10(maximum)));
+        var normalized = maximum / magnitude;
+        var step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+        return step * magnitude;
+    }
 }
 
 public sealed class AudioLevelAccumulator
