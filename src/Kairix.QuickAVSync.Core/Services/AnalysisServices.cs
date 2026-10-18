@@ -155,59 +155,63 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
         var measured = evidence.Skip(1).ToArray(); var baseline = Median(measured);
         var deviations = measured.Select(value => Math.Abs(value - baseline)).ToArray(); var spread = Math.Max(.0015, Median(deviations) * 1.4826);
         var candidates = new List<ContactEvaluation>();
-        for (var peakIndex = 2; peakIndex < frames.Count - 2; peakIndex++)
+        var meaningfulApproach = Math.Max(minimumEvidence, baseline + spread * .15);
+        for (var contactIndex = 2; contactIndex < frames.Count - 2; contactIndex++)
         {
-            var peak = evidence[peakIndex]; var previous = evidence[peakIndex - 1];
-            var meaningfulApproach = Math.Max(minimumEvidence, baseline + spread * .15);
-            if (peak < minimumEvidence || peak < baseline + spread * .5 || peak < previous * .82 || previous < meaningfulApproach) continue;
+            // Real hand approaches commonly span more than three temporal positions,
+            // and their largest transition is not necessarily adjacent to contact.
+            // Walk back from each possible end-of-approach position and retain one
+            // short quiet interruption so motion blur or a dropped transition cannot
+            // turn a sustained approach into an isolated peak.
+            var firstApproachIndex = Math.Max(1, contactIndex - 7);
+            var approachList = new List<int>(); var quietRun = 0;
+            for (var index = contactIndex; index >= firstApproachIndex; index--)
+            {
+                if (evidence[index] >= meaningfulApproach) { approachList.Add(index); quietRun = 0; }
+                else if (++quietRun >= 2) break;
+            }
+            approachList.Reverse(); var approachIndices = approachList.ToArray();
+            if (approachIndices.Length < 2 || !approachIndices.Any(index => index >= contactIndex - 1)) continue;
 
-            // Stage 1: identify every plausible localized approach. Expected time
-            // remains a weak tie-breaker and never substitutes for contact evidence.
-            var rise = Math.Clamp((peak - Math.Max(baseline, previous * .55)) / Math.Max(.01, spread * 8), 0, 1);
+            var peakIndex = approachIndices.MaxBy(index => evidence[index]);
+            var firstSettledContactIndex = (frames[contactIndex].IsField || (approachIndices.Length == 2 && peakIndex == contactIndex))
+                && evidence[contactIndex + 1] < meaningfulApproach ? contactIndex + 1 : contactIndex;
+            var expectedDistance = Math.Abs(frames[firstSettledContactIndex].Timestamp.Ticks100ns - expected.Ticks100ns);
+            var hasQuietGap = approachIndices.Zip(approachIndices.Skip(1)).Any(pair => pair.Second - pair.First > 1);
+            if (hasQuietGap && expectedDistance > TimeSpan.FromMilliseconds(30).Ticks) continue;
+            if (approachIndices.Length == 2 && expectedDistance > TimeSpan.FromMilliseconds(30).Ticks) continue;
+
+            var peak = evidence[peakIndex];
+            if (peak < minimumEvidence || peak < baseline + spread * .5) continue;
+
+            var continuityValues = approachIndices.Zip(approachIndices.Skip(1))
+                .Where(pair => pair.Second - pair.First <= 2)
+                .Select(pair => SpatialContinuity(features[pair.First], features[pair.Second])).ToArray();
+            if (continuityValues.Length == 0) continue;
+            var continuity = continuityValues.Average();
+            var span = approachIndices[^1] - approachIndices[0] + 1;
+            var persistence = Math.Clamp((approachIndices.Length - 1) / 4d, 0, 1) * .6
+                + Math.Clamp((span - 1) / 5d, 0, 1) * .4;
             var prominence = Math.Clamp((peak - baseline) / Math.Max(peak, .0001), 0, 1);
-            var leadIn = Math.Clamp((previous - baseline) / Math.Max(peak - baseline, .0001), 0, 1);
-            var continuity = SpatialContinuity(features[peakIndex - 1], features[peakIndex]);
-            var sustainedApproach = evidence[peakIndex - 2] >= meaningfulApproach;
-            if (sustainedApproach) continuity = (continuity + SpatialContinuity(features[peakIndex - 2], features[peakIndex - 1])) / 2;
-            var approachQuality = rise * .25 + prominence * .2 + leadIn * .3 + continuity * .25;
+            var recentStrength = Math.Clamp(Math.Max(evidence[contactIndex], evidence[contactIndex - 1]) / Math.Max(peak, .0001), 0, 1);
+            var approachQuality = persistence * .32 + continuity * .28 + prominence * .22 + recentStrength * .18;
 
-            // With a sustained approach, the transition into the touching image
-            // can itself be the contact onset. Score it against the following hold.
-            if (sustainedApproach)
-            {
-                var next = evidence[peakIndex + 1];
-                var following = evidence[peakIndex + 2];
-                AddCandidate(peakIndex, peakIndex, next, following, approachQuality, continuity, peak);
-            }
-
-            // Stage 2: score every plausible contact/settle image one to three
-            // temporal positions after this approach. Selection happens only after
-            // all approach/contact pairs have been evaluated.
-            for (var contactIndex = peakIndex + 1; contactIndex <= Math.Min(frames.Count - 3, peakIndex + 3); contactIndex++)
-            {
-                var contact = evidence[contactIndex];
-                var post = contactIndex + 1 < evidence.Length ? evidence[contactIndex + 1] : contact;
-                var post2 = contactIndex + 2 < evidence.Length ? evidence[contactIndex + 2] : post;
-                var postMean = (post + post2) / 2;
-                AddCandidate(peakIndex, contactIndex, contact, postMean, approachQuality, continuity, contact);
-            }
-
-            void AddCandidate(int approachIndex, int contactIndex, double scoringContact, double postMean, double candidateApproachQuality, double candidateContinuity, double observedContact)
-            {
-                var dropQuality = Math.Clamp((peak - scoringContact) / Math.Max(peak, .0001), 0, 1);
-                var settleQuality = Math.Clamp((peak - postMean) / Math.Max(peak, .0001), 0, 1);
-                var localizedQuality = Math.Clamp((peak - baseline) / Math.Max(peak + .025, .0001), 0, 1);
-                var absoluteStrength = Math.Clamp(peak / .12, 0, 1);
-                var patternQuality = candidateApproachQuality * .27 + candidateContinuity * .16 + dropQuality * .23 + settleQuality * .19 + localizedQuality * .1 + absoluteStrength * .05;
-                var contactProximity = Math.Exp(-Math.Abs(frames[contactIndex].Timestamp.Ticks100ns - expected.Ticks100ns) / (double)TimeSpan.FromMilliseconds(160).Ticks);
-                // Once an approach has peaked, the first credible settled image is
-                // the contact. Later quiet images must not outrank it merely because
-                // they have accumulated more post-contact stillness.
-                var delayedContactPenalty = Math.Max(0, contactIndex - approachIndex - 1) * .09;
-                var selectionScore = patternQuality + contactProximity * .06 - delayedContactPenalty;
-                candidates.Add(new(approachIndex, contactIndex, selectionScore, patternQuality, peak, observedContact, postMean, candidateApproachQuality, candidateContinuity, dropQuality, settleQuality));
-            }
+            var post = evidence[contactIndex + 1];
+            var post2 = evidence[contactIndex + 2];
+            var postMean = (post + post2) / 2;
+            var contactEvidence = evidence[contactIndex];
+            var dropQuality = Math.Clamp((Math.Max(contactEvidence, evidence[contactIndex - 1]) - post) / Math.Max(peak, .0001), 0, 1);
+            var settleQuality = Math.Clamp((peak - postMean) / Math.Max(peak, .0001), 0, 1);
+            var localizedQuality = Math.Clamp((peak - baseline) / Math.Max(peak + .025, .0001), 0, 1);
+            var absoluteStrength = Math.Clamp(peak / .12, 0, 1);
+            var patternQuality = approachQuality * .30 + continuity * .12 + persistence * .12 + dropQuality * .20
+                + settleQuality * .13 + localizedQuality * .08 + absoluteStrength * .05;
+            var contactProximity = Math.Exp(-expectedDistance / (double)TimeSpan.FromMilliseconds(160).Ticks);
+            var selectionScore = patternQuality + contactProximity * .005;
+            candidates.Add(new(peakIndex, firstSettledContactIndex, selectionScore, patternQuality, peak,
+                evidence[firstSettledContactIndex], postMean, approachQuality, continuity, dropQuality, settleQuality));
         }
+
         if (candidates.Count == 0)
         {
             LatestAttemptDiagnostic = Diagnostic(evidence.DefaultIfEmpty().Max(), 0, 0, 0, 0, 0, null, "approach structure");
@@ -220,8 +224,10 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
             LatestAttemptDiagnostic = From(plausible, null, plausible.DropQuality < .18 ? "drop" : "settle");
             return null;
         }
-        var strongestQuality = structurallyValid.Max(candidate => candidate.PatternQuality);
-        var ranked = structurallyValid.Where(candidate => candidate.PatternQuality >= strongestQuality - .18)
+        var uniqueCandidates = structurallyValid.GroupBy(candidate => candidate.ContactIndex)
+            .Select(group => group.MaxBy(candidate => candidate.SelectionScore)!).ToArray();
+        var strongestQuality = uniqueCandidates.Max(candidate => candidate.PatternQuality);
+        var ranked = uniqueCandidates.Where(candidate => candidate.PatternQuality >= strongestQuality - .18)
             .OrderByDescending(candidate => candidate.SelectionScore).ThenBy(candidate => candidate.ContactIndex).ToArray();
         var best = ranked[0];
         var dominance = ranked.Length == 1 ? 1 : Math.Clamp((best.PatternQuality - ranked[1].PatternQuality) / .25, 0, 1);
@@ -235,7 +241,10 @@ public sealed class MotionVisualClapDetector : IVisualClapDetector
             LatestAttemptDiagnostic = From(best, dominance, "pattern quality");
             return null;
         }
-        var confidence = Math.Clamp(.1 + best.PatternQuality * .75 + dominance * .1, .1, .95);
+        // Confidence remains evidence-derived and sensitivity-independent. Give
+        // the sustained approach most of the weight so competing/reset motion is
+        // less certain than one coherent approach even when both pass acceptance.
+        var confidence = Math.Clamp(.05 + best.PatternQuality * .20 + best.ApproachQuality * .75 + dominance * .05, .1, .95);
         LatestAttemptDiagnostic = From(best, dominance, "accepted");
         var chosen = frames[best.ContactIndex];
         return new VisualCandidate(chosen.Timestamp, chosen.TemporalIndex, confidence, best.SelectionScore * 10, chosen,
