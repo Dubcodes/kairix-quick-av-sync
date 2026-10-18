@@ -1,0 +1,39 @@
+filename,annotation,type,resolvedContactSeconds,resolvedFrame,offsetFromAnchorPositions,labelConfidence,notes
+backsun-clap-black.mp4,08:48,clap,8.940000000000001,447,-1,high,first visible palm contact
+backsun-clap-black.mp4,20:31,clap,20.6,1030,-1,high,first visible palm contact
+backsun-clap-black.mp4,31:46,clap,31.880000000000003,1594,-2,high,first visible palm contact
+backsun-clap-grey.mp4,04:16,clap,4.28,214,-2,high,first visible palm contact
+backsun-clap-grey.mp4,13:02,clap,13,650,-2,high,first visible palm contact
+backsun-clap-grey.mp4,21:44,clap,21.86,1093,-1,high,first visible palm contact
+darkoffice-clap-black.mp4,02:40,clap,2.78,139,-1,medium,motion blur; first clear overlap
+darkoffice-clap-black.mp4,05:02,clap,5.0200000000000005,251,-1,medium,motion blur; first clear overlap
+darkoffice-clap-black.mp4,07:19,clap,7.36,368,-1,medium,motion blur; first clear overlap
+darkoffice-clap-grey.mp4,04:39,clap,4.760000000000001,238,-1,medium,motion blur; first clear overlap
+darkoffice-clap-grey.mp4,07:02,clap,7.0200000000000005,351,-1,medium,motion blur; first clear overlap
+darkoffice-clap-grey.mp4,10:34,clap,10.66,533,-1,medium,motion blur; first clear overlap
+frontsun-clap-black.mp4,04:01,clap,3.9799999999999995,199,-2,high,first visible palm contact
+frontsun-clap-black.mp4,10:04,clap,10.040000000000001,502,-2,high,first visible palm contact
+frontsun-clap-black.mp4,15:07,clap,15.100000000000001,755,-2,high,first visible palm contact
+frontsun-clap-grey.mp4,09:19,clap,9.340000000000002,467,-2,high,first visible palm contact
+frontsun-clap-grey.mp4,15:05,clap,15.06,753,-2,high,first visible palm contact
+frontsun-clap-grey.mp4,20:06,clap,20.080000000000002,1004,-2,high,first visible palm contact
+insidewindow-clap-black.mp4,06:13,clap,6.2,310,-3,medium,backlit silhouette; first joined outline
+insidewindow-clap-black.mp4,14:05,clap,14.02,701,-4,medium,backlit silhouette; first joined outline
+insidewindow-clap-black.mp4,21:32,clap,21.560000000000002,1078,-4,medium,backlit silhouette; first joined outline
+insidewindow-clap-grey.mp4,03:26,clap,3.44,172,-4,medium,backlit silhouette; first joined outline
+insidewindow-clap-grey.mp4,07:11,clap,7.16,358,-3,medium,backlit rotated hands; first joined outline
+insidewindow-clap-grey.mp4,11:03,clap,11,550,-3,medium,backlit rotated hands; first joined outline
+office-fumble-black.mp4,14:17,clap,14.28,714,-3,high,first visible palm contact
+office-fumble-black.mp4,19:21,clap,19.380000000000003,969,-2,high,first visible palm contact
+office-fumble-black.mp4,20:17,clap,20.3,1015,-2,high,first visible palm contact
+office-fumble-black.mp4,23:45,vertical-clap,23.86,1193,-2,high,first top-to-bottom contact
+office-fumble-black.mp4,25:46,vertical-clap,25.880000000000003,1294,-2,high,first top-to-bottom contact
+office-fumble-black.mp4,34:49,vertical-clap,34.94,1747,-2,high,first top-to-bottom contact
+office-fumble-black.mp4,40:28,vertical-clap,40.5,2025,-3,high,first top-to-bottom contact
+office-fumble-grey.mp4,07:37,clap,7.720000000000001,386,-1,high,first visible palm contact
+office-fumble-grey.mp4,11:10,clap,11.16,558,-2,high,first visible palm contact
+office-fumble-grey.mp4,19:03,clap,19.02,951,-2,high,first visible palm contact
+office-fumble-grey.mp4,22:30,vertical-clap,22.560000000000002,1128,-2,high,first top-to-bottom contact
+office-fumble-grey.mp4,26:04,vertical-clap,26.04,1302,-2,high,first top-to-bottom contact
+office-fumble-grey.mp4,32:43,vertical-clap,32.82,1641,-2,high,first top-to-bottom contact
+office-fumble-grey.mp4,44:05,vertical-clap,44.06,2203,-2,high,first visible contact; user-labelled vertical subset
