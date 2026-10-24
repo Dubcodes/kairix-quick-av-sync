@@ -24,4 +24,4 @@ This concise log records durable project choices. Evidence and open questions be
 | History | Keep the newest 3, 5, 10, or 20 finalized automatic results (default 3) as immutable processed review-window snapshots in bounded RAM. Derive the interactive trend graph from that same collection without another media store. History depth persists; captured history media does not. |
 | Privacy | No telemetry, accounts, database, cloud dependency, or media persistence. |
 | Browser source | Ship one offline-capable HTML A/V sync test signal with the repository. |
-| Releases | Stable `v*` releases are deliberate promotions. Public assets are exactly one self-contained x64 EXE, one ZIP, one independent canonical browser-signal HTML file, and SHA256SUMS; validated `main` commits produce separate development prereleases with the same shape. |
+| Releases | Tagged Beta and stable releases are deliberate promotions. Public assets are exactly one self-contained x64 EXE, one ZIP, one independent canonical browser-signal HTML file, and SHA256SUMS; validated `main` commits produce separate Development prereleases with the same shape. |

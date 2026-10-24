@@ -1,6 +1,8 @@
-# Kairix Quick A/V Sync v1.0.0
+# Draft: Kairix Quick A/V Sync v1.0.0
 
-Kairix Quick A/V Sync v1.0.0 is the first stable Windows release. It measures audio/video timing around a clap, flash, or test signal, while keeping capture media and review history in bounded process memory.
+This is a draft for a possible future stable release. Kairix Quick A/V Sync v1.0.0 has not been published; the current public test release is v1.0.0-beta.1.
+
+Kairix measures audio/video timing around a clap, flash, or test signal while keeping capture media and review history in bounded process memory.
 
 ## Highlights
 

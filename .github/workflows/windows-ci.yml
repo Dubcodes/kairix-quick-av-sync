@@ -34,10 +34,11 @@ jobs:
           $projectDate = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTimeOffset]::UtcNow, 'New Zealand Standard Time').ToString('yyyyMMdd')
           $buildId = "dev-$projectDate-$shortSha"
           "build_id=$buildId" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "semantic_version=1.0.0-dev.$shortSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Package Windows release assets
         if: github.event_name == 'push'
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -BuildId '${{ steps.identity.outputs.build_id }}' -SourceCommit '${{ github.sha }}' -BuildChannel Development
+        run: ./scripts/package-windows.ps1 -BuildId '${{ steps.identity.outputs.build_id }}' -SourceCommit '${{ github.sha }}' -BuildChannel Development -SemanticVersion '${{ steps.identity.outputs.semantic_version }}'
       - name: Upload validated Windows packages
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4

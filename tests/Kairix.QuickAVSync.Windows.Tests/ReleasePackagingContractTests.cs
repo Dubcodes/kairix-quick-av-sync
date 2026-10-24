@@ -7,11 +7,13 @@ public sealed class ReleasePackagingContractTests
     private static readonly string RepositoryRoot = FindRepositoryRoot();
 
     [Fact]
-    public void PackagerProducesTheExactStablePublicAssetContractInsideTheRepository()
+    public void PackagerProducesTheExactPublicAssetContractWithExplicitSemanticIdentity()
     {
         var script = File.ReadAllText(Path.Combine(RepositoryRoot, "scripts", "package-windows.ps1"));
 
-        Assert.Contains("[ValidateSet('Release', 'Development')]", script);
+        Assert.Contains("[ValidateSet('Development', 'Beta', 'Release')]", script);
+        Assert.Contains("[string] $SemanticVersion", script);
+        Assert.Contains("-p:SemanticVersion=$SemanticVersion", script);
         Assert.Contains("artifacts/staging", script);
         Assert.DoesNotContain("GetTempPath", script, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("--no-restore", script, StringComparison.OrdinalIgnoreCase);
@@ -21,33 +23,62 @@ public sealed class ReleasePackagingContractTests
         Assert.Contains("Kairix-AV-Sync-Test-Signal.html", script);
         Assert.Contains("$publicAssets = @($selfContainedAsset, $zipAsset, $htmlAsset)", script);
         Assert.Contains("Packaged browser test signal differs from the canonical repository file", script);
+
+        var betaNames = script.Replace("$BuildId", "v1.0.0-beta.1", StringComparison.Ordinal);
+        Assert.Contains("Kairix.QuickAVSync-v1.0.0-beta.1-win-x64.exe", betaNames);
+        Assert.Contains("Kairix-Quick-AV-Sync-v1.0.0-beta.1-win-x64.zip", betaNames);
     }
 
     [Fact]
-    public void StableReleaseWorkflowVerifiesExactNamesChecksumsAndReleaseChannel()
+    public void TaggedWorkflowVerifiesExactNamesChecksumsAndBetaOrReleaseChannel()
     {
         var workflow = File.ReadAllText(Path.Combine(RepositoryRoot, ".github", "workflows", "release.yml"));
 
-        Assert.Contains("-BuildChannel Release", workflow);
+        Assert.Contains("$buildChannel = 'Beta'", workflow);
+        Assert.Contains("$buildChannel = 'Release'", workflow);
+        Assert.Contains("-BuildChannel '${{ steps.identity.outputs.build_channel }}'", workflow);
+        Assert.Contains("-SemanticVersion '${{ steps.identity.outputs.semantic_version }}'", workflow);
         Assert.Contains("Kairix.QuickAVSync-$tag-win-x64.exe", workflow);
         Assert.Contains("Kairix-Quick-AV-Sync-$tag-win-x64.zip", workflow);
         Assert.Contains("Kairix-AV-Sync-Test-Signal.html", workflow);
         Assert.Contains("SHA256SUMS.txt", workflow);
         Assert.Contains("does not cover the exact three public assets", workflow);
         Assert.Contains("Create release and upload verified assets", workflow);
+        Assert.Contains("Kairix Quick A/V Sync $tag", workflow);
         Assert.DoesNotContain("Create prerelease", workflow);
     }
 
     [Fact]
-    public void StableReleaseIdentityHasNoPrereleaseQualifier()
+    public void BetaIdentityAndAboutPresentationExposeThePrereleaseVersion()
     {
         var project = File.ReadAllText(Path.Combine(RepositoryRoot, "src", "Kairix.QuickAVSync", "Kairix.QuickAVSync.csproj"));
-        var releaseNotes = File.ReadAllText(Path.Combine(RepositoryRoot, "docs", "RELEASE_NOTES_v1.0.0.md"));
+        var identity = File.ReadAllText(Path.Combine(RepositoryRoot, "src", "Kairix.QuickAVSync", "Services", "BuildIdentity.cs"));
+        var viewModel = File.ReadAllText(Path.Combine(RepositoryRoot, "src", "Kairix.QuickAVSync", "ViewModels", "MainViewModel.cs"));
+        var window = File.ReadAllText(Path.Combine(RepositoryRoot, "src", "Kairix.QuickAVSync", "MainWindow.xaml"));
 
-        Assert.Contains("<VersionPrefix>1.0.0</VersionPrefix>", project);
-        Assert.DoesNotContain("alpha", releaseNotes, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("beta", releaseNotes, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("release candidate", releaseNotes, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("<SemanticVersion Condition=\"'$(SemanticVersion)' == ''\">1.0.0-beta.1</SemanticVersion>", project);
+        Assert.Contains("<FileVersion>1.0.0.0</FileVersion>", project);
+        Assert.Contains("<InformationalVersion>$(SemanticVersion)</InformationalVersion>", project);
+        Assert.Contains("SemanticVersion", identity);
+        Assert.Contains("BuildIdentity.Current.SemanticVersion", viewModel);
+        Assert.Contains("BuildChannelText", window);
+        Assert.Contains("StringFormat=Version {0}", window);
+        Assert.DoesNotContain("StringFormat=Assembly version", window);
+    }
+
+    [Fact]
+    public void BetaReleaseNotesAndReadmePointToTheExactPublicDownload()
+    {
+        var readme = File.ReadAllText(Path.Combine(RepositoryRoot, "README.md"));
+        var betaNotes = Path.Combine(RepositoryRoot, "docs", "RELEASE_NOTES_v1.0.0-beta.1.md");
+        var stableDraft = File.ReadAllText(Path.Combine(RepositoryRoot, "docs", "RELEASE_NOTES_v1.0.0.md"));
+        const string expectedUrl = "https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v1.0.0-beta.1/Kairix.QuickAVSync-v1.0.0-beta.1-win-x64.exe";
+
+        Assert.True(File.Exists(betaNotes));
+        Assert.Contains("### Current public beta", readme);
+        Assert.Contains(expectedUrl, readme);
+        Assert.DoesNotContain("### Stable release", readme);
+        Assert.StartsWith("# Draft: Kairix Quick A/V Sync v1.0.0", stableDraft);
     }
 
     private static string FindRepositoryRoot()

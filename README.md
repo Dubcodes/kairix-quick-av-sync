@@ -6,17 +6,17 @@ Kairix Quick A/V Sync is a small Windows 10/11 utility for measuring the timing 
 
 ## Download
 
-### Stable release
+### Current public beta
 
-**Kairix Quick A/V Sync v1.0.0** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v1.0.0/Kairix.QuickAVSync-v1.0.0-win-x64.exe) — the normal download for Windows 10/11 x64.
+**Kairix Quick A/V Sync v1.0.0-beta.1** — [self-contained Windows x64 EXE](https://github.com/Dubcodes/kairix-quick-av-sync/releases/download/v1.0.0-beta.1/Kairix.QuickAVSync-v1.0.0-beta.1-win-x64.exe) — the normal beta download for Windows 10/11 x64.
 
-The stable package also provides a ZIP containing the application and browser test signal, an independent copy of that test signal, and `SHA256SUMS.txt` covering all three public assets. Hardware compatibility remains device- and driver-dependent; see the release notes and current-state document for the evidence boundary.
+The beta package also provides a ZIP containing the application and browser test signal, an independent copy of that test signal, and `SHA256SUMS.txt` covering all three public assets. This is a public test release, not a stable or production-certified release. Hardware compatibility remains device- and driver-dependent; see the release notes and current-state document for the evidence boundary.
 
 ### Latest development
 
 **Latest Development Build** — [open the newest public development prerelease](https://github.com/Dubcodes/kairix-quick-av-sync/releases) and choose the self-contained `dev-YYYYMMDD-<commit>-win-x64.exe` asset.
 
-Development builds contain newer experimental work and identify their exact source commit. They may be less reliable or include recently changed or unfinished functionality. Testers can use the releases page above, but ordinary users should choose the stable release.
+Development builds contain newer experimental work and identify their exact source commit. They may be less reliable or include recently changed or unfinished functionality. Testers can use the releases page above; the public beta is the recommended packaged application for normal evaluation.
 
 The self-contained EXE needs no separate .NET installation or installer. Administrator rights are not normally expected, although Windows privacy settings and capture-device drivers still control hardware access. The application is currently unsigned, so Windows SmartScreen may show an **Unknown Publisher** warning. Download builds only from this repository's Releases page.
 
@@ -109,7 +109,7 @@ dotnet publish src/Kairix.QuickAVSync -p:PublishProfile=win-x64-self-contained
 
 The self-contained public download includes the runtime. Outputs go to `artifacts/publish/` and are intentionally ignored by Git. `scripts/package-windows.ps1` creates exactly one identified EXE, one ZIP containing that EXE plus the browser test signal, one independent byte-identical browser test signal, and `SHA256SUMS.txt`; all staging remains under `artifacts/` and the script fails if an expected asset is missing, empty, different, or cannot be checksummed.
 
-Every successful `main` push runs the full Windows validation before packaging. Its exact package set is uploaded as a commit-identified Actions artifact and then published as a uniquely tagged `dev-YYYYMMDD-<short-sha>` prerelease titled **Latest Development Build**. Rerunning the workflow cannot create a duplicate release for the same commit, and old development prereleases are retained. Stable `v*` releases remain an explicit promotion decision and are never created automatically from `main`.
+Every successful `main` push runs the full Windows validation before packaging. Its exact package set is uploaded as a commit-identified Actions artifact and then published as a uniquely tagged `dev-YYYYMMDD-<short-sha>` prerelease titled **Latest Development Build**. Rerunning the workflow cannot create a duplicate release for the same commit, and old development prereleases are retained. Tagged Beta and stable releases remain explicit promotion decisions and are never created automatically from `main`.
 
 ## Implemented and still under testing
 

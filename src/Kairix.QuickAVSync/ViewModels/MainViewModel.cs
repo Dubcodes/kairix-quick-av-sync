@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Reflection;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -447,7 +446,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string ArmStateText => !AutoDetect ? "AUTO OFF" : !AutoSpike ? "TRIGGER OFF" : IsHold ? "HOLD" : "ARMED";
     public bool IsInReview => _isReview;
     public string RuntimeHealthText => _runtimeHealthText;
-    public string VersionText => Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown";
+    public string VersionText => Services.BuildIdentity.Current.SemanticVersion;
     public string BuildText => Services.BuildIdentity.Current.BuildId;
     public string BuildChannelText => $"{Services.BuildIdentity.Current.Channel} build";
     public string BuildCommitText => $"Commit {Services.BuildIdentity.Current.ShortCommit}";

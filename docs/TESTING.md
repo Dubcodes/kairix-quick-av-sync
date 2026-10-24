@@ -41,10 +41,10 @@ Both existing win-x64 publish profiles must pass `scripts/smoke-test-windows.ps1
 The shared distribution packager can be exercised locally with a traceable test identity:
 
 ```powershell
-./scripts/package-windows.ps1 -BuildId dev-20261004-ee1e442 -SourceCommit ee1e442 -BuildChannel Development
+./scripts/package-windows.ps1 -BuildId dev-20261004-ee1e442 -SourceCommit ee1e442 -BuildChannel Development -SemanticVersion 1.0.0-dev.ee1e442
 ```
 
-It must produce exactly one non-empty identified self-contained EXE, a ZIP containing that EXE plus the byte-identical browser test signal and README/LICENSE, an independent byte-identical `Kairix-AV-Sync-Test-Signal.html`, and a three-entry `SHA256SUMS.txt` under `artifacts/package/`. Temporary packaging staging must remain under `artifacts/staging/` and be removed after packaging. On a `main` push, Windows CI creates the date component in the project's Pacific/Auckland timezone, invokes the packager only after all builds and tests succeed, and uploads the result under an artifact name containing the full commit SHA. The development-release workflow is triggered by that completed CI run, downloads only that run's exact artifact, rechecks identity and checksums, and creates an idempotent public prerelease. A `v*` tag continues to be the only stable-release trigger.
+It must produce exactly one non-empty identified self-contained EXE, a ZIP containing that EXE plus the byte-identical browser test signal and README/LICENSE, an independent byte-identical `Kairix-AV-Sync-Test-Signal.html`, and a three-entry `SHA256SUMS.txt` under `artifacts/package/`. Temporary packaging staging must remain under `artifacts/staging/` and be removed after packaging. On a `main` push, Windows CI creates the date component in the project's Pacific/Auckland timezone, invokes the packager only after all builds and tests succeed, and uploads the result under an artifact name containing the full commit SHA. The development-release workflow is triggered by that completed CI run, downloads only that run's exact artifact, rechecks identity and checksums, and creates an idempotent public prerelease. An explicit supported `v*` tag is required for a Beta or stable release; prerelease tags map to Beta identity while a plain semantic-version tag maps to Release identity.
 
 ## Synthetic stability observation
 

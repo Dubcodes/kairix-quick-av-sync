@@ -9,7 +9,11 @@
     <ApplicationIcon>Assets\Kairix.QuickAVSync.ico</ApplicationIcon>
     <AssemblyName>Kairix.QuickAVSync</AssemblyName>
     <RootNamespace>Kairix.QuickAVSync</RootNamespace>
-    <VersionPrefix>1.0.0</VersionPrefix>
+    <SemanticVersion Condition="'$(SemanticVersion)' == ''">1.0.0-beta.1</SemanticVersion>
+    <Version>$(SemanticVersion)</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>$(SemanticVersion)</InformationalVersion>
     <Product>Kairix Quick A/V Sync</Product>
     <Description>Windows audio/video synchronization measurement utility</Description>
     <Authors>Dubcodes</Authors>
@@ -30,6 +34,10 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>BuildChannel</_Parameter1>
       <_Parameter2>$(BuildChannel)</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>SemanticVersion</_Parameter1>
+      <_Parameter2>$(SemanticVersion)</_Parameter2>
     </AssemblyAttribute>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
       <_Parameter1>Kairix.QuickAVSync.Windows.Tests</_Parameter1>

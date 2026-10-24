@@ -88,7 +88,7 @@ jobs:
             '',
             'This build was produced from the current `main` commit after the required Windows validation passed.',
             '',
-            'It is newer than the stable release and may contain recently changed or unfinished functionality. Use the stable release if stability is more important.',
+            'It is a development snapshot and may contain recently changed or unfinished functionality. Use the current public Beta for normal evaluation.',
             '',
             'The self-contained Windows x64 EXE is the normal application download. The standalone browser test signal is also included as an independent asset and inside the ZIP.',
             '',

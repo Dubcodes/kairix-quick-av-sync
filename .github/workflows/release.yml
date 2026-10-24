@@ -21,9 +21,26 @@ jobs:
       - run: dotnet build Kairix.QuickAVSync.sln -c Release --no-restore -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Core.Tests/Kairix.QuickAVSync.Core.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
       - run: dotnet test tests/Kairix.QuickAVSync.Windows.Tests/Kairix.QuickAVSync.Windows.Tests.csproj -c Release --no-build -m:1 -nodeReuse:false
-      - name: Package stable Windows release assets
+      - name: Define tagged release identity
+        id: identity
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -BuildId '${{ github.ref_name }}' -SourceCommit '${{ github.sha }}' -BuildChannel Release
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)$') { throw "Unsupported release tag: $tag" }
+          $semanticVersion = $Matches[1]
+          if ($semanticVersion -match '^\d+\.\d+\.\d+-beta(?:\.\d+)*$') {
+            $buildChannel = 'Beta'
+          } elseif ($semanticVersion -match '^\d+\.\d+\.\d+$') {
+            $buildChannel = 'Release'
+          } else {
+            throw "Unsupported release channel for tag: $tag"
+          }
+          "semantic_version=$semanticVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "build_channel=$buildChannel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Package tagged Windows release assets
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -BuildId '${{ github.ref_name }}' -SourceCommit '${{ github.sha }}' -BuildChannel '${{ steps.identity.outputs.build_channel }}' -SemanticVersion '${{ steps.identity.outputs.semantic_version }}'
       - uses: actions/upload-artifact@v4
         with:
           name: Kairix-Quick-AV-Sync-${{ github.ref_name }}-win-x64

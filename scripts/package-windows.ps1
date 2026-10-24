@@ -8,8 +8,12 @@ param(
     [string] $SourceCommit,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Release', 'Development')]
-    [string] $BuildChannel
+    [ValidateSet('Development', 'Beta', 'Release')]
+    [string] $BuildChannel,
+
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$')]
+    [string] $SemanticVersion
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,6 +64,7 @@ try {
         "-p:BuildId=$BuildId",
         "-p:SourceCommit=$SourceCommit",
         "-p:BuildChannel=$BuildChannel",
+        "-p:SemanticVersion=$SemanticVersion",
         '-m:1',
         '-nodeReuse:false'
     )
@@ -101,7 +106,7 @@ try {
         throw 'SHA256SUMS.txt was not generated correctly.'
     }
 
-    Write-Host "Packaged $BuildId ($BuildChannel) from commit $SourceCommit"
+    Write-Host "Packaged $BuildId ($BuildChannel, version $SemanticVersion) from commit $SourceCommit"
     Get-ChildItem -LiteralPath $packageDirectory -File | Select-Object Name, Length
 }
 finally {
