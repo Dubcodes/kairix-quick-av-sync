@@ -864,11 +864,11 @@ public sealed class OperatorUiContractTests
         Assert.Contains("AudioDisplayStyleSelector", Ui);
         Assert.Contains("AutomaticDetectionToggle", Ui);
         Assert.Contains("AudioSensitivitySlider", Ui);
-        Assert.Contains("VisualDetectorSelector", Ui);
+        Assert.Contains("AnalysisModeSelector", Ui);
         Assert.Contains("Text=\"Session history depth\"", Ui);
         Assert.Contains("ItemsSource=\"{Binding SessionHistoryDepths}\" SelectedItem=\"{Binding SessionHistoryDepth}\"", Ui);
         Assert.Contains("AutomationProperties.Name=\"Session history depth: retain 3, 5, 10, or 20 events\"", Ui);
-        Assert.Contains("ItemsSource=\"{Binding VisualDetectors}\" SelectedItem=\"{Binding SelectedVisualDetector}\"", Ui);
+        Assert.Contains("ItemsSource=\"{Binding AnalysisModes}\" SelectedItem=\"{Binding SelectedAnalysisMode}\"", Ui);
         Assert.Equal(2, Ui.Split("IsMoveToPointEnabled=\"True\"").Length - 1);
         Assert.DoesNotContain("Content=\"Reconstruct fields\"", Ui);
         Assert.DoesNotContain("{Binding ReconstructInterlacedFields}", Ui);

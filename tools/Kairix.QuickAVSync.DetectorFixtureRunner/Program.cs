@@ -32,11 +32,13 @@ if (unknownFiles.Length > 0) throw new InvalidOperationException($"Manifest clip
 
 var eventRows = new List<EventBenchmarkRow>();
 var audioRows = new List<AudioBenchmarkRow>();
+var audioByFile = new Dictionary<string, ClipAudioAnalysis>(StringComparer.OrdinalIgnoreCase);
 foreach (var inventory in inventories)
 {
     var path = Path.Combine(options.ClipRoot, inventory.Filename);
     var clipAnnotations = annotations.Where(item => item.Filename.Equals(inventory.Filename, StringComparison.OrdinalIgnoreCase)).OrderBy(item => item.AnchorSeconds).ToArray();
     var audio = await FixtureProcesses.AnalyzeAudioAsync(path, inventory.AudioSampleRate, inventory.AudioChannels);
+    audioByFile[inventory.Filename] = audio;
     AppendAudioRows(audioRows, inventory.Filename, clipAnnotations, "Auto", audio.Auto);
     AppendAudioRows(audioRows, inventory.Filename, clipAnnotations, "Left", audio.Left);
     AppendAudioRows(audioRows, inventory.Filename, clipAnnotations, "Right", audio.Right);
@@ -55,6 +57,26 @@ WriteEvents(eventPath, eventRows);
 WriteSummaries(summaryPath, summaries);
 WriteAudio(Path.Combine(options.Output, "audio-channel-analysis.csv"), audioRows);
 WriteReport(Path.Combine(options.Output, "fixture-report.md"), inventories, annotations, summaries, eventRows, audioRows, options);
+WriteConditionReport(Path.Combine(options.Output, "real-condition-report.md"), eventRows, options);
+if (options.SyntheticProbes.Length > 0)
+{
+    var probeRows = new Dictionary<string, List<EventBenchmarkRow>>(StringComparer.Ordinal);
+    foreach (var probe in options.SyntheticProbes)
+    {
+        var rows = new List<EventBenchmarkRow>(); probeRows[probe] = rows;
+        foreach (var inventory in inventories)
+        {
+            var path = Path.Combine(options.ClipRoot, inventory.Filename);
+            var clipAnnotations = annotations.Where(item => item.Filename.Equals(inventory.Filename, StringComparison.OrdinalIgnoreCase)).OrderBy(item => item.AnchorSeconds).ToArray();
+            var audio = audioByFile[inventory.Filename];
+            var visual = await FixtureProcesses.AnalyzeVideoAsync(path, inventory.FrameRate, audio.Auto, options.Width, options.Height, options.Sensitivities, probe);
+            foreach (var sensitivity in options.Sensitivities)
+                AppendEventRows(rows, inventory.Filename, clipAnnotations, contactReferences, audio.Auto, visual.Where(item => item.Sensitivity == sensitivity).OrderBy(item => item.TriggerIndex).ToArray(), sensitivity, inventory.FrameRate);
+            Console.WriteLine($"synthetic probe {probe} {inventory.Filename}: {visual.Count} evaluations");
+        }
+    }
+    WriteSyntheticProbeReport(Path.Combine(options.Output, "synthetic-probe-report.md"), probeRows, options);
+}
 Console.WriteLine($"Fixture benchmark complete: {options.Output}");
 
 static void AppendEventRows(List<EventBenchmarkRow> rows, string filename, IReadOnlyList<FixtureAnnotation> annotations,
@@ -235,6 +257,71 @@ static void WriteReport(string path, IReadOnlyList<MediaInventory> media, IReadO
     }
     writer.WriteLine();
     writer.WriteLine("Left/Right are channel labels only; microphone identity is not inferred.");
+}
+
+static void WriteConditionReport(string path, IReadOnlyList<EventBenchmarkRow> rows, RunnerOptions options)
+{
+    using var writer = new StreamWriter(path, false, new UTF8Encoding(false));
+    writer.WriteLine("# Real Human Clap fixture evidence by condition");
+    writer.WriteLine();
+    writer.WriteLine("These figures come only from recorded fixtures. They are not synthetic evidence or a physical Beta 2 result.");
+    writer.WriteLine();
+    writer.WriteLine("| Condition | Sensitivity | Annotated | Confirmed | Misses | False positives | Duplicates | Contact exact / ±1 / refs | Confidence p25 / median / p75 | Common failure | ");
+    writer.WriteLine("|---|---:|---:|---:|---:|---:|---:|---|---|---|");
+    var conditions = new (string Name, Func<EventBenchmarkRow, bool> Match)[]
+    {
+        ("Office", row => row.Filename.Contains("office", StringComparison.OrdinalIgnoreCase)),
+        ("Dark office", row => row.Filename.Contains("darkoffice", StringComparison.OrdinalIgnoreCase)),
+        ("Front sun", row => row.Filename.Contains("frontsun", StringComparison.OrdinalIgnoreCase)),
+        ("Back sun", row => row.Filename.Contains("backsun", StringComparison.OrdinalIgnoreCase)),
+        ("Inside window", row => row.Filename.Contains("insidewindow", StringComparison.OrdinalIgnoreCase)),
+        ("Fumble", row => row.Filename.Contains("fumble", StringComparison.OrdinalIgnoreCase)),
+        ("Black clothing · tuning", row => row.Filename.Contains("-black", StringComparison.OrdinalIgnoreCase)),
+        ("Grey clothing · holdout", row => row.Filename.Contains("-grey", StringComparison.OrdinalIgnoreCase)),
+        ("Standard clap", row => row.Type == "clap"),
+        ("Vertical clap", row => row.Type == "vertical-clap")
+    };
+    foreach (var condition in conditions)
+    foreach (var sensitivity in options.Sensitivities)
+    {
+        var selected = rows.Where(row => row.Sensitivity == sensitivity && condition.Match(row)).ToArray();
+        var annotated = selected.Where(row => row.Annotation is not null).ToArray();
+        if (annotated.Length == 0) continue;
+        var confidence = annotated.Where(row => row.Confirmed && row.Confidence is not null).Select(row => row.Confidence!.Value).OrderBy(value => value).ToArray();
+        var contact = annotated.Where(row => row.ResolvedContactSeconds is not null).ToArray();
+        var exact = contact.Count(row => row.ErrorFromContactPositions is { } error && Math.Abs(error) < .5);
+        var one = contact.Count(row => row.ErrorFromContactPositions is { } error && Math.Abs(error) <= 1.000001);
+        var failures = annotated.Where(row => !row.Confirmed).GroupBy(row => row.AudioMatched ? "visual miss" : "no audio trigger").OrderByDescending(group => group.Count()).FirstOrDefault();
+        writer.WriteLine($"| {condition.Name} | {sensitivity} | {annotated.Length} | {annotated.Count(row => row.Confirmed)} | {annotated.Count(row => !row.Confirmed)} | {selected.Count(row => row.FalsePositive)} | {selected.Count(row => row.Duplicate)} | {exact} / {one} / {contact.Length} | {Percentile(confidence, .25)} / {Percentile(confidence, .5)} / {Percentile(confidence, .75)} | {failures?.Key ?? "none"} |");
+    }
+    writer.WriteLine();
+    writer.WriteLine("Tuning and holdout remain separated by the established black/grey fixture split. No threshold is selected from the holdout rows.");
+}
+
+static void WriteSyntheticProbeReport(string path, IReadOnlyDictionary<string, List<EventBenchmarkRow>> probes, RunnerOptions options)
+{
+    using var writer = new StreamWriter(path, false, new UTF8Encoding(false));
+    writer.WriteLine("# Deterministic synthetic robustness probes");
+    writer.WriteLine();
+    writer.WriteLine("These are deterministic transforms of the real clips for engineering diagnosis only. They are not additional real-world evidence.");
+    writer.WriteLine();
+    writer.WriteLine("| Transform | Sensitivity | Confirmed / annotated | False positives | Duplicates | Confidence median |");
+    writer.WriteLine("|---|---:|---:|---:|---:|---:|");
+    foreach (var probe in probes)
+    foreach (var sensitivity in options.Sensitivities)
+    {
+        var selected = probe.Value.Where(row => row.Sensitivity == sensitivity).ToArray();
+        var annotated = selected.Where(row => row.Annotation is not null).ToArray();
+        var confidences = annotated.Where(row => row.Confirmed && row.Confidence is not null).Select(row => row.Confidence!.Value).OrderBy(value => value).ToArray();
+        writer.WriteLine($"| {probe.Key} | {sensitivity} | {annotated.Count(row => row.Confirmed)} / {annotated.Length} | {selected.Count(row => row.FalsePositive)} | {selected.Count(row => row.Duplicate)} | {Percentile(confidences, .5)} |");
+    }
+}
+
+static string Percentile(double[] values, double percentile)
+{
+    if (values.Length == 0) return "—";
+    var index = (values.Length - 1) * percentile; var lower = (int)Math.Floor(index); var upper = (int)Math.Ceiling(index);
+    return (values[lower] + (values[upper] - values[lower]) * (index - lower)).ToString("0.000", CultureInfo.InvariantCulture);
 }
 
 static string Format(double? value) => value?.ToString("0.000", CultureInfo.InvariantCulture) ?? "—";

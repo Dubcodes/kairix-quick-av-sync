@@ -128,7 +128,7 @@ public sealed class ReleaseUiPolishTests
             element.Name.LocalName == "Border" && AutomationId(element)?.StartsWith("ShortcutRow", StringComparison.Ordinal) == true).ToArray();
 
         Assert.Equal(
-            ["ShortcutRowSpace", "ShortcutRowEnter", "ShortcutRowLeft", "ShortcutRowRight", "ShortcutRowShiftLeft", "ShortcutRowShiftRight", "ShortcutRowCtrlLeft", "ShortcutRowCtrlRight", "ShortcutRowA", "ShortcutRowH", "ShortcutRowR", "ShortcutRowF5"],
+            ["ShortcutRowSpace", "ShortcutRowEnter", "ShortcutRowLeft", "ShortcutRowRight", "ShortcutRowShiftLeft", "ShortcutRowShiftRight", "ShortcutRowCtrlLeft", "ShortcutRowCtrlRight", "ShortcutRowA", "ShortcutRowH", "ShortcutRowR", "ShortcutRowF5", "ShortcutRowL"],
             rows.Select(AutomationId));
         Assert.All(rows, row => Assert.False(string.IsNullOrWhiteSpace(row.Attribute("ToolTip")?.Value)));
     }

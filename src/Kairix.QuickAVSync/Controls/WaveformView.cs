@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using Kairix.QuickAVSync.Services;
+using Kairix.QuickAVSync.Models;
 
 namespace Kairix.QuickAVSync.Controls;
 
@@ -16,6 +17,8 @@ public sealed class WaveformView : FrameworkElement
     public static readonly DependencyProperty FrameTicksMsProperty = DependencyProperty.Register(nameof(FrameTicksMs), typeof(IReadOnlyList<double>), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty DisplayStyleProperty = DependencyProperty.Register(nameof(DisplayStyle), typeof(string), typeof(WaveformView), new FrameworkPropertyMetadata("Centered Fill", FrameworkPropertyMetadataOptions.AffectsRender));
     public static readonly DependencyProperty DisplayAmplitudeProperty = DependencyProperty.Register(nameof(DisplayAmplitude), typeof(string), typeof(WaveformView), new FrameworkPropertyMetadata(WaveformDisplayTransform.AutoGain, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty LipSyncMarkersProperty = DependencyProperty.Register(nameof(LipSyncMarkers), typeof(IReadOnlyList<LipSyncMarker>), typeof(WaveformView), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+    public static readonly DependencyProperty LipSyncReferenceTicksProperty = DependencyProperty.Register(nameof(LipSyncReferenceTicks), typeof(long), typeof(WaveformView), new FrameworkPropertyMetadata(0L, FrameworkPropertyMetadataOptions.AffectsRender));
     public IReadOnlyList<float>? Samples { get => (IReadOnlyList<float>?)GetValue(SamplesProperty); set => SetValue(SamplesProperty, value); }
     public double HalfWindowMs { get => (double)GetValue(HalfWindowMsProperty); set => SetValue(HalfWindowMsProperty, value); }
     public double AudioMarkerMs { get => (double)GetValue(AudioMarkerMsProperty); set => SetValue(AudioMarkerMsProperty, value); }
@@ -25,10 +28,13 @@ public sealed class WaveformView : FrameworkElement
     public IReadOnlyList<double>? FrameTicksMs { get => (IReadOnlyList<double>?)GetValue(FrameTicksMsProperty); set => SetValue(FrameTicksMsProperty, value); }
     public string DisplayStyle { get => (string)GetValue(DisplayStyleProperty); set => SetValue(DisplayStyleProperty, value); }
     public string DisplayAmplitude { get => (string)GetValue(DisplayAmplitudeProperty); set => SetValue(DisplayAmplitudeProperty, value); }
+    public IReadOnlyList<LipSyncMarker>? LipSyncMarkers { get => (IReadOnlyList<LipSyncMarker>?)GetValue(LipSyncMarkersProperty); set => SetValue(LipSyncMarkersProperty, value); }
+    public long LipSyncReferenceTicks { get => (long)GetValue(LipSyncReferenceTicksProperty); set => SetValue(LipSyncReferenceTicksProperty, value); }
     public event EventHandler<double>? PlayheadSelected;
     public event EventHandler<double>? AudioPointPreviewed;
     public event EventHandler<double>? AudioPointCommitted;
     public event EventHandler<int>? FrameStepRequested;
+    public event EventHandler<LipSyncMarker>? LipSyncMarkerSelected;
     private bool _scrubbing, _draggingAudio;
     private double _pendingAudioMs;
 
@@ -43,7 +49,9 @@ public sealed class WaveformView : FrameworkElement
 
     private void OnMouseLeftButtonDown(object? sender, MouseButtonEventArgs e)
     {
-        var position = e.GetPosition(this); _draggingAudio = Math.Abs(position.X - MsToX(AudioMarkerMs)) <= 10;
+        var position = e.GetPosition(this);
+        if (NearestLipMarker(position.X) is { } lip) { LipSyncMarkerSelected?.Invoke(this, lip); e.Handled = true; return; }
+        _draggingAudio = Math.Abs(position.X - MsToX(AudioMarkerMs)) <= 10;
         _scrubbing = !_draggingAudio; _pendingAudioMs = XToMs(position.X); CaptureMouse();
         if (_scrubbing) PlayheadSelected?.Invoke(this, _pendingAudioMs); else { AudioPointPreviewed?.Invoke(this, _pendingAudioMs); InvalidateVisual(); }
         e.Handled = true;
@@ -51,7 +59,7 @@ public sealed class WaveformView : FrameworkElement
 
     private void OnMouseMove(object? sender, MouseEventArgs e)
     {
-        if (!IsMouseCaptured) return; var milliseconds = XToMs(e.GetPosition(this).X);
+        if (!IsMouseCaptured) { ToolTip = NearestLipMarker(e.GetPosition(this).X) is { } marker ? $"{marker.SignedMilliseconds:+0.0;-0.0;0.0} ms · {marker.Confidence:P0}" : null; return; } var milliseconds = XToMs(e.GetPosition(this).X);
         if (_scrubbing) PlayheadSelected?.Invoke(this, milliseconds);
         else if (_draggingAudio) { _pendingAudioMs = milliseconds; AudioPointPreviewed?.Invoke(this, milliseconds); InvalidateVisual(); }
     }
@@ -137,8 +145,13 @@ public sealed class WaveformView : FrameworkElement
         Marker(dc, _draggingAudio ? _pendingAudioMs : AudioMarkerMs, ResourceBrush("AudioMarkerBrush", Brushes.Gold), 2.5, "AUDIO", 2);
         if (AutoVisualMs is { } auto) Marker(dc, auto, ResourceBrush("AutoMarkerBrush", Brushes.DodgerBlue), 1.5, "AUTO", 12);
         if (VisualMarkerMs is { } visual) Marker(dc, visual, ResourceBrush("VisualMarkerBrush", Brushes.Red), 2.5, "VISUAL", 22);
+        if (LipSyncMarkers is { Count: > 0 })
+            foreach (var lip in LipSyncMarkers) Marker(dc, LipOffset(lip), ResourceBrush(lip.IsPrimary ? "AccentBrush" : "PositiveBrush", lip.IsPrimary ? Brushes.Cyan : Brushes.LimeGreen), lip.IsPrimary ? 3 : 1.5, lip.IsPrimary ? "LIP PRIMARY" : "LIP", lip.IsPrimary ? 12 : 22);
         Marker(dc, PlayheadMs, ResourceBrush("PlayheadBrush", Brushes.White), 2.5, "PLAYHEAD", 32, ResourceBrush("PlayheadOutlineBrush", Brushes.Black));
     }
+    private double LipOffset(LipSyncMarker marker) => (marker.VisualTimestamp.Ticks100ns - LipSyncReferenceTicks) / 10_000d;
+    private LipSyncMarker? NearestLipMarker(double x) => LipSyncMarkers?.Select(marker => (Marker: marker, Distance: Math.Abs(x - MsToX(LipOffset(marker)))))
+        .Where(item => item.Distance <= 8).OrderBy(item => item.Distance).Select(item => item.Marker).FirstOrDefault();
     private void Marker(DrawingContext dc, double ms, Brush brush, double width, string label, double labelTop, Brush? outline = null)
     {
         var x = Math.Clamp(MsToX(ms), 0, ActualWidth); if (outline is not null) dc.DrawLine(new(outline, width + 3), new(x, 42), new(x, ActualHeight - 18)); dc.DrawLine(new(brush, width), new(x, 42), new(x, ActualHeight - 18));

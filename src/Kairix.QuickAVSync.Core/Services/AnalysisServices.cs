@@ -529,7 +529,7 @@ public static class ReviewHistorySnapshotFactory
         return new(review, snapshot.Frames, snapshot.Waveform, snapshot.FrameTicks, snapshot.Timeline);
     }
 
-    private static VideoFrame Compact(VideoFrame frame)
+    internal static VideoFrame Compact(VideoFrame frame)
     {
         if (frame.HasPresentation)
         {
@@ -543,5 +543,20 @@ public static class ReviewHistorySnapshotFactory
             };
         }
         return frame with { Luma = frame.Luma.ToArray(), PresentationBgra = frame.PresentationBgra?.ToArray() };
+    }
+}
+
+public static class LipSyncHistorySnapshotFactory
+{
+    public static LipSyncHistorySnapshot Create(MediaTimestamp reference, IReadOnlyList<VideoFrame> frames,
+        IReadOnlyList<float> waveform, IReadOnlyList<double> frameTicks, LipSyncAnalysisResult analysis)
+    {
+        if (!analysis.HasEstimate || analysis.Result is null) throw new ArgumentException("A numeric lip-sync estimate is required.", nameof(analysis));
+        var compact = frames.Select(ReviewHistorySnapshotFactory.Compact).ToArray();
+        var waveformCopy = waveform.ToArray(); var ticksCopy = frameTicks.ToArray(); var markers = analysis.Markers.ToArray();
+        var bytes = compact.Sum(frame => (long)(frame.HasPresentation ? frame.PresentationBgra!.Length : frame.Luma.Length))
+            + waveformCopy.LongLength * sizeof(float) + ticksCopy.LongLength * sizeof(double) + markers.LongLength * 64;
+        return new(reference, Array.AsReadOnly(compact), Array.AsReadOnly(waveformCopy), Array.AsReadOnly(ticksCopy),
+            Array.AsReadOnly(markers), analysis.Result, analysis.Confidence, bytes);
     }
 }

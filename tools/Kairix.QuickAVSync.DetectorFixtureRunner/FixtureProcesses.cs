@@ -96,12 +96,22 @@ internal static class FixtureProcesses
         IReadOnlyList<AudioTransient> triggers,
         int width,
         int height,
-        IReadOnlyList<int> sensitivities)
+        IReadOnlyList<int> sensitivities,
+        string? syntheticProbe = null)
     {
         if (triggers.Count == 0) return [];
+        var probeFilter = syntheticProbe switch
+        {
+            "darker" => "eq=brightness=-0.15:gamma=0.85,",
+            "brighter" => "eq=brightness=0.12:gamma=1.10,",
+            "low-detail" => $"scale={Math.Max(16, width / 2)}:{Math.Max(16, height / 2)}:flags=area,",
+            "blur" => "gblur=sigma=1.1,",
+            null => "",
+            _ => throw new ArgumentOutOfRangeException(nameof(syntheticProbe))
+        };
         var arguments = new[]
         {
-            "-v", "error", "-i", path, "-map", "0:v:0", "-vf", $"scale={width}:{height}:flags=area,format=gray",
+            "-v", "error", "-i", path, "-map", "0:v:0", "-vf", $"{probeFilter}scale={width}:{height}:flags=area,format=gray",
             "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"
         };
         using var process = Start("ffmpeg", arguments, redirectOutput: true);

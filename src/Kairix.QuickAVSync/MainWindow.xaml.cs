@@ -21,7 +21,8 @@ public enum MainWindowShortcut
     MarkAudioAtPlayhead,
     ToggleHold,
     LiveView,
-    Reconnect
+    Reconnect,
+    AnalyzeLipSync
 }
 
 public partial class MainWindow : Window
@@ -48,6 +49,7 @@ public partial class MainWindow : Window
         Key.H => MainWindowShortcut.ToggleHold,
         Key.R => MainWindowShortcut.LiveView,
         Key.F5 => MainWindowShortcut.Reconnect,
+        Key.L => MainWindowShortcut.AnalyzeLipSync,
         _ => MainWindowShortcut.None
     };
 
@@ -72,6 +74,7 @@ public partial class MainWindow : Window
             case MainWindowShortcut.ToggleHold when _viewModel.IsArmEnabled: _viewModel.IsHold = !_viewModel.IsHold; break;
             case MainWindowShortcut.LiveView: _viewModel.ResumeLiveCommand.Execute(null); break;
             case MainWindowShortcut.Reconnect: _viewModel.ReconnectCommand.Execute(null); break;
+            case MainWindowShortcut.AnalyzeLipSync: _viewModel.AnalyzeLipSyncCommand.Execute(null); break;
         }
     }
     private void Window_KeyUp(object sender, KeyEventArgs e) { if (e.Key == Key.H) e.Handled = true; }
@@ -79,6 +82,7 @@ public partial class MainWindow : Window
     private void Waveform_AudioPointPreviewed(object? sender, double relativeMs) => _viewModel.PreviewAudioPoint(relativeMs);
     private void Waveform_AudioPointCommitted(object? sender, double relativeMs) => _viewModel.SelectAudioPoint(relativeMs);
     private void Waveform_FrameStepRequested(object? sender, int amount) => _viewModel.StepTimeline(amount);
+    private void Waveform_LipSyncMarkerSelected(object? sender, Kairix.QuickAVSync.Models.LipSyncMarker marker) => _viewModel.MovePlayheadTo((marker.VisualTimestamp.Ticks100ns - _viewModel.LipSyncReferenceTicks) / 10_000d);
     private async void Window_Closing(object? sender, CancelEventArgs e)
     {
         if (_shutdownComplete) return;

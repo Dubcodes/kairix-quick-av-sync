@@ -205,6 +205,44 @@ public sealed record VisualDetectorOption(VisualDetectorKind Kind, string Displa
     public override string ToString() => Display;
 }
 
+public enum AnalysisModeKind { HumanClap, FlashTestSignal, SpeechLipSync }
+
+public sealed record AnalysisModeOption(AnalysisModeKind Kind, string Display)
+{
+    public override string ToString() => Display;
+}
+
+public readonly record struct NormalizedMouthRegion(double X, double Y, double Width, double Height)
+{
+    public static NormalizedMouthRegion Default { get; } = new(.32, .58, .36, .24);
+    public NormalizedMouthRegion Normalize()
+    {
+        var width = Math.Clamp(Width, .05, 1);
+        var height = Math.Clamp(Height, .05, 1);
+        return new(Math.Clamp(X, 0, 1 - width), Math.Clamp(Y, 0, 1 - height), width, height);
+    }
+}
+
+public sealed record LipSyncFeatureSample(MediaTimestamp Timestamp, double Strength);
+
+public sealed record LipSyncMarker(
+    MediaTimestamp AudioTimestamp,
+    MediaTimestamp VisualTimestamp,
+    double SignedMilliseconds,
+    double Confidence,
+    bool IsPrimary = false);
+
+public sealed record LipSyncAnalysisResult(
+    SyncResult? Result,
+    IReadOnlyList<LipSyncMarker> Markers,
+    double? Confidence,
+    double? SpreadMilliseconds,
+    string Status,
+    TimeSpan Runtime)
+{
+    public bool HasEstimate => Result is { TimingComparable: true } && double.IsFinite(Result.SignedMilliseconds);
+}
+
 public sealed record VisualDetectionTrace(
     int ApproachPeakIndex,
     int FinalContactIndex,
@@ -414,7 +452,9 @@ public sealed record SessionResult(
     SyncResult? RawResult = null,
     double VideoTimingOffsetMilliseconds = 0,
     VideoTimingOffsetSource VideoTimingOffsetSource = VideoTimingOffsetSource.Automatic,
-    ReviewHistorySnapshot? Snapshot = null);
+    ReviewHistorySnapshot? Snapshot = null,
+    LipSyncHistorySnapshot? LipSyncSnapshot = null,
+    string AnalysisLabel = "Automatic sync");
 
 public sealed record ReviewHistorySnapshot(
     MediaTimestamp EventReference,
@@ -428,6 +468,16 @@ public sealed record ReviewHistorySnapshot(
     VideoTimingOffsetSource VideoTimingOffsetSource,
     long EstimatedBytes);
 
+public sealed record LipSyncHistorySnapshot(
+    MediaTimestamp EventReference,
+    IReadOnlyList<VideoFrame> Frames,
+    IReadOnlyList<float> Waveform,
+    IReadOnlyList<double> FrameTicks,
+    IReadOnlyList<LipSyncMarker> Markers,
+    SyncResult Result,
+    double? Confidence,
+    long EstimatedBytes);
+
 public sealed class AppSettings
 {
     public string? LastDeviceId { get; set; }
@@ -436,6 +486,7 @@ public sealed class AppSettings
     public bool AutoSpike { get; set; } = true;
     public bool AutoVisual { get; set; } = true;
     public VisualDetectorKind VisualDetector { get; set; } = VisualDetectorKind.HumanClap;
+    public AnalysisModeKind AnalysisMode { get; set; } = AnalysisModeKind.HumanClap;
     public int VisualSensitivity { get; set; } = 50;
     public int AudioSensitivity { get; set; } = 50;
     public int SessionHistoryDepth { get; set; } = 3;
@@ -454,4 +505,5 @@ public sealed class AppSettings
     public Dictionary<string, bool> ReconstructFieldsByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> ReconstructionFieldOrderByDevice { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, double> VideoTimingOffsetOverridesMilliseconds { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, NormalizedMouthRegion> MouthRegionByDevice { get; set; } = new(StringComparer.Ordinal);
 }

@@ -57,6 +57,8 @@ public sealed class SettingsService(string? path = null) : IDisposable
             LastDeviceId = value.LastDeviceId, LastDeviceName = value.LastDeviceName,
             AutoDetect = value.AutoDetect, AutoSpike = value.AutoSpike, AutoVisual = value.AutoVisual,
             VisualDetector = Enum.IsDefined(value.VisualDetector) ? value.VisualDetector : VisualDetectorKind.HumanClap,
+            AnalysisMode = value.AnalysisMode == AnalysisModeKind.HumanClap && value.VisualDetector == VisualDetectorKind.FlashTestSignal
+                ? AnalysisModeKind.FlashTestSignal : Enum.IsDefined(value.AnalysisMode) ? value.AnalysisMode : AnalysisModeKind.HumanClap,
             VisualSensitivity = Math.Clamp(value.VisualSensitivity, 0, 100), AudioSensitivity = Math.Clamp(value.AudioSensitivity, 0, 100), RollingBufferSeconds = Math.Clamp(value.RollingBufferSeconds, 1, 30),
             SessionHistoryDepth = value.SessionHistoryDepth switch { 5 => 5, 10 => 10, 20 => 20, _ => 3 },
             ShowAllCaptureModes = value.ShowAllCaptureModes,
@@ -74,7 +76,9 @@ public sealed class SettingsService(string? path = null) : IDisposable
             ReconstructionFieldOrderByDevice = new(value.ReconstructionFieldOrderByDevice ?? new(), StringComparer.Ordinal),
             VideoTimingOffsetOverridesMilliseconds = new((value.VideoTimingOffsetOverridesMilliseconds ?? new())
                 .Where(pair => double.IsFinite(pair.Value) && pair.Value is >= -5000 and <= 5000)
-                .ToDictionary(pair => pair.Key, pair => pair.Value), StringComparer.Ordinal)
+                .ToDictionary(pair => pair.Key, pair => pair.Value), StringComparer.Ordinal),
+            MouthRegionByDevice = new((value.MouthRegionByDevice ?? new())
+                .ToDictionary(pair => pair.Key, pair => pair.Value.Normalize()), StringComparer.Ordinal)
         };
     }
     public void Dispose() { FlushPending(); lock (_settingsGate) { _saveTimer?.Dispose(); _saveTimer = null; } }

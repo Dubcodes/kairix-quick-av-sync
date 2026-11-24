@@ -146,7 +146,7 @@ internal sealed record AudioBenchmarkRow(
     bool AudioCandidate,
     double AudioCandidateQuality);
 
-internal sealed record RunnerOptions(string ClipRoot, string Manifest, string Contacts, string Output, string Label, string Split, int Width, int Height, int[] Sensitivities)
+internal sealed record RunnerOptions(string ClipRoot, string Manifest, string Contacts, string Output, string Label, string Split, int Width, int Height, int[] Sensitivities, string[] SyntheticProbes)
 {
     public static RunnerOptions Parse(string[] args)
     {
@@ -159,6 +159,7 @@ internal sealed record RunnerOptions(string ClipRoot, string Manifest, string Co
         var width = 640;
         var height = 360;
         var sensitivities = new[] { 35, 50, 65, 80 };
+        var syntheticProbes = Array.Empty<string>();
         for (var index = 0; index < args.Length; index++)
         {
             var option = args[index];
@@ -180,6 +181,7 @@ internal sealed record RunnerOptions(string ClipRoot, string Manifest, string Co
                 case "--sensitivities":
                     sensitivities = value.Split(',').Select(item => int.Parse(item, CultureInfo.InvariantCulture)).ToArray();
                     break;
+                case "--synthetic-probes": syntheticProbes = value.Equals("none", StringComparison.OrdinalIgnoreCase) ? [] : value.Split(',').Select(item => item.ToLowerInvariant()).ToArray(); break;
                 default: throw new ArgumentException($"Unknown option {option}");
             }
         }
@@ -192,7 +194,9 @@ internal sealed record RunnerOptions(string ClipRoot, string Manifest, string Co
             throw new ArgumentException("Label may contain only letters, digits, hyphens, and underscores.");
         if (split is not ("all" or "tuning" or "validation"))
             throw new ArgumentException("Split must be all, tuning, or validation.");
-        return new(Path.GetFullPath(clipRoot), Path.GetFullPath(manifest), Path.GetFullPath(contacts), Path.GetFullPath(output), label, split, width, height, sensitivities);
+        var knownProbes = new HashSet<string>(["darker", "brighter", "low-detail", "blur"]);
+        if (syntheticProbes.Any(probe => !knownProbes.Contains(probe))) throw new ArgumentException("Synthetic probes must be darker, brighter, low-detail, or blur.");
+        return new(Path.GetFullPath(clipRoot), Path.GetFullPath(manifest), Path.GetFullPath(contacts), Path.GetFullPath(output), label, split, width, height, sensitivities, syntheticProbes);
     }
 
     public bool Includes(string filename) => Split == "all"
