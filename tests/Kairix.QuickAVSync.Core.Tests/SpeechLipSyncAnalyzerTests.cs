@@ -21,7 +21,10 @@ public sealed class SpeechLipSyncAnalyzerTests
         Assert.InRange(result.Result!.SignedMilliseconds, offsetMilliseconds - .01, offsetMilliseconds + .01);
         Assert.InRange(result.Markers.Count, 2, SpeechLipSyncAnalyzer.MaximumMarkers);
         Assert.Single(result.Markers, marker => marker.IsPrimary);
+        Assert.Equal(result.Markers.Max(marker => marker.Confidence), result.Markers.Single(marker => marker.IsPrimary).Confidence);
         Assert.All(result.Markers, marker => Assert.Equal(offsetMilliseconds, marker.SignedMilliseconds, 6));
+        Assert.Equal(offsetMilliseconds > 0 ? "AUDIO LEADS VIDEO" : offsetMilliseconds < 0 ? "AUDIO LAGS VIDEO" : "AUDIO AND VIDEO IN SYNC",
+            result.Result.Wording.Split(" BY ")[0]);
     }
 
     [Fact]
@@ -47,6 +50,34 @@ public sealed class SpeechLipSyncAnalyzerTests
         var inconsistent = analyzer.AnalyzeFeatures(visual, audio);
         Assert.False(inconsistent.HasEstimate);
         Assert.Null(inconsistent.Result);
+    }
+
+    [Fact]
+    public void OneBadEventDoesNotMoveTheRobustAggregate()
+    {
+        var audioEvents = new double[] { 400, 900, 1450, 2100, 2800 };
+        var visualEvents = new double[] { 440, 940, 1490, 2140, 2600 };
+        var result = new SpeechLipSyncAnalyzer().AnalyzeFeatures(Signal(visualEvents, 0), Signal(audioEvents, 0));
+        Assert.True(result.HasEstimate, result.Status);
+        Assert.InRange(result.Result!.SignedMilliseconds, 39.99, 40.01);
+        Assert.DoesNotContain(result.Markers, marker => marker.SignedMilliseconds == -200);
+    }
+
+    [Fact]
+    public void AudioOnlyVisualOnlyAndGlobalExposureDoNotProduceMarkers()
+    {
+        var analyzer = new SpeechLipSyncAnalyzer(); var signal = Signal([400, 900, 1450], 0);
+        Assert.False(analyzer.AnalyzeFeatures([], signal).HasEstimate);
+        Assert.False(analyzer.AnalyzeFeatures(signal, []).HasEstimate);
+
+        var frames = Enumerable.Range(0, 30).Select(index =>
+        {
+            var value = (byte)(index % 2 == 0 ? 20 : 220); var ticks = TimeSpan.FromMilliseconds(index * 20).Ticks;
+            return new VideoFrame(new(ticks, TimingQuality.StreamTimestamp, "test", ticks), 8, 8, Enumerable.Repeat(value, 64).ToArray(), index);
+        }).ToArray();
+        var global = SpeechLipSyncAnalyzer.ExtractVisualFeatures(frames, NormalizedMouthRegion.Default);
+        Assert.All(global, sample => Assert.Equal(0, sample.Strength));
+        Assert.False(analyzer.AnalyzeFeatures(global, signal).HasEstimate);
     }
 
     [Fact]

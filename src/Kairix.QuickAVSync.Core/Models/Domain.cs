@@ -230,7 +230,10 @@ public sealed record LipSyncMarker(
     MediaTimestamp VisualTimestamp,
     double SignedMilliseconds,
     double Confidence,
-    bool IsPrimary = false);
+    bool IsPrimary = false,
+    int EventIndex = 0,
+    double VisualEvidence = 0,
+    double AudioEvidence = 0);
 
 public sealed record LipSyncAnalysisResult(
     SyncResult? Result,

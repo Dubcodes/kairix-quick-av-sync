@@ -47,7 +47,8 @@ public sealed class SpeechLipSyncAnalyzer
                 .FirstOrDefault();
             if (nearest.Audio is null) continue;
             var strength = Math.Sqrt(Math.Clamp(v.Strength, 0, 1) * Math.Clamp(nearest.Audio.Strength, 0, 1));
-            possibilities.Add(new(nearest.Audio.Timestamp, v.Timestamp, nearest.Delta, strength));
+            possibilities.Add(new(nearest.Audio.Timestamp, v.Timestamp, nearest.Delta, strength,
+                EventIndex: possibilities.Count, VisualEvidence: v.Strength, AudioEvidence: nearest.Audio.Strength));
         }
 
         if (possibilities.Count < 2) return Empty("Not enough matched speech events", stopwatch);
@@ -63,7 +64,10 @@ public sealed class SpeechLipSyncAnalyzer
 
         var primaryIndex = Array.IndexOf(consistent, consistent.OrderByDescending(item => item.Confidence).First());
         var markers = consistent.Select((item, index) => item with { IsPrimary = index == primaryIndex }).ToArray();
-        var result = new SyncResult(aggregate, "Estimated Lip Sync", true);
+        var rounded = Math.Round(Math.Abs(aggregate), 1);
+        var wording = Math.Abs(aggregate) < .05 ? "AUDIO AND VIDEO IN SYNC"
+            : aggregate > 0 ? $"AUDIO LEADS VIDEO BY {rounded:0.#} ms" : $"AUDIO LAGS VIDEO BY {rounded:0.#} ms";
+        var result = new SyncResult(aggregate, wording, true);
         var confidence = Math.Clamp(markers.Average(item => item.Confidence) * (1 - spread / 140d), 0, 1);
         stopwatch.Stop();
         return new(result, markers, confidence, spread, $"Estimated Lip Sync · {markers.Length} speech events", stopwatch.Elapsed);
@@ -90,7 +94,7 @@ public sealed class SpeechLipSyncAnalyzer
                     local += Math.Abs(frame.Luma[index] - previous.Luma[index]) / 255d; count++;
                 }
                 var global = Math.Abs(frame.Luma.Average(value => (double)value) - previous.Luma.Average(value => (double)value)) / 255d;
-                output.Add(new(frame.Timestamp, Math.Clamp(local / Math.Max(1, count) - global * .55, 0, 1)));
+                output.Add(new(frame.Timestamp, Math.Clamp(local / Math.Max(1, count) - global, 0, 1)));
             }
             previous = frame;
         }
@@ -188,6 +192,6 @@ public sealed class SpeechLipSyncAnalyzer
 
     private static LipSyncAnalysisResult Empty(string status, Stopwatch stopwatch)
     {
-        stopwatch.Stop(); return new(null, [], null, null, status, stopwatch.Elapsed);
+        stopwatch.Stop(); return new(null, [], null, null, $"NOT ENOUGH LIP-SYNC EVIDENCE · {status}", stopwatch.Elapsed);
     }
 }

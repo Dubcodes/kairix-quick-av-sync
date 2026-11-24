@@ -19,6 +19,9 @@ public sealed class LipSyncUiTests
         Assert.Contains("Command=\"{Binding AnalyzeLipSyncCommand}\"", Ui);
         Assert.Contains("AutomationProperties.AutomationId=\"MouthRegionSelector\"", Ui);
         Assert.Contains("Region=\"{Binding MouthRegion}\"", Ui);
+        Assert.Contains("Set mouth area to analyze lip sync", Ui);
+        Assert.Contains("AutomationProperties.AutomationId=\"ResetMouthRegionButton\"", Ui);
+        Assert.Contains("For a strong test, say: Pop, baby, pepper, maybe.", Ui);
         Assert.Equal(MainWindowShortcut.AnalyzeLipSync, MainWindow.ResolveShortcut(Key.L, ModifierKeys.None));
     }
 

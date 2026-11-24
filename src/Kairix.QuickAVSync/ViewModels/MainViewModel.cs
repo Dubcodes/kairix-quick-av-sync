@@ -170,6 +170,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public ICommand ToggleHoldCommand { get; }
     public ICommand SelectHistoryCommand { get; }
     public ICommand AnalyzeLipSyncCommand { get; }
+    public ICommand ResetMouthRegionCommand { get; }
 
     public MainViewModel() : this(new SettingsService(), new AppLogger(), null, true)
     {
@@ -204,6 +205,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         ToggleHoldCommand = new RelayCommand(_ => IsHold = !IsHold, _ => IsArmEnabled);
         SelectHistoryCommand = new RelayCommand(item => { if (item is SessionResult result) StartOwnedTask(LoadHistoryAsync(result), "history.load"); });
         AnalyzeLipSyncCommand = new AsyncRelayCommand(AnalyzeLipSyncAsync);
+        ResetMouthRegionCommand = new RelayCommand(_ => ResetMouthRegion());
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher);
         _audioMeterTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(40), DispatcherPriority.Background, (_, _) => RefreshLiveAudioMeter(), Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher);
     }
@@ -215,7 +217,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             if (!Set(ref _selectedDevice, value) || value is null) return;
             _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName;
-            Changed(nameof(MouthRegion));
+            Changed(nameof(MouthRegion)); Changed(nameof(HasMouthRegion)); Changed(nameof(NeedsMouthRegion));
             _legacyReconstructionRequested = _settings.ReconstructFieldsByDevice.GetValueOrDefault(value.Id);
             _observedSignal = null; RefreshInterpretationDisplay();
             SaveSettings(immediate: true);
@@ -300,10 +302,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 _selectedVisualDetector = VisualDetectors.First(option => option.Kind == detector);
                 _settings.VisualDetector = detector; Changed(nameof(SelectedVisualDetector));
             }
-            Changed(nameof(IsLipSyncMode)); Changed(nameof(MouthRegion)); SaveSettings();
+            Changed(nameof(IsLipSyncMode)); Changed(nameof(MouthRegion)); Changed(nameof(HasMouthRegion)); Changed(nameof(NeedsMouthRegion)); SaveSettings();
         }
     }
     public bool IsLipSyncMode => SelectedAnalysisMode?.Kind == AnalysisModeKind.SpeechLipSync;
+    public bool HasMouthRegion => SelectedDevice is { } device && _settings.MouthRegionByDevice.ContainsKey(device.Id);
+    public bool NeedsMouthRegion => IsLipSyncMode && !HasMouthRegion;
     public NormalizedMouthRegion MouthRegion
     {
         get => SelectedDevice is { } device ? _settings.MouthRegionByDevice.GetValueOrDefault(device.Id, NormalizedMouthRegion.Default) : NormalizedMouthRegion.Default;
@@ -312,8 +316,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (SelectedDevice is not { } device) return;
             var normalized = value.Normalize();
             if (MouthRegion == normalized) return;
-            _settings.MouthRegionByDevice[device.Id] = normalized; Changed(); SaveSettings();
+            _settings.MouthRegionByDevice[device.Id] = normalized; Changed(); Changed(nameof(HasMouthRegion)); Changed(nameof(NeedsMouthRegion)); SaveSettings();
         }
+    }
+    private void ResetMouthRegion()
+    {
+        if (SelectedDevice is not { } device) return;
+        _settings.MouthRegionByDevice.Remove(device.Id); Changed(nameof(MouthRegion)); Changed(nameof(HasMouthRegion)); Changed(nameof(NeedsMouthRegion)); SaveSettings();
     }
     public VisualDetectorOption? SelectedVisualDetector
     {
@@ -323,7 +332,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (value is null || !Set(ref _selectedVisualDetector, value)) return;
             _settings.VisualDetector = value.Kind; SaveSettings();
             var mode = value.Kind == VisualDetectorKind.FlashTestSignal ? AnalysisModeKind.FlashTestSignal : AnalysisModeKind.HumanClap;
-            _selectedAnalysisMode = AnalysisModes.First(option => option.Kind == mode); _settings.AnalysisMode = mode; Changed(nameof(SelectedAnalysisMode)); Changed(nameof(IsLipSyncMode));
+            _selectedAnalysisMode = AnalysisModes.First(option => option.Kind == mode); _settings.AnalysisMode = mode; Changed(nameof(SelectedAnalysisMode)); Changed(nameof(IsLipSyncMode)); Changed(nameof(NeedsMouthRegion));
             _log.Write("visual.engine", $"selected='{value.Display}'; applies to future analyses");
         }
     }
@@ -976,6 +985,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private async Task AnalyzeLipSyncAsync()
     {
+        if (!HasMouthRegion) { Status = "Set mouth area to analyze lip sync"; return; }
         var videoSnapshot = _video.Snapshot(); var audioSnapshot = _audio.Snapshot();
         if (videoSnapshot.Count == 0 || audioSnapshot.Count == 0) { Status = "LIP SYNC · WAITING FOR LIVE MEDIA"; return; }
         var endTicks = videoSnapshot[^1].Timestamp.Ticks100ns;
@@ -1003,7 +1013,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (analysis.HasEstimate)
         {
             var snapshot = LipSyncHistorySnapshotFactory.Create(_lipSyncReference, frames, Waveform, ReviewFrameTicks, analysis);
-            _history.Add(new(DateTime.Now, analysis.Result!, analysis.Confidence, LipSyncSnapshot: snapshot, AnalysisLabel: "Estimated Lip Sync"));
+            _history.Add(new(DateTime.Now, analysis.Result!, analysis.Confidence, LipSyncSnapshot: snapshot,
+                AnalysisLabel: $"Lip Sync · {analysis.Markers.Count} markers · {analysis.Confidence:P0}"));
             RefreshRecentResults();
         }
         Changed(nameof(IsInReview)); Changed(nameof(HalfWindow)); Changed(nameof(LipSyncReferenceTicks)); ShowPlayhead(); NotifyMarkers();
