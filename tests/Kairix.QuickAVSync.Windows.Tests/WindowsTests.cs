@@ -3,6 +3,7 @@ using Kairix.QuickAVSync.Services;
 using Kairix.QuickAVSync.Windows.Infrastructure;
 using Kairix.QuickAVSync.Windows.Capture;
 using Kairix.QuickAVSync.ViewModels;
+using Kairix.QuickAVSync.Controls;
 using System.IO;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
@@ -213,6 +214,40 @@ public sealed class MainViewModelHistoryIntegrationTests
             viewModel.IsHold = false;
             Assert.True(ReviewTimeline.AcceptsAutomaticEvents(viewModel.AutoDetect, viewModel.AutoSpike, viewModel.IsHold, false));
             Assert.Single(viewModel.RecentResults);
+        }
+        finally { await viewModel.DisposeAsync(); Directory.Delete(directory, true); }
+    });
+
+    [Fact]
+    public void LipSyncHistoryRestoresCapturedRawCorrectedTimingAndMarkersExactly() => RunSta(async () =>
+    {
+        var (viewModel, directory) = CreateViewModel();
+        try
+        {
+            var reference = new MediaTimestamp(1_000_000, TimingQuality.StreamTimestamp, "test");
+            var audio = reference with { Ticks100ns = 1_200_000 };
+            var visual = reference with { Ticks100ns = 1_800_000 };
+            var marker = new LipSyncMarker(audio, visual, 40, .83, true, 0, .8, .9, 60, 200_000, VideoTimingOffsetSource.Manual);
+            var analysis = new LipSyncAnalysisResult(new(40, "AUDIO LEADS VIDEO BY 40 ms"), [marker], .83, 0, "Estimated Lip Sync", TimeSpan.FromMilliseconds(4),
+                new(60, "AUDIO LEADS VIDEO BY 60 ms"), 200_000, VideoTimingOffsetSource.Manual, 60, 40, .9, .2, .7, 2, 3, 2, 2, 0, 5000);
+            var frame = new VideoFrame(visual, 1, 1, [7], 0);
+            var snapshot = LipSyncHistorySnapshotFactory.Create(reference, [frame], [.1f, .4f], [80d], analysis);
+            var retained = new SessionResult(DateTime.Now, analysis.Result!, analysis.Confidence, analysis.RawResult, 20,
+                VideoTimingOffsetSource.Manual, LipSyncSnapshot: snapshot, AnalysisLabel: "Lip Sync");
+
+            viewModel.SelectHistoryCommand.Execute(retained);
+
+            Assert.True(viewModel.IsHold);
+            Assert.True(viewModel.IsInReview);
+            Assert.Equal(analysis.Result, viewModel.CurrentResult);
+            Assert.Equal(analysis.RawResult, viewModel.CurrentRawResult);
+            Assert.Equal("LIP SYNC CONFIDENCE", viewModel.ConfidenceHeading);
+            Assert.Equal("83%", viewModel.ConfidenceText);
+            Assert.Equal(marker, Assert.Single(viewModel.LipSyncMarkers));
+            Assert.Equal(snapshot.Waveform, viewModel.Waveform);
+            Assert.Equal(snapshot.FrameTicks, viewModel.ReviewFrameTicks);
+            Assert.Contains("-20.0 ms", viewModel.TimingCorrectionText);
+            Assert.Contains("manual profile override", viewModel.TimingCorrectionText);
         }
         finally { await viewModel.DisposeAsync(); Directory.Delete(directory, true); }
     });
@@ -847,6 +882,76 @@ public sealed class MediaFoundationInteropContractTests
     private static MethodInfo[] DeclaredMethods(string name) => Interface(name).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).OrderBy(method => method.MetadataToken).ToArray();
 }
 
+public sealed class UniformImageMappingTests
+{
+    [Theory]
+    [InlineData(1920, 1080, 1920, 1080, 0, 0, 1920, 1080)]
+    [InlineData(1600, 1200, 1920, 1080, 0, 150, 1600, 900)]
+    [InlineData(800, 1200, 1920, 1080, 0, 375, 800, 450)]
+    [InlineData(1600, 900, 800, 600, 200, 0, 1200, 900)]
+    public void UniformDisplayRectMatchesTheImagePixels(double hostWidth, double hostHeight, double sourceWidth, double sourceHeight,
+        double x, double y, double width, double height)
+    {
+        var actual = UniformImageMapping.DisplayRect(hostWidth, hostHeight, sourceWidth, sourceHeight);
+        Assert.Equal(x, actual.X, 6); Assert.Equal(y, actual.Y, 6);
+        Assert.Equal(width, actual.Width, 6); Assert.Equal(height, actual.Height, 6);
+    }
+
+    [Fact]
+    public void NormalizedRegionRoundTripsThroughLetterboxedDisplay()
+    {
+        var display = UniformImageMapping.DisplayRect(1600, 1200, 1920, 1080);
+        var region = new NormalizedMouthRegion(.25, .35, .4, .2);
+        var roundTrip = UniformImageMapping.ToNormalized(UniformImageMapping.ToDisplay(region, display), display);
+        Assert.Equal(region.X, roundTrip.X, 6); Assert.Equal(region.Y, roundTrip.Y, 6);
+        Assert.Equal(region.Width, roundTrip.Width, 6); Assert.Equal(region.Height, roundTrip.Height, 6);
+    }
+
+    [Fact]
+    public void DragEndpointsInBlackBarsClampToVisibleImage()
+    {
+        var display = UniformImageMapping.DisplayRect(1600, 1200, 1920, 1080);
+        Assert.Equal(new Point(300, display.Top), UniformImageMapping.Clamp(new Point(300, 20), display));
+        Assert.Equal(new Point(300, display.Bottom), UniformImageMapping.Clamp(new Point(300, 1180), display));
+        Assert.Equal(new Point(display.Left, 400), UniformImageMapping.Clamp(new Point(-20, 400), display));
+        Assert.Equal(new Point(display.Right, 400), UniformImageMapping.Clamp(new Point(1620, 400), display));
+        Assert.Equal(NormalizedMouthRegion.Default, UniformImageMapping.ToNormalized(new Rect(0, 0, 100, 100), display));
+    }
+
+    [Fact]
+    public void MissingSourceDimensionsProduceNoEditableDisplay()
+    {
+        Assert.True(UniformImageMapping.DisplayRect(800, 600, 0, 0).IsEmpty);
+    }
+}
+
+public sealed class LipSyncAnalysisOwnershipTests
+{
+    [Fact]
+    public void OnlyCurrentRequestForCurrentCaptureDeviceAndModeMayCommit()
+    {
+        var ownership = new LipSyncAnalysisOwnership();
+        var ticket = ownership.Begin(4, "device-a", AnalysisModeKind.SpeechLipSync);
+        Assert.True(ownership.CanCommit(ticket, 4, "device-a", AnalysisModeKind.SpeechLipSync, false));
+        Assert.False(ownership.CanCommit(ticket, 5, "device-a", AnalysisModeKind.SpeechLipSync, false));
+        Assert.False(ownership.CanCommit(ticket, 4, "device-b", AnalysisModeKind.SpeechLipSync, false));
+        Assert.False(ownership.CanCommit(ticket, 4, "device-a", AnalysisModeKind.HumanClap, false));
+        Assert.False(ownership.CanCommit(ticket, 4, "device-a", AnalysisModeKind.SpeechLipSync, true));
+    }
+
+    [Fact]
+    public void NewRequestAndExplicitSupersessionInvalidateOlderWork()
+    {
+        var ownership = new LipSyncAnalysisOwnership();
+        var first = ownership.Begin(2, "device", AnalysisModeKind.SpeechLipSync);
+        var second = ownership.Begin(2, "device", AnalysisModeKind.SpeechLipSync);
+        Assert.False(ownership.CanCommit(first, 2, "device", AnalysisModeKind.SpeechLipSync, false));
+        Assert.True(ownership.CanCommit(second, 2, "device", AnalysisModeKind.SpeechLipSync, false));
+        ownership.Supersede();
+        Assert.False(ownership.CanCommit(second, 2, "device", AnalysisModeKind.SpeechLipSync, false));
+    }
+}
+
 public sealed class OperatorUiContractTests
 {
     private static string Ui => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Ui", "MainWindow.xaml"));
@@ -881,8 +986,19 @@ public sealed class OperatorUiContractTests
         Assert.DoesNotContain("RAW MEASUREMENT", Ui);
         Assert.DoesNotContain("TIMING QUALITY", Ui);
         Assert.DoesNotContain("StringFormat=Detected:", Ui);
-        Assert.Contains("VISUAL CONFIDENCE", Ui);
+        Assert.Contains("Text=\"{Binding ConfidenceHeading}\"", Ui);
         Assert.Contains("SESSION HISTORY", Ui);
+    }
+
+    [Fact]
+    public void LipSyncModeUsesOnDemandControlsAndHidesClapOnlyControls()
+    {
+        Assert.Contains("AutomationProperties.AutomationId=\"ClapOperationControls\"", Ui);
+        Assert.Contains("Visibility=\"{Binding IsClapAnalysisMode, Converter={StaticResource BooleanToVisibilityConverter}}\"", Ui);
+        Assert.Contains("AutomationProperties.AutomationId=\"LipSyncOperationControls\"", Ui);
+        Assert.Contains("AutomationProperties.AutomationId=\"AnalyzeLipSyncOperationButton\"", Ui);
+        Assert.Contains("Content=\"{Binding ArmStateText}\"", Ui);
+        Assert.Contains("SourcePixelWidth=\"{Binding VideoSourceWidth}\" SourcePixelHeight=\"{Binding VideoSourceHeight}\"", Ui);
     }
 
     [Fact]

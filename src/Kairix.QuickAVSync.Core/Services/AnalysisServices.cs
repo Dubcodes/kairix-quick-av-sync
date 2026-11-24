@@ -555,8 +555,8 @@ public static class LipSyncHistorySnapshotFactory
         var compact = frames.Select(ReviewHistorySnapshotFactory.Compact).ToArray();
         var waveformCopy = waveform.ToArray(); var ticksCopy = frameTicks.ToArray(); var markers = analysis.Markers.ToArray();
         var bytes = compact.Sum(frame => (long)(frame.HasPresentation ? frame.PresentationBgra!.Length : frame.Luma.Length))
-            + waveformCopy.LongLength * sizeof(float) + ticksCopy.LongLength * sizeof(double) + markers.LongLength * 64;
-        return new(reference, Array.AsReadOnly(compact), Array.AsReadOnly(waveformCopy), Array.AsReadOnly(ticksCopy),
-            Array.AsReadOnly(markers), analysis.Result, analysis.Confidence, bytes);
+            + waveformCopy.LongLength * sizeof(float) + ticksCopy.LongLength * sizeof(double) + markers.LongLength * 96;
+        var retainedAnalysis = analysis with { Markers = Array.AsReadOnly(markers) };
+        return new(reference, Array.AsReadOnly(compact), Array.AsReadOnly(waveformCopy), Array.AsReadOnly(ticksCopy), retainedAnalysis, bytes);
     }
 }

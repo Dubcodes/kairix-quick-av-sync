@@ -67,11 +67,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private readonly ObservedSignalAnalyzer _signalAnalyzer = new();
     private readonly AudioLevelAccumulator _liveAudioMeter = new();
     private readonly SpeechLipSyncAnalyzer _lipSyncAnalyzer = new();
+    private readonly LipSyncAnalysisOwnership _lipSyncOwnership = new();
     private RollingBuffer<VideoFrame> _video = new(300, f => f.Timestamp.Ticks100ns);
     private RollingBuffer<AudioChunk> _audio = new(300, a => a.Timestamp.Ticks100ns);
     private ICaptureSession? _capture;
     private CancellationTokenSource? _analysisCts, _signalAnalysisCts, _settingsReconnectCts;
     private Task? _currentAnalysisTask, _signalAnalysisTask, _settingsReconnectTask;
+    private CancellationTokenSource? _lipSyncCts;
+    private Task? _lipSyncTask;
     private readonly DispatcherTimer _memoryTimer, _audioMeterTimer;
     private AppSettings _settings;
     private CaptureDeviceDescriptor? _selectedDevice;
@@ -90,6 +93,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private ObservedSignalAnalysis? _observedAnalysis;
     private double? _observedDeliveredRate;
     private ImageSource? _videoImage, _autoThumbnail;
+    private int _videoSourceWidth, _videoSourceHeight;
     private string _status = "STARTING", _formatText = "No negotiated format", _timingText = "TIMING NOT AVAILABLE", _memoryText = "Reading memory…";
     private bool _isReview, _isHold, _manualReview, _automaticAnalysisRunning;
     private IReadOnlyList<VideoFrame> _reviewFrames = [];
@@ -204,7 +208,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         StepAudioNextCommand = new RelayCommand(_ => StepAudio(1));
         ToggleHoldCommand = new RelayCommand(_ => IsHold = !IsHold, _ => IsArmEnabled);
         SelectHistoryCommand = new RelayCommand(item => { if (item is SessionResult result) StartOwnedTask(LoadHistoryAsync(result), "history.load"); });
-        AnalyzeLipSyncCommand = new AsyncRelayCommand(AnalyzeLipSyncAsync);
+        AnalyzeLipSyncCommand = new RelayCommand(_ => StartLipSyncAnalysis());
         ResetMouthRegionCommand = new RelayCommand(_ => ResetMouthRegion());
         _memoryTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background, (_, _) => UpdateMemory(), Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher);
         _audioMeterTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(40), DispatcherPriority.Background, (_, _) => RefreshLiveAudioMeter(), Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher);
@@ -216,6 +220,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         set
         {
             if (!Set(ref _selectedDevice, value) || value is null) return;
+            SupersedeLipSyncAnalysis();
             _settings.LastDeviceId = value.Id; _settings.LastDeviceName = value.FriendlyName;
             Changed(nameof(MouthRegion)); Changed(nameof(HasMouthRegion)); Changed(nameof(NeedsMouthRegion));
             _legacyReconstructionRequested = _settings.ReconstructFieldsByDevice.GetValueOrDefault(value.Id);
@@ -295,6 +300,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         set
         {
             if (value is null || !Set(ref _selectedAnalysisMode, value)) return;
+            SupersedeLipSyncAnalysis();
             _settings.AnalysisMode = value.Kind;
             if (value.Kind != AnalysisModeKind.SpeechLipSync)
             {
@@ -302,10 +308,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 _selectedVisualDetector = VisualDetectors.First(option => option.Kind == detector);
                 _settings.VisualDetector = detector; Changed(nameof(SelectedVisualDetector));
             }
-            Changed(nameof(IsLipSyncMode)); Changed(nameof(MouthRegion)); Changed(nameof(HasMouthRegion)); Changed(nameof(NeedsMouthRegion)); SaveSettings();
+            Changed(nameof(IsLipSyncMode)); Changed(nameof(IsClapAnalysisMode)); Changed(nameof(MouthRegion)); Changed(nameof(HasMouthRegion)); Changed(nameof(NeedsMouthRegion)); Changed(nameof(ConfidenceHeading)); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled)); SaveSettings();
         }
     }
     public bool IsLipSyncMode => SelectedAnalysisMode?.Kind == AnalysisModeKind.SpeechLipSync;
+    public bool IsClapAnalysisMode => !IsLipSyncMode;
     public bool HasMouthRegion => SelectedDevice is { } device && _settings.MouthRegionByDevice.ContainsKey(device.Id);
     public bool NeedsMouthRegion => IsLipSyncMode && !HasMouthRegion;
     public NormalizedMouthRegion MouthRegion
@@ -332,7 +339,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (value is null || !Set(ref _selectedVisualDetector, value)) return;
             _settings.VisualDetector = value.Kind; SaveSettings();
             var mode = value.Kind == VisualDetectorKind.FlashTestSignal ? AnalysisModeKind.FlashTestSignal : AnalysisModeKind.HumanClap;
-            _selectedAnalysisMode = AnalysisModes.First(option => option.Kind == mode); _settings.AnalysisMode = mode; Changed(nameof(SelectedAnalysisMode)); Changed(nameof(IsLipSyncMode)); Changed(nameof(NeedsMouthRegion));
+            SupersedeLipSyncAnalysis(); _selectedAnalysisMode = AnalysisModes.First(option => option.Kind == mode); _settings.AnalysisMode = mode; Changed(nameof(SelectedAnalysisMode)); Changed(nameof(IsLipSyncMode)); Changed(nameof(IsClapAnalysisMode)); Changed(nameof(NeedsMouthRegion)); Changed(nameof(ConfidenceHeading)); Changed(nameof(ArmStateText)); Changed(nameof(IsArmEnabled));
             _log.Write("visual.engine", $"selected='{value.Display}'; applies to future analyses");
         }
     }
@@ -417,6 +424,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public double WorkWindowMilliseconds { get => _settings.WorkWindowMilliseconds; set { var v = Math.Clamp(value, 50, 2000); if (_settings.WorkWindowMilliseconds != v) { _settings.WorkWindowMilliseconds = v; Changed(); Changed(nameof(HalfWindow)); SaveSettings(); } } }
     public double HalfWindow => _lipSyncReview ? 2500 : WorkWindowMilliseconds;
     public ImageSource? VideoImage { get => _videoImage; private set => Set(ref _videoImage, value); }
+    public int VideoSourceWidth { get => _videoSourceWidth; private set => Set(ref _videoSourceWidth, value); }
+    public int VideoSourceHeight { get => _videoSourceHeight; private set => Set(ref _videoSourceHeight, value); }
     public ImageSource? AutoThumbnail { get => _autoThumbnail; private set => Set(ref _autoThumbnail, value); }
     public string Status { get => _status; private set => Set(ref _status, value); }
     public string FormatText { get => _formatText; private set => Set(ref _formatText, value); }
@@ -479,7 +488,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public double PlayheadMs => _review?.PlayheadOffsetMs ?? 0;
     public double PlayheadMeasurementMs => _review is null ? 0 : VideoTimingCompensation.Calculate(_review.AudioMark, _review.Playhead, _review.VideoTimingOffset).SignedMilliseconds;
     public SyncResult? CurrentResult => _lipSyncReview ? _lipSyncAnalysis?.Result : _review?.CurrentResult;
-    public SyncResult? CurrentRawResult => _review?.CurrentRawResult;
+    public SyncResult? CurrentRawResult => _lipSyncReview ? _lipSyncAnalysis?.RawResult : _review?.CurrentRawResult;
     public string ResultModeText => _lipSyncReview ? "ESTIMATED LIP SYNC" : ReviewMeasurementPresentation.ResultModeText(_timelineAnalysis, _review?.ResultMode ?? ReviewResultMode.None);
     public string ResultText => _lipSyncReview ? _lipSyncAnalysis?.Status ?? "LIP SYNC ANALYSIS" : ReviewMeasurementPresentation.ResultText(_timelineAnalysis, _review);
     public string ResultSummaryText => string.IsNullOrEmpty(ResultModeText) ? ResultText : $"{ResultModeText}\n{ResultText}";
@@ -488,6 +497,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         ? $"{result.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—";
     public string TimelineIntegrityText => ReviewMeasurementPresentation.TimelineIntegrityText(_timelineAnalysis);
     public string ConfidenceText => _lipSyncReview ? (_lipSyncAnalysis?.Confidence is { } confidence ? $"{confidence:P0}" : "—") : _review?.AutoCandidate is not { } candidate ? "—" : $"{candidate.Confidence:P0}";
+    public string ConfidenceHeading => IsLipSyncMode || _lipSyncReview ? "LIP SYNC CONFIDENCE" : "VISUAL CONFIDENCE";
     public string ReviewPosition
     {
         get
@@ -499,11 +509,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
     public string RawMeasurementText => CurrentRawResult is { TimingComparable: true } raw ? $"{raw.SignedMilliseconds:+0.0;-0.0;0.0} ms" : "—";
-    public string TimingCorrectionText => $"{-EffectiveVideoTimingOffset.Milliseconds:+0.0;-0.0;0.0} ms · {(EffectiveVideoTimingOffset.IsManual ? "manual profile override" : CurrentFieldReconstruction is null ? "automatic · none" : "automatic reconstructed-field compensation")}";
+    public string TimingCorrectionText
+    {
+        get
+        {
+            var offset = _lipSyncReview && _lipSyncAnalysis is { } lip
+                ? new VideoTimingOffset(lip.VideoTimingOffsetTicks100ns, lip.VideoTimingOffsetSource) : EffectiveVideoTimingOffset;
+            return $"{-offset.Milliseconds:+0.0;-0.0;0.0} ms · {(offset.IsManual ? "manual profile override" : offset.Ticks100ns == 0 ? "automatic · none" : "automatic reconstructed-field compensation")}";
+        }
+    }
     // Hold is session-only and must never overwrite the capture readiness state.
     public bool IsHold { get => _isHold; set { if (Set(ref _isHold, value)) Changed(nameof(ArmStateText)); } }
-    public bool IsArmEnabled => AutoDetect && AutoSpike;
-    public string ArmStateText => !AutoDetect ? "AUTO OFF" : !AutoSpike ? "TRIGGER OFF" : IsHold ? "HOLD" : "ARMED";
+    public bool IsArmEnabled => !IsLipSyncMode && AutoDetect && AutoSpike;
+    public string ArmStateText => IsLipSyncMode ? "ON-DEMAND LIP SYNC" : !AutoDetect ? "AUTO OFF" : !AutoSpike ? "TRIGGER OFF" : IsHold ? "HOLD" : "ARMED";
     public bool IsInReview => _isReview;
     public string RuntimeHealthText => _runtimeHealthText;
     public string VersionText => Services.BuildIdentity.Current.SemanticVersion;
@@ -746,8 +764,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private async Task ClearCurrentMediaStateAsync()
     {
-        Interlocked.Increment(ref _captureGeneration); await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync(); _isReview = false; _manualReview = false; _automaticAnalysisRunning = false; Changed(nameof(IsInReview)); _review = null; _reviewFrames = []; _playheadIndex = 0; _lastAudioEndTicks = long.MinValue; _audioContinuityFaults = 0; Interlocked.Exchange(ref _temporalVideoCount, 0); Interlocked.Exchange(ref _displayedPreviewCount, 0); Interlocked.Exchange(ref _audioChunkCount, 0); Interlocked.Exchange(ref _lastTemporalStopwatchTicks, 0); Interlocked.Exchange(ref _lastPreviewStopwatchTicks, 0); Interlocked.Exchange(ref _lastAudioStopwatchTicks, 0); Interlocked.Exchange(ref _videoStallReported, 0);
-        Interlocked.Exchange(ref _pendingPreview, null); VideoImage = null; AutoThumbnail = null; Waveform = []; ReviewFrameTicks = []; _timelineAnalysis = null; FormatText = "Format not negotiated"; TimingText = "TIMING NOT AVAILABLE"; _liveAudioMeter.Reset(); _audioLeftDbfs = AudioLevelAccumulator.FloorDbfs; _audioRightDbfs = AudioLevelAccumulator.FloorDbfs; _liveAudioSampleRate = 0; _liveAudioChannels = 0; RefreshLiveAudioMeter(); NotifyMarkers();
+        Interlocked.Increment(ref _captureGeneration); await CancelLipSyncAnalysisAsync(); await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync(); _isReview = false; _manualReview = false; _automaticAnalysisRunning = false; _lipSyncReview = false; _lipSyncAnalysis = null; LipSyncMarkers = []; Changed(nameof(IsInReview)); _review = null; _reviewFrames = []; _playheadIndex = 0; _lastAudioEndTicks = long.MinValue; _audioContinuityFaults = 0; Interlocked.Exchange(ref _temporalVideoCount, 0); Interlocked.Exchange(ref _displayedPreviewCount, 0); Interlocked.Exchange(ref _audioChunkCount, 0); Interlocked.Exchange(ref _lastTemporalStopwatchTicks, 0); Interlocked.Exchange(ref _lastPreviewStopwatchTicks, 0); Interlocked.Exchange(ref _lastAudioStopwatchTicks, 0); Interlocked.Exchange(ref _videoStallReported, 0);
+        Interlocked.Exchange(ref _pendingPreview, null); ClearVideoImage(); AutoThumbnail = null; Waveform = []; ReviewFrameTicks = []; _timelineAnalysis = null; FormatText = "Format not negotiated"; TimingText = "TIMING NOT AVAILABLE"; _liveAudioMeter.Reset(); _audioLeftDbfs = AudioLevelAccumulator.FloorDbfs; _audioRightDbfs = AudioLevelAccumulator.FloorDbfs; _liveAudioSampleRate = 0; _liveAudioChannels = 0; RefreshLiveAudioMeter(); NotifyMarkers();
     }
 
     private void OnVideoFrame(object? sender, VideoFrame frame)
@@ -799,7 +817,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             try
             {
-                var latest = Interlocked.Exchange(ref _pendingPreview, null); if (latest is not null && latest.Generation == Volatile.Read(ref _captureGeneration) && !_isReview) { VideoImage = ToBitmap(latest.Frame); Interlocked.Increment(ref _displayedPreviewCount); Interlocked.Exchange(ref _lastPreviewStopwatchTicks, System.Diagnostics.Stopwatch.GetTimestamp()); }
+                var latest = Interlocked.Exchange(ref _pendingPreview, null); if (latest is not null && latest.Generation == Volatile.Read(ref _captureGeneration) && !_isReview) { SetVideoFrame(latest.Frame); Interlocked.Increment(ref _displayedPreviewCount); Interlocked.Exchange(ref _lastPreviewStopwatchTicks, System.Diagnostics.Stopwatch.GetTimestamp()); }
             }
             finally { Interlocked.Exchange(ref _previewScheduled, 0); }
             var newer = Interlocked.Exchange(ref _pendingPreview, null); if (newer is not null) ScheduleLatestPreview(newer.Frame, newer.Generation);
@@ -983,42 +1001,70 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         StartOwnedTask(StartEventAsync(new(latest.Timestamp.Ticks100ns + latest.Duration.Ticks / 2, latest.Timestamp.Quality, latest.Timestamp.ClockDomain), false), "review.start");
     }
 
-    private async Task AnalyzeLipSyncAsync()
+    private void StartLipSyncAnalysis()
     {
         if (!HasMouthRegion) { Status = "Set mouth area to analyze lip sync"; return; }
-        var videoSnapshot = _video.Snapshot(); var audioSnapshot = _audio.Snapshot();
-        if (videoSnapshot.Count == 0 || audioSnapshot.Count == 0) { Status = "LIP SYNC · WAITING FOR LIVE MEDIA"; return; }
-        var endTicks = videoSnapshot[^1].Timestamp.Ticks100ns;
-        var startTicks = endTicks - TimeSpan.FromSeconds(5).Ticks;
-        var frames = videoSnapshot.Where(frame => frame.Timestamp.Ticks100ns >= startTicks).ToArray();
-        var chunks = audioSnapshot.Where(chunk => chunk.Timestamp.Ticks100ns + chunk.Duration.Ticks >= startTicks && chunk.Timestamp.Ticks100ns <= endTicks).ToArray();
-        var deviceRegion = MouthRegion;
-        Status = "ANALYZING SPEECH / LIP SYNC…";
-        LipSyncAnalysisResult analysis;
-        try { analysis = await _lipSyncAnalyzer.AnalyzeAsync(frames, chunks, deviceRegion, _lifetimeCts.Token); }
-        catch (OperationCanceledException) { return; }
-
-        await CancelCurrentAnalysisAsync().ConfigureAwait(true); FinalizeCurrentEvent();
-        _lipSyncReference = new((startTicks + endTicks) / 2, frames[^1].Timestamp.Quality, frames[^1].Timestamp.ClockDomain);
-        _lipSyncAnalysis = analysis; LipSyncMarkers = analysis.Markers; _lipSyncReview = true;
-        _review = null; _reviewFrames = frames; _timelineAnalysis = null; _isReview = true; _manualReview = false; IsHold = true;
-        Waveform = _waveformBuilder.Build(chunks, _lipSyncReference, TimeSpan.FromSeconds(2.5), 900);
-        ReviewFrameTicks = frames.Select(frame => (frame.Timestamp.Ticks100ns - _lipSyncReference.Ticks100ns) / 10_000d).ToArray();
-        _playheadIndex = analysis.Markers.FirstOrDefault(marker => marker.IsPrimary) is { } primary
-            ? FindNearest(frames, primary.VisualTimestamp) : Math.Max(0, frames.Length - 1);
-        if (frames.Length > 0) VideoImage = ToBitmap(frames[_playheadIndex]);
-        Status = analysis.HasEstimate ? "REVIEW · ESTIMATED LIP SYNC · HOLD" : "REVIEW · LIP SYNC INCONCLUSIVE · HOLD";
-        LastEventDiagnosticsText = $"Speech / Lip Sync · {analysis.Status}\nROI {deviceRegion.X:0.000},{deviceRegion.Y:0.000} {deviceRegion.Width:0.000}×{deviceRegion.Height:0.000}\nMarkers {analysis.Markers.Count}/{SpeechLipSyncAnalyzer.MaximumMarkers} · spread {analysis.SpreadMilliseconds?.ToString("0.0") ?? "—"} ms · runtime {analysis.Runtime.TotalMilliseconds:0.0} ms";
-        _log.Write("lip-sync.analysis", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
-        if (analysis.HasEstimate)
-        {
-            var snapshot = LipSyncHistorySnapshotFactory.Create(_lipSyncReference, frames, Waveform, ReviewFrameTicks, analysis);
-            _history.Add(new(DateTime.Now, analysis.Result!, analysis.Confidence, LipSyncSnapshot: snapshot,
-                AnalysisLabel: $"Lip Sync · {analysis.Markers.Count} markers · {analysis.Confidence:P0}"));
-            RefreshRecentResults();
-        }
-        Changed(nameof(IsInReview)); Changed(nameof(HalfWindow)); Changed(nameof(LipSyncReferenceTicks)); ShowPlayhead(); NotifyMarkers();
+        if (SelectedDevice is not { } device || !IsLipSyncMode) return;
+        var previousTask = _lipSyncTask; _lipSyncCts?.Cancel();
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token); _lipSyncCts = cts;
+        var ticket = _lipSyncOwnership.Begin(Volatile.Read(ref _captureGeneration), device.Id, AnalysisModeKind.SpeechLipSync);
+        var task = AnalyzeLipSyncAsync(previousTask, ticket, MouthRegion, EffectiveVideoTimingOffset, cts);
+        _lipSyncTask = task; ObserveTask(task, "lip-sync.analysis");
     }
+
+    private async Task AnalyzeLipSyncAsync(Task? previousTask, LipSyncAnalysisTicket ticket, NormalizedMouthRegion deviceRegion,
+        VideoTimingOffset timingOffset, CancellationTokenSource owner)
+    {
+        try
+        {
+            if (previousTask is not null) { try { await previousTask.ConfigureAwait(true); } catch (OperationCanceledException) { } }
+            owner.Token.ThrowIfCancellationRequested(); if (!IsLipSyncTicketCurrent(ticket)) return;
+            var videoSnapshot = _video.Snapshot(); var audioSnapshot = _audio.Snapshot();
+            if (videoSnapshot.Count == 0 || audioSnapshot.Count == 0) { if (IsLipSyncTicketCurrent(ticket)) Status = "LIP SYNC · WAITING FOR LIVE MEDIA"; return; }
+            var endTicks = videoSnapshot[^1].Timestamp.Ticks100ns; var startTicks = endTicks - TimeSpan.FromSeconds(5).Ticks;
+            var frames = videoSnapshot.Where(frame => frame.Timestamp.Ticks100ns >= startTicks).ToArray();
+            var chunks = audioSnapshot.Where(chunk => chunk.Timestamp.Ticks100ns + chunk.Duration.Ticks >= startTicks && chunk.Timestamp.Ticks100ns <= endTicks).ToArray();
+            if (IsLipSyncTicketCurrent(ticket)) Status = "ANALYZING SPEECH / LIP SYNC…";
+            var analysis = await _lipSyncAnalyzer.AnalyzeAsync(frames, chunks, deviceRegion, timingOffset, owner.Token);
+            if (!IsLipSyncTicketCurrent(ticket)) return;
+
+            await CancelCurrentAnalysisAsync().ConfigureAwait(true); if (!IsLipSyncTicketCurrent(ticket)) return; FinalizeCurrentEvent();
+            _lipSyncReference = new((startTicks + endTicks) / 2, frames[^1].Timestamp.Quality, frames[^1].Timestamp.ClockDomain);
+            _lipSyncAnalysis = analysis; LipSyncMarkers = analysis.Markers; _lipSyncReview = true;
+            _review = null; _reviewFrames = frames; _timelineAnalysis = null; _isReview = true; _manualReview = false; IsHold = true;
+            Waveform = _waveformBuilder.Build(chunks, _lipSyncReference, TimeSpan.FromSeconds(2.5), 900);
+            ReviewFrameTicks = frames.Select(frame => (frame.Timestamp.Ticks100ns - _lipSyncReference.Ticks100ns) / 10_000d).ToArray();
+            _playheadIndex = analysis.Markers.FirstOrDefault(marker => marker.IsPrimary) is { } primary ? FindNearest(frames, primary.VisualTimestamp) : Math.Max(0, frames.Length - 1);
+            if (frames.Length > 0) SetVideoFrame(frames[_playheadIndex]);
+            Status = analysis.HasEstimate ? "REVIEW · ESTIMATED LIP SYNC · HOLD" : "REVIEW · LIP SYNC INCONCLUSIVE · HOLD";
+            LastEventDiagnosticsText = DescribeLipSyncDiagnostics(analysis, deviceRegion);
+            _log.Write("lip-sync.analysis", LastEventDiagnosticsText.Replace(Environment.NewLine, " | "));
+            if (analysis.HasEstimate)
+            {
+                var snapshot = LipSyncHistorySnapshotFactory.Create(_lipSyncReference, frames, Waveform, ReviewFrameTicks, analysis);
+                _history.Add(new(DateTime.Now, analysis.Result!, analysis.Confidence, analysis.RawResult, timingOffset.Milliseconds, timingOffset.Source,
+                    LipSyncSnapshot: snapshot, AnalysisLabel: $"Lip Sync · {analysis.Markers.Count} markers · {analysis.Confidence:P0}")); RefreshRecentResults();
+            }
+            Changed(nameof(IsInReview)); Changed(nameof(HalfWindow)); Changed(nameof(LipSyncReferenceTicks)); Changed(nameof(ConfidenceHeading)); ShowPlayhead(); NotifyMarkers();
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (ReferenceEquals(_lipSyncCts, owner)) { _lipSyncCts = null; _lipSyncTask = null; }
+            owner.Dispose();
+        }
+    }
+
+    private bool IsLipSyncTicketCurrent(LipSyncAnalysisTicket ticket) => _lipSyncOwnership.CanCommit(ticket,
+        Volatile.Read(ref _captureGeneration), SelectedDevice?.Id, SelectedAnalysisMode?.Kind ?? AnalysisModeKind.HumanClap, Volatile.Read(ref _disposing) != 0);
+
+    private static string DescribeLipSyncDiagnostics(LipSyncAnalysisResult analysis, NormalizedMouthRegion roi) =>
+        $"Speech / Lip Sync · {analysis.Status}\nWindow {analysis.AnalysisWindowMilliseconds:0} ms · video frames {analysis.VideoFrameCount} · audio bins {analysis.AudioFeatureBinCount}\n" +
+        $"ROI {roi.X:0.000},{roi.Y:0.000} {roi.Width:0.000}×{roi.Height:0.000}\n" +
+        $"Best lag raw {analysis.BestRawLagMilliseconds?.ToString("+0.0;-0.0;0.0") ?? "—"} ms · corrected {analysis.BestCorrectedLagMilliseconds?.ToString("+0.0;-0.0;0.0") ?? "—"} ms · compensation {analysis.VideoTimingOffsetTicks100ns / 10_000d:+0.0;-0.0;0.0} ms ({analysis.VideoTimingOffsetSource})\n" +
+        $"Correlation best {analysis.BestCorrelationScore?.ToString("0.000") ?? "—"} · competitor {analysis.CompetingCorrelationScore?.ToString("0.000") ?? "—"} · margin {analysis.CorrelationMargin?.ToString("P1") ?? "—"}\n" +
+        $"Candidate events visual/audio {analysis.VisualEventCount}/{analysis.AudioEventCount} · accepted {analysis.Markers.Count} · rejected/outlier {analysis.RejectedMarkerCount}\n" +
+        $"Aggregate raw {analysis.RawResult?.SignedMilliseconds.ToString("+0.0;-0.0;0.0") ?? "—"} ms · corrected {analysis.Result?.SignedMilliseconds.ToString("+0.0;-0.0;0.0") ?? "—"} ms · spread {analysis.SpreadMilliseconds?.ToString("0.0") ?? "—"} ms · confidence {analysis.Confidence?.ToString("P0") ?? "—"} · runtime {analysis.Runtime.TotalMilliseconds:0.0} ms";
     public void SelectAudioPoint(double relativeMs)
     {
         if (_review is null) return; ReviewMeasurementPresentation.EnterManualPreview(_review); _review.MoveAudioMark(relativeMs, HalfWindow); NotifyMarkers();
@@ -1108,10 +1154,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public void MarkAudioAtPlayhead() { if (_review is not null && _reviewFrames.Count > 0) SelectAudioPoint(PlayheadMs); }
     private void MarkVisual() { if (_review is null || _reviewFrames.Count == 0) return; _review.CommitManualVisual(); _log.Write($"Manual visual mark {_review.ManualVisualMark!.Value.Ticks100ns}"); NotifyMarkers(); }
     private void JumpToAuto() { if (_review?.AutoCandidate is not { } candidate || _reviewFrames.Count == 0) return; _playheadIndex = FindNearest(_reviewFrames, candidate.Timestamp); _review.ShowAutoCandidate(); ReviewMeasurementPresentation.EnterManualPreview(_review); ShowPlayhead(); NotifyMarkers(); }
-    private void ShowPlayhead() { if (_reviewFrames.Count > 0) VideoImage = ToBitmap(_reviewFrames[Math.Clamp(_playheadIndex, 0, _reviewFrames.Count - 1)]); Changed(nameof(ReviewPosition)); Changed(nameof(PlayheadMs)); }
+    private void ShowPlayhead() { if (_reviewFrames.Count > 0) SetVideoFrame(_reviewFrames[Math.Clamp(_playheadIndex, 0, _reviewFrames.Count - 1)]); Changed(nameof(ReviewPosition)); Changed(nameof(PlayheadMs)); }
     private async Task ResumeLiveAsync()
     {
-        await CancelCurrentAnalysisAsync().ConfigureAwait(true);
+        await CancelLipSyncAnalysisAsync().ConfigureAwait(true); await CancelCurrentAnalysisAsync().ConfigureAwait(true);
         FinalizeCurrentEvent(); _isReview = false; _manualReview = false; _automaticAnalysisRunning = false; _lipSyncReview = false; _lipSyncAnalysis = null; LipSyncMarkers = []; Changed(nameof(IsInReview)); Changed(nameof(HalfWindow)); _log.Write("viewer.state", $"REVIEW -> LIVE reason=live-view generation={_captureGeneration}"); _review = null; _timelineAnalysis = null; Waveform = []; ReviewFrameTicks = []; AutoThumbnail = null; Status = AuthoritativeCaptureStatus(); NotifyMarkers();
     }
     private void FinalizeCurrentEvent()
@@ -1127,13 +1173,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private async Task LoadHistoryAsync(SessionResult item)
     {
+        await CancelLipSyncAnalysisAsync().ConfigureAwait(true);
         if (item.LipSyncSnapshot is { } lip)
         {
             IsHold = true; await CancelCurrentAnalysisAsync().ConfigureAwait(true); FinalizeCurrentEvent();
             _review = null; _timelineAnalysis = null; _lipSyncReview = true; _lipSyncReference = lip.EventReference;
-            _lipSyncAnalysis = new(lip.Result, lip.Markers, lip.Confidence, null, "Estimated Lip Sync · retained review", TimeSpan.Zero);
-            _reviewFrames = lip.Frames; Waveform = lip.Waveform; ReviewFrameTicks = lip.FrameTicks; LipSyncMarkers = lip.Markers;
-            _playheadIndex = lip.Markers.FirstOrDefault(marker => marker.IsPrimary) is { } primary ? FindNearest(_reviewFrames, primary.VisualTimestamp) : 0;
+            _lipSyncAnalysis = lip.Analysis;
+            _reviewFrames = lip.Frames; Waveform = lip.Waveform; ReviewFrameTicks = lip.FrameTicks; LipSyncMarkers = lip.Analysis.Markers;
+            _playheadIndex = lip.Analysis.Markers.FirstOrDefault(marker => marker.IsPrimary) is { } primary ? FindNearest(_reviewFrames, primary.VisualTimestamp) : 0;
             _isReview = true; _manualReview = false; _automaticAnalysisRunning = false; Changed(nameof(IsInReview)); Changed(nameof(HalfWindow)); Changed(nameof(LipSyncReferenceTicks)); Status = "REVIEW · LIP SYNC HISTORY · HOLD";
             ShowPlayhead(); NotifyMarkers(); return;
         }
@@ -1145,6 +1192,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _playheadIndex = FindNearest(_reviewFrames, snapshot.AutoCandidate.Timestamp); AutoThumbnail = ToBitmap(snapshot.AutoCandidate.Frame);
         _isReview = true; _manualReview = false; _automaticAnalysisRunning = false; Changed(nameof(IsInReview)); Status = "REVIEW · HISTORY REVIEW · HOLD";
         ShowPlayhead(); NotifyMarkers();
+    }
+    private void SupersedeLipSyncAnalysis() { _lipSyncOwnership.Supersede(); _lipSyncCts?.Cancel(); }
+    private async Task CancelLipSyncAnalysisAsync()
+    {
+        _lipSyncOwnership.Supersede(); var cts = _lipSyncCts; var task = _lipSyncTask; _lipSyncCts = null; _lipSyncTask = null; cts?.Cancel();
+        if (task is not null) { try { await task.ConfigureAwait(true); } catch (OperationCanceledException) { } catch (Exception ex) { _log.Write("lip-sync.analysis.failure", ex.ToString()); } }
     }
     private async Task CancelCurrentAnalysisAsync()
     {
@@ -1184,7 +1237,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _ = dispatcher.BeginInvoke(action, priority);
     }
     private string AuthoritativeCaptureStatus() => _captureStatus switch { CaptureStatus.Running => _captureStatusText, CaptureStatus.Starting => _captureStatusText, CaptureStatus.DeviceLost => "CAPTURE DEVICE LOST", CaptureStatus.Failed => "CAPTURE FAILED", CaptureStatus.Stopping => "STOPPING", CaptureStatus.Stopped => "CAPTURE STOPPED", _ => "CAPTURE NOT READY" };
-    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(LipSyncMarkers)); Changed(nameof(CurrentResult)); Changed(nameof(CurrentRawResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(SyncValueText)); Changed(nameof(ConfidenceText)); Changed(nameof(PlayheadMs)); Changed(nameof(PlayheadMeasurementMs)); Changed(nameof(ReviewPosition)); Changed(nameof(RawMeasurementText)); Changed(nameof(TimingCorrectionText)); Changed(nameof(TimelineIntegrityText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); Changed(nameof(AboutTimingDiagnosticsText)); }
+    private void NotifyMarkers() { Changed(nameof(AudioMarkerMs)); Changed(nameof(AutoVisualMs)); Changed(nameof(VisualMarkerMs)); Changed(nameof(LipSyncMarkers)); Changed(nameof(CurrentResult)); Changed(nameof(CurrentRawResult)); Changed(nameof(ResultModeText)); Changed(nameof(ResultText)); Changed(nameof(ResultSummaryText)); Changed(nameof(SyncValue)); Changed(nameof(SyncValueText)); Changed(nameof(ConfidenceText)); Changed(nameof(ConfidenceHeading)); Changed(nameof(PlayheadMs)); Changed(nameof(PlayheadMeasurementMs)); Changed(nameof(ReviewPosition)); Changed(nameof(RawMeasurementText)); Changed(nameof(TimingCorrectionText)); Changed(nameof(TimelineIntegrityText)); Changed(nameof(ReviewTimingText)); Changed(nameof(CaptureTransportText)); Changed(nameof(TimestampPhaseText)); Changed(nameof(ContentWarningText)); Changed(nameof(AboutTimingDiagnosticsText)); }
+
+    private void SetVideoFrame(VideoFrame frame)
+    {
+        VideoImage = ToBitmap(frame);
+        VideoSourceWidth = frame.HasPresentation ? frame.PresentationWidth : frame.Width;
+        VideoSourceHeight = frame.HasPresentation ? frame.PresentationHeight : frame.Height;
+    }
+
+    private void ClearVideoImage()
+    {
+        VideoImage = null;
+        VideoSourceWidth = 0;
+        VideoSourceHeight = 0;
+    }
     private static BitmapSource ToBitmap(VideoFrame frame)
     {
         var bitmap = frame.HasPresentation
@@ -1347,7 +1414,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (Interlocked.Exchange(ref _disposing, 1) != 0) return;
         _log.Write("shutdown", "View model disposal started; canceling capture lifetime.");
         _lifetimeCts.Cancel(); _memoryTimer.Stop(); _audioMeterTimer.Stop(); _settingsReconnectCts?.Cancel(); SaveSettings(immediate: true);
-        await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync();
+        await CancelLipSyncAnalysisAsync(); await CancelCurrentAnalysisAsync(); await CancelSignalAnalysisAsync();
         var settingsTask = _settingsReconnectTask;
         if (settingsTask is not null) { try { await settingsTask; } catch (OperationCanceledException) { } }
         await _reconnectGate.WaitAsync();

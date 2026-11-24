@@ -233,7 +233,10 @@ public sealed record LipSyncMarker(
     bool IsPrimary = false,
     int EventIndex = 0,
     double VisualEvidence = 0,
-    double AudioEvidence = 0);
+    double AudioEvidence = 0,
+    double RawSignedMilliseconds = 0,
+    long VideoTimingOffsetTicks100ns = 0,
+    VideoTimingOffsetSource VideoTimingOffsetSource = VideoTimingOffsetSource.Automatic);
 
 public sealed record LipSyncAnalysisResult(
     SyncResult? Result,
@@ -241,7 +244,21 @@ public sealed record LipSyncAnalysisResult(
     double? Confidence,
     double? SpreadMilliseconds,
     string Status,
-    TimeSpan Runtime)
+    TimeSpan Runtime,
+    SyncResult? RawResult = null,
+    long VideoTimingOffsetTicks100ns = 0,
+    VideoTimingOffsetSource VideoTimingOffsetSource = VideoTimingOffsetSource.Automatic,
+    double? BestRawLagMilliseconds = null,
+    double? BestCorrectedLagMilliseconds = null,
+    double? BestCorrelationScore = null,
+    double? CompetingCorrelationScore = null,
+    double? CorrelationMargin = null,
+    int VideoFrameCount = 0,
+    int AudioFeatureBinCount = 0,
+    int VisualEventCount = 0,
+    int AudioEventCount = 0,
+    int RejectedMarkerCount = 0,
+    double AnalysisWindowMilliseconds = 0)
 {
     public bool HasEstimate => Result is { TimingComparable: true } && double.IsFinite(Result.SignedMilliseconds);
 }
@@ -476,9 +493,7 @@ public sealed record LipSyncHistorySnapshot(
     IReadOnlyList<VideoFrame> Frames,
     IReadOnlyList<float> Waveform,
     IReadOnlyList<double> FrameTicks,
-    IReadOnlyList<LipSyncMarker> Markers,
-    SyncResult Result,
-    double? Confidence,
+    LipSyncAnalysisResult Analysis,
     long EstimatedBytes);
 
 public sealed class AppSettings
